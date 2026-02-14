@@ -349,6 +349,37 @@ async def restart_app(hw_id: str):
 # Path History API
 # ============================================================================
 
+class OpenFolderRequest(BaseModel):
+    path: str
+
+
+@app.post("/open-folder")
+async def open_folder(req: OpenFolderRequest):
+    """在系统文件管理器中打开本地文件夹"""
+    import subprocess, sys
+    target = req.path.strip()
+    if not target:
+        raise HTTPException(400, "路径不能为空")
+
+    # 如果是文件路径，取其所在目录
+    if os.path.isfile(target):
+        target = os.path.dirname(target)
+
+    if not os.path.isdir(target):
+        raise HTTPException(400, f"目录不存在: {target}")
+
+    try:
+        if sys.platform == 'win32':
+            os.startfile(target)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', target])
+        else:
+            subprocess.Popen(['xdg-open', target])
+        return {"message": f"已打开: {target}"}
+    except Exception as e:
+        raise HTTPException(500, f"打开失败: {e}")
+
+
 @app.get("/path-history/{category}")
 async def get_path_history(category: str):
     """获取路径历史"""

@@ -55,7 +55,7 @@ function Dashboard() {
   }
 
   const openTool = (toolId) => {
-    navigate(`/${toolId}`)
+    window.open(`/${toolId}`, '_blank')
   }
 
   if (loading) {

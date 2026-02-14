@@ -569,10 +569,10 @@ function AdbMaster() {
                         <span className="font-medium">Logcat 日志</span>
                       </div>
                       <button
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
                           logcatRunning
-                            ? 'bg-[var(--terracotta)] text-white'
-                            : 'bg-[var(--sage)] text-white'
+                            ? 'bg-[var(--terracotta)] text-white hover:brightness-110 hover:-translate-y-0.5 hover:shadow-md'
+                            : 'bg-[var(--sage)] text-white hover:brightness-110 hover:-translate-y-0.5 hover:shadow-md'
                         }`}
                         onClick={(e) => {
                           e.stopPropagation()
@@ -624,16 +624,40 @@ function AdbMaster() {
                             <Upload size={16} className="text-[var(--caramel)]" />
                             <span className="text-sm font-medium text-[var(--coffee-deep)]">推送文件 (本地 → 设备)</span>
                           </div>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div className="space-y-2.5">
                             <div className="relative">
                               <label className="block text-xs text-[var(--coffee-muted)] mb-1">本地路径 (文件或文件夹)</label>
-                              <input
-                                type="text"
-                                value={pushLocalPath}
-                                onChange={e => setPushLocalPath(e.target.value)}
-                                placeholder="例: D:\project\assets"
-                                className="font-mono text-sm"
-                              />
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  value={pushLocalPath}
+                                  onChange={e => setPushLocalPath(e.target.value)}
+                                  placeholder="例: D:\project\assets"
+                                  className="font-mono text-sm flex-1"
+                                />
+                                <button
+                                  className="btn-secondary p-2 shrink-0"
+                                  onClick={async () => {
+                                    if (!pushLocalPath.trim()) return
+                                    try {
+                                      const res = await fetch(`/api/adb_master/open-folder`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ path: pushLocalPath }),
+                                      })
+                                      if (!res.ok) {
+                                        const data = await res.json()
+                                        toast.error(data.detail || '打开失败')
+                                      }
+                                    } catch (err) {
+                                      toast.error('打开失败: ' + err.message)
+                                    }
+                                  }}
+                                  title="在文件管理器中打开"
+                                >
+                                  <FolderOpen size={16} />
+                                </button>
+                              </div>
                             </div>
                             <div className="relative">
                               <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备目标路径</label>
@@ -679,40 +703,66 @@ function AdbMaster() {
                             <Download size={16} className="text-[var(--sky)]" />
                             <span className="text-sm font-medium text-[var(--coffee-deep)]">拉取文件 (设备 → 本地)</span>
                           </div>
-                          <div className="relative">
-                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备文件路径</label>
-                            <input
-                              type="text"
-                              value={pullRemotePath}
-                              onChange={e => setPullRemotePath(e.target.value)}
-                              onFocus={() => setShowPullHistory(true)}
-                              onBlur={() => setTimeout(() => setShowPullHistory(false), 200)}
-                              placeholder="/sdcard/Download/file.txt"
-                              className="font-mono text-sm"
-                            />
-                            {showPullHistory && pullHistory.length > 0 && (
-                              <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
-                                {pullHistory.map((p, i) => (
-                                  <button
-                                    key={i}
-                                    className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate"
-                                    onMouseDown={() => { setPullRemotePath(p); setShowPullHistory(false) }}
-                                  >
-                                    {p}
-                                  </button>
-                                ))}
+                          <div className="space-y-2.5">
+                            <div className="relative">
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备文件路径</label>
+                              <input
+                                type="text"
+                                value={pullRemotePath}
+                                onChange={e => setPullRemotePath(e.target.value)}
+                                onFocus={() => setShowPullHistory(true)}
+                                onBlur={() => setTimeout(() => setShowPullHistory(false), 200)}
+                                placeholder="/sdcard/Download/file.txt"
+                                className="font-mono text-sm"
+                              />
+                              {showPullHistory && pullHistory.length > 0 && (
+                                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
+                                  {pullHistory.map((p, i) => (
+                                    <button
+                                      key={i}
+                                      className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate"
+                                      onMouseDown={() => { setPullRemotePath(p); setShowPullHistory(false) }}
+                                    >
+                                      {p}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="relative">
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">本地保存路径 (留空则浏览器下载)</label>
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  value={pullLocalPath}
+                                  onChange={e => setPullLocalPath(e.target.value)}
+                                  placeholder="例: D:\Downloads\file.txt"
+                                  className="font-mono text-sm flex-1"
+                                />
+                                <button
+                                  className="btn-secondary p-2 shrink-0"
+                                  onClick={async () => {
+                                    if (!pullLocalPath.trim()) return
+                                    try {
+                                      const res = await fetch(`/api/adb_master/open-folder`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ path: pullLocalPath }),
+                                      })
+                                      if (!res.ok) {
+                                        const data = await res.json()
+                                        toast.error(data.detail || '打开失败')
+                                      }
+                                    } catch (err) {
+                                      toast.error('打开失败: ' + err.message)
+                                    }
+                                  }}
+                                  title="在文件管理器中打开"
+                                >
+                                  <FolderOpen size={16} />
+                                </button>
                               </div>
-                            )}
-                          </div>
-                          <div className="mt-2">
-                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">本地保存路径 (留空则浏览器下载)</label>
-                            <input
-                              type="text"
-                              value={pullLocalPath}
-                              onChange={e => setPullLocalPath(e.target.value)}
-                              placeholder="例: D:\Downloads\file.txt"
-                              className="font-mono text-sm"
-                            />
+                            </div>
                           </div>
                           <button
                             className="btn-secondary mt-3 flex items-center gap-2"

@@ -6,9 +6,12 @@ import asyncio
 import json
 import socket
 import os
+import sys
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Callable
+
+import psutil
 
 
 @dataclass
@@ -61,10 +64,46 @@ class ServerMgr:
         self.on_log: Optional[Callable[[Log], None]] = None
         self.on_client_data_update: Optional[Callable[[str], None]] = None
 
+    def _kill_port_holder(self, port: int):
+        """清理占用指定端口的旧进程"""
+        try:
+            for conn in psutil.net_connections(kind='tcp'):
+                if conn.laddr.port == port and conn.status == 'LISTEN' and conn.pid:
+                    if conn.pid == os.getpid():
+                        continue
+                    try:
+                        proc = psutil.Process(conn.pid)
+                        proc.kill()
+                        proc.wait(timeout=3)
+                        print(f"[ServerMgr] 已杀死占用端口 {port} 的旧进程 (PID={conn.pid})")
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+        except psutil.AccessDenied:
+            import subprocess as _sp
+            try:
+                result = _sp.run(['netstat', '-aon'], capture_output=True, text=True, timeout=5,
+                                 creationflags=0x08000000 if sys.platform == 'win32' else 0)
+                for line in result.stdout.splitlines():
+                    if f':{port} ' in line and 'LISTENING' in line:
+                        pid = int(line.split()[-1])
+                        if pid != os.getpid():
+                            try:
+                                psutil.Process(pid).kill()
+                                print(f"[ServerMgr] 已杀死占用端口 {port} 的旧进程 (PID={pid})")
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[ServerMgr] 端口 {port} 清理异常: {e}")
+
     async def add_listener(self, port: int) -> tuple[bool, str]:
         """添加监听端口"""
         if port in self.listeners:
             return False, f"端口 {port} 已在监听"
+
+        # 清理占用该端口的旧进程
+        self._kill_port_holder(port)
 
         # 检查端口是否可用
         try:
@@ -131,6 +170,7 @@ class ServerMgr:
 
         self.clients[cid] = Client(id=cid, port=port, writer=writer)
         self._add_log("info", f"客户端连接: {cid}", cid)
+        print(f"[ServerMgr] TCP 客户端连接: {cid} (port={port}), 当前客户端数={len(self.clients)}")
         if self.on_update:
             self.on_update()
 
@@ -160,17 +200,23 @@ class ServerMgr:
         if not c:
             return
 
+        print(f"[ServerMgr] 收到数据包: cid={cid}, type={t}")
+
         if t == "HELLO":
             c.device = pkt.get("device", "Unknown")
             c.platform = pkt.get("platform", "Unknown")
+            print(f"[ServerMgr] HELLO: device={c.device}, platform={c.platform}")
             if self.on_update:
                 self.on_update()
         elif t == "LOG":
             self._add_log(pkt.get("level", "info"), pkt.get("msg", ""), cid)
         elif t == "GM_LIST":
             c.gm_tree = pkt.get("data", [])
+            print(f"[ServerMgr] GM_LIST: {len(c.gm_tree)} 个节点")
             if self.on_client_data_update:
                 self.on_client_data_update(cid)
+            else:
+                print(f"[ServerMgr] ⚠ on_client_data_update 未设置!")
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -295,6 +341,8 @@ class ServerMgr:
         return [log.to_dict() for log in self.logs[-limit:]]
 
     async def shutdown(self):
-        """关闭所有连接"""
-        for port in list(self.listeners.keys()):
+        """关闭所有连接并清理端口"""
+        ports = list(self.listeners.keys())
+        for port in ports:
             await self.remove_listener(port)
+            self._kill_port_holder(port)

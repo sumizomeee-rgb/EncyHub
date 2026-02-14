@@ -32,6 +32,10 @@ ws_connections: list[WebSocket] = []
 
 async def broadcast_event(event: dict):
     """广播事件到所有 WebSocket 连接"""
+    if not ws_connections:
+        print(f"[GmConsole] 广播跳过: 无 WS 连接 (event.type={event.get('type')})")
+        return
+    print(f"[GmConsole] 广播事件: type={event.get('type')}, ws连接数={len(ws_connections)}, clients={len(event.get('clients', []))}")
     for ws in ws_connections[:]:
         try:
             await ws.send_json(event)
@@ -67,6 +71,15 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_update = on_update
     server_mgr.on_log = on_log
+
+    def on_client_data_update(client_id):
+        asyncio.create_task(broadcast_event({
+            "type": "update",
+            "listeners": server_mgr.get_listeners_info(),
+            "clients": server_mgr.get_clients_info(),
+        }))
+
+    server_mgr.on_client_data_update = on_client_data_update
 
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
@@ -108,7 +121,7 @@ class ExecRequest(BaseModel):
 
 
 class ExecGmRequest(BaseModel):
-    gm_id: str
+    gm_id: Any
     value: Any = None
 
 
@@ -243,14 +256,17 @@ async def websocket_events(websocket: WebSocket):
     """实时事件流"""
     await websocket.accept()
     ws_connections.append(websocket)
+    print(f"[GmConsole] WS 客户端连接, 当前连接数={len(ws_connections)}")
 
     # 发送初始状态
-    await websocket.send_json({
+    init_data = {
         "type": "init",
         "listeners": server_mgr.get_listeners_info(),
         "clients": server_mgr.get_clients_info(),
         "logs": server_mgr.get_logs(50),
-    })
+    }
+    print(f"[GmConsole] 发送 init: listeners={len(init_data['listeners'])}, clients={len(init_data['clients'])}")
+    await websocket.send_json(init_data)
 
     try:
         while True:
@@ -263,6 +279,7 @@ async def websocket_events(websocket: WebSocket):
     finally:
         if websocket in ws_connections:
             ws_connections.remove(websocket)
+        print(f"[GmConsole] WS 客户端断开, 剩余连接数={len(ws_connections)}")
 
 
 # ============================================================================

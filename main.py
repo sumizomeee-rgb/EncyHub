@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import psutil
 import uvicorn
@@ -168,9 +169,18 @@ app.add_middleware(
 app.include_router(hub_router)  # /api/hub/*
 app.include_router(proxy_router)  # /api/{tool_id}/*
 
-# 挂载前端静态文件（最后）
+# 前端 SPA 路由（最后）
 if FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+    # 挂载静态资源目录（JS/CSS/图片）
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+    # SPA fallback: 所有非 API 路径返回 index.html
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        file_path = FRONTEND_DIST / full_path
+        if full_path and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(FRONTEND_DIST / "index.html")
 else:
     @app.get("/")
     async def index():

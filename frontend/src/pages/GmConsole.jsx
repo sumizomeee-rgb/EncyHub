@@ -26,7 +26,20 @@ function GmConsole() {
   const [activeTab, setActiveTab] = useState('lua_gm')
 
   // 缩放: 列数 2-8
-  const [gridCols, setGridCols] = useState(5)
+  const [gridCols, setGridCols] = useState(() => {
+    const saved = localStorage.getItem('gm_gridCols')
+    return saved ? parseInt(saved) : 5
+  })
+
+  // 按钮高度 (px)
+  const [btnHeight, setBtnHeight] = useState(() => {
+    const saved = localStorage.getItem('gm_btnHeight')
+    return saved ? parseInt(saved) : 64
+  })
+
+  // 持久化滑块值
+  useEffect(() => { localStorage.setItem('gm_gridCols', String(gridCols)) }, [gridCols])
+  useEffect(() => { localStorage.setItem('gm_btnHeight', String(btnHeight)) }, [btnHeight])
 
   // 面包屑导航
   const [breadcrumb, setBreadcrumb] = useState([])
@@ -289,31 +302,24 @@ function GmConsole() {
       toast.warning('请先选择一个客户端或广播模式')
       return
     }
+    const cmd = luaInput
+    setLuaInput('')
     try {
-      if (broadcastMode) {
-        const res = await fetch('/api/gm_console/broadcast', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cmd: luaInput }),
-        })
-        setLogs(prev => [...prev, { type: 'broadcast', text: `[广播] ${luaInput}`, local: true }])
-        if (!res.ok) {
-          const data = await res.json()
-          setLogs(prev => [...prev, { type: 'error', text: `错误: ${data.detail}`, local: true }])
-        }
-      } else {
-        const res = await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cmd: luaInput }),
-        })
-        setLogs(prev => [...prev, { type: 'cmd', text: `> ${luaInput}`, local: true }])
-        if (!res.ok) {
-          const data = await res.json()
-          setLogs(prev => [...prev, { type: 'error', text: `错误: ${data.detail}`, local: true }])
-        }
+      const url = broadcastMode
+        ? '/api/gm_console/broadcast'
+        : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
+      const logType = broadcastMode ? 'broadcast' : 'cmd'
+      const logText = broadcastMode ? `[广播] ${cmd}` : `> ${cmd}`
+      setLogs(prev => [...prev, { type: logType, text: logText, local: true }])
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd }),
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        setLogs(prev => [...prev, { type: 'error', text: `错误: ${extractDetail(data.detail)}`, local: true }])
       }
-      setLuaInput('')
     } catch (err) {
       setLogs(prev => [...prev, { type: 'error', text: `错误: ${err.message}`, local: true }])
     }
@@ -322,56 +328,60 @@ function GmConsole() {
   // 广播命令
   const handleBroadcast = async () => {
     if (!luaInput.trim()) return
+    const cmd = luaInput
+    setLuaInput('')
+    setLogs(prev => [...prev, { type: 'broadcast', text: `[广播] ${cmd}`, local: true }])
     try {
       const res = await fetch('/api/gm_console/broadcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cmd: luaInput }),
+        body: JSON.stringify({ cmd }),
       })
-      setLogs(prev => [...prev, { type: 'broadcast', text: `[广播] ${luaInput}`, local: true }])
       if (!res.ok) {
         const data = await res.json()
-        setLogs(prev => [...prev, { type: 'error', text: `错误: ${data.detail}`, local: true }])
+        setLogs(prev => [...prev, { type: 'error', text: `错误: ${extractDetail(data.detail)}`, local: true }])
       }
-      setLuaInput('')
     } catch (err) {
       setLogs(prev => [...prev, { type: 'error', text: `错误: ${err.message}`, local: true }])
     }
   }
 
-  // 执行 GM 命令
-  const handleExecGm = async (gmId, value = null) => {
+  // 提取错误详情文本
+  const extractDetail = (detail) => {
+    if (typeof detail === 'string') return detail
+    if (Array.isArray(detail)) {
+      return detail.map(d => d.msg || JSON.stringify(d)).join('; ')
+    }
+    return JSON.stringify(detail)
+  }
+
+  // 执行 GM 命令 (fire-and-forget 减少延迟)
+  const handleExecGm = (gmId, value = null) => {
     if (!selectedClient && !broadcastMode) {
       toast.warning('请先选择一个客户端或广播模式')
       return
     }
-    try {
-      if (broadcastMode) {
-        const res = await fetch('/api/gm_console/broadcast-gm', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gm_id: gmId, value }),
-        })
-        setLogs(prev => [...prev, { type: 'gm', text: `[广播GM] ${gmId}${value !== null ? ' = ' + value : ''}`, local: true }])
-        if (!res.ok) {
-          const data = await res.json()
-          setLogs(prev => [...prev, { type: 'error', text: `错误: ${data.detail}`, local: true }])
-        }
-      } else {
-        const res = await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec-gm`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gm_id: gmId, value }),
-        })
-        setLogs(prev => [...prev, { type: 'gm', text: `[GM] ${gmId}${value !== null ? ' = ' + value : ''}`, local: true }])
-        if (!res.ok) {
-          const data = await res.json()
-          setLogs(prev => [...prev, { type: 'error', text: `错误: ${data.detail}`, local: true }])
-        }
+    // 立即写入日志
+    const label = broadcastMode ? '广播GM' : 'GM'
+    setLogs(prev => [...prev, { type: 'gm', text: `[${label}] ${gmId}${value !== null ? ' = ' + value : ''}`, local: true }])
+
+    const url = broadcastMode
+      ? '/api/gm_console/broadcast-gm'
+      : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec-gm`
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gm_id: gmId, value }),
+    }).then(res => {
+      if (!res.ok) {
+        res.json().then(data => {
+          setLogs(prev => [...prev, { type: 'error', text: `错误: ${extractDetail(data.detail)}`, local: true }])
+        }).catch(() => {})
       }
-    } catch (err) {
+    }).catch(err => {
       setLogs(prev => [...prev, { type: 'error', text: `错误: ${err.message}`, local: true }])
-    }
+    })
   }
 
   // Toggle GM 状态切换
@@ -389,38 +399,31 @@ function GmConsole() {
   }
 
   // 执行自定义 GM 命令（直接发送 Lua）
-  const handleExecCustomGm = async (cmd) => {
+  const handleExecCustomGm = (cmd) => {
     if (!selectedClient && !broadcastMode) {
       toast.warning('请先选择一个客户端或广播模式')
       return
     }
-    try {
-      if (broadcastMode) {
-        const res = await fetch('/api/gm_console/broadcast', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cmd }),
-        })
-        setLogs(prev => [...prev, { type: 'gm', text: `[广播自定义GM] ${cmd.substring(0, 60)}...`, local: true }])
-        if (!res.ok) {
-          const data = await res.json()
-          setLogs(prev => [...prev, { type: 'error', text: `错误: ${data.detail}`, local: true }])
-        }
-      } else {
-        const res = await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cmd }),
-        })
-        setLogs(prev => [...prev, { type: 'gm', text: `[自定义GM] ${cmd.substring(0, 60)}...`, local: true }])
-        if (!res.ok) {
-          const data = await res.json()
-          setLogs(prev => [...prev, { type: 'error', text: `错误: ${data.detail}`, local: true }])
-        }
+    const label = broadcastMode ? '广播自定义GM' : '自定义GM'
+    setLogs(prev => [...prev, { type: 'gm', text: `[${label}] ${cmd.substring(0, 60)}...`, local: true }])
+
+    const url = broadcastMode
+      ? '/api/gm_console/broadcast'
+      : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd }),
+    }).then(res => {
+      if (!res.ok) {
+        res.json().then(data => {
+          setLogs(prev => [...prev, { type: 'error', text: `错误: ${extractDetail(data.detail)}`, local: true }])
+        }).catch(() => {})
       }
-    } catch (err) {
+    }).catch(err => {
       setLogs(prev => [...prev, { type: 'error', text: `错误: ${err.message}`, local: true }])
-    }
+    })
   }
 
   // 自定义 GM CRUD
@@ -634,10 +637,10 @@ function GmConsole() {
             <div className="lg:col-span-5">
               <div className="glass-card p-5 h-full animate-fade-in" style={{ animationDelay: '0.15s' }}>
                 {/* Tab Bar */}
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-1 bg-[var(--cream-warm)] rounded-lg p-1">
                     <button
-                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
                         activeTab === 'lua_gm'
                           ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
                           : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
@@ -650,7 +653,7 @@ function GmConsole() {
                       </span>
                     </button>
                     <button
-                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
                         activeTab === 'custom_gm'
                           ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
                           : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
@@ -659,65 +662,50 @@ function GmConsole() {
                     >
                       <span className="flex items-center gap-1.5">
                         <Layers size={14} />
-                        自定义GM
+                        自定义
                       </span>
                     </button>
                   </div>
+                  {activeTab === 'lua_gm' && (
+                    <button
+                      className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                      onClick={async () => {
+                        const cmd = 'RuntimeGMClient.ReloadGM(true)'
+                        if (broadcastMode) {
+                          await fetch('/api/gm_console/broadcast', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ cmd }),
+                          })
+                        } else if (selectedClient) {
+                          await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ cmd }),
+                          })
+                        } else {
+                          toast.warning('请先选择客户端或广播模式')
+                          return
+                        }
+                        toast.success('已发送刷新GM信号')
+                      }}
+                      title="刷新 LuaGM 树"
+                    >
+                      <RefreshCw size={16} />
+                    </button>
+                  )}
+                </div>
 
-                  {/* Zoom Controls */}
-                  <div className="flex items-center gap-2">
-                    {activeTab === 'lua_gm' && (
-                      <button
-                        className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
-                        onClick={async () => {
-                          const cmd = 'RuntimeGMClient.ReloadGM(true)'
-                          if (broadcastMode) {
-                            await fetch('/api/gm_console/broadcast', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ cmd }),
-                            })
-                          } else if (selectedClient) {
-                            await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ cmd }),
-                            })
-                          } else {
-                            toast.warning('请先选择客户端或广播模式')
-                            return
-                          }
-                          toast.success('已发送刷新GM信号')
-                        }}
-                        title="刷新 LuaGM 树"
-                      >
-                        <RefreshCw size={16} />
-                      </button>
-                    )}
-                    <button
-                      className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
-                      onClick={() => setGridCols(c => Math.max(1, c - 1))}
-                      title="减少列数"
-                    >
-                      <ZoomOut size={16} />
-                    </button>
-                    <input
-                      type="range"
-                      min="1"
-                      max="10"
-                      value={gridCols}
-                      onChange={e => setGridCols(parseInt(e.target.value))}
-                      className="w-28 h-1.5 accent-[var(--caramel)]"
-                    />
-                    <button
-                      className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
-                      onClick={() => setGridCols(c => Math.min(10, c + 1))}
-                      title="增加列数"
-                    >
-                      <ZoomIn size={16} />
-                    </button>
-                    <span className="text-xs text-[var(--coffee-muted)] w-4 text-center">{gridCols}</span>
-                  </div>
+                {/* Slider Controls Row */}
+                <div className="flex items-center gap-2 mb-3 px-1">
+                  <ZoomOut size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setGridCols(c => Math.max(1, c - 1))} />
+                  <input type="range" min="1" max="10" value={gridCols} onChange={e => setGridCols(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="列数" />
+                  <ZoomIn size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setGridCols(c => Math.min(10, c + 1))} />
+                  <span className="text-[10px] text-[var(--coffee-muted)] w-3 text-center">{gridCols}</span>
+                  <span className="w-px h-3 bg-[var(--glass-border)]" />
+                  <span className="text-[10px] text-[var(--coffee-muted)]">H</span>
+                  <input type="range" min="32" max="128" step="4" value={btnHeight} onChange={e => setBtnHeight(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮高度" />
+                  <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnHeight}</span>
                 </div>
 
                 {/* LuaGM Tab Content */}
@@ -771,7 +759,8 @@ function GmConsole() {
                             return (
                               <button
                                 key={i}
-                                className="flex items-center gap-2 p-3 h-16 bg-[var(--cream-warm)]/70 rounded-xl hover:bg-[var(--caramel-light)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm font-medium text-left overflow-hidden"
+                                className="flex items-center gap-2 p-3 bg-[var(--cream-warm)]/70 rounded-xl hover:bg-[var(--caramel-light)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm font-medium text-left overflow-hidden"
+                                style={{ height: btnHeight }}
                                 onClick={() => navigateToNode(node)}
                               >
                                 <ChevronRight size={14} className="shrink-0" />
@@ -785,7 +774,8 @@ function GmConsole() {
                             return (
                               <div
                                 key={i}
-                                className="flex flex-col justify-between gap-2 p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
+                                className="flex flex-col justify-between gap-2 p-3 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
+                                style={{ height: btnHeight }}
                                 title={node.name}
                               >
                                 <span className="line-clamp-2 text-[var(--coffee-deep)]">{node.name}</span>
@@ -807,7 +797,8 @@ function GmConsole() {
                             return (
                               <div
                                 key={i}
-                                className="flex flex-col justify-between gap-1.5 p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
+                                className="flex flex-col justify-between gap-1.5 p-3 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
+                                style={{ height: btnHeight }}
                                 title={node.name}
                               >
                                 <span className="truncate text-[var(--coffee-deep)] text-xs font-medium">{node.name}</span>
@@ -847,7 +838,8 @@ function GmConsole() {
                           return (
                             <button
                               key={i}
-                              className="p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm text-left overflow-hidden"
+                              className="p-3 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm text-left overflow-hidden"
+                              style={{ height: btnHeight }}
                               onClick={() => handleExecGm(node.id || node.name)}
                               title={node.name}
                             >
@@ -887,7 +879,8 @@ function GmConsole() {
                         {customGmList.map((item, i) => (
                           <div
                             key={i}
-                            className="group relative p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel-light)]/30 transition-all overflow-hidden"
+                            className="group relative p-3 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel-light)]/30 transition-all overflow-hidden"
+                            style={{ height: btnHeight }}
                           >
                             <button
                               className="w-full text-left text-sm font-medium text-[var(--coffee-deep)] pr-12"

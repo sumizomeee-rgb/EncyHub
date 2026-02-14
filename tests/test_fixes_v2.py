@@ -76,44 +76,45 @@ class TestRefreshLuaGm:
 # ============================================================================
 
 class TestGmButtonHeight:
-    """Fix 2.1: 所有 GM 网格项应有固定高度 (h-16, 由 2.1 修复从 h-24 降低)"""
+    """Fix 2.1: 所有 GM 网格项应有动态高度 (btnHeight state)"""
 
     def setup_method(self):
         self.content = read_file(GM_CONSOLE_JSX)
 
-    def test_btn_has_h16(self):
-        assert re.search(r'h-16.*rounded-xl.*hover:bg-\[var\(--caramel\)\]', self.content), \
-            "Btn 类型应有 h-16"
+    def test_btn_has_dynamic_height(self):
+        assert re.search(r'height:\s*btnHeight', self.content), \
+            "Btn 类型应有动态 btnHeight"
 
-    def test_subbox_has_h16(self):
-        assert re.search(r'h-16.*rounded-xl.*hover:bg-\[var\(--caramel-light\)\]', self.content), \
-            "SubBox 类型应有 h-16"
+    def test_subbox_has_dynamic_height(self):
+        # SubBox and Btn both use btnHeight - check multiple occurrences
+        matches = re.findall(r'height:\s*btnHeight', self.content)
+        assert len(matches) >= 2, "SubBox 和 Btn 类型都应有动态 btnHeight"
 
-    def test_toggle_has_h16(self):
+    def test_toggle_has_dynamic_height(self):
         lines = self.content.split('\n')
         toggle_section = False
         for line in lines:
             if "nodeType === 'toggle'" in line:
                 toggle_section = True
-            if toggle_section and 'h-16' in line:
+            if toggle_section and 'btnHeight' in line:
                 assert True
                 return
             if toggle_section and 'nodeType ===' in line and 'toggle' not in line:
                 break
-        pytest.fail("Toggle 类型应有 h-16")
+        pytest.fail("Toggle 类型应有动态 btnHeight")
 
-    def test_input_has_h16(self):
+    def test_input_has_dynamic_height(self):
         lines = self.content.split('\n')
         input_section = False
         for line in lines:
             if "nodeType === 'input'" in line:
                 input_section = True
-            if input_section and 'h-16' in line:
+            if input_section and 'btnHeight' in line:
                 assert True
                 return
             if input_section and '// Default: Btn' in line:
                 break
-        pytest.fail("Input 类型应有 h-16")
+        pytest.fail("Input 类型应有动态 btnHeight")
 
     def test_btn_uses_line_clamp(self):
         assert "line-clamp-2" in self.content, "应使用 line-clamp-2 截断文本"
@@ -143,18 +144,18 @@ class TestCustomGmEditVisibility:
     def test_edit_buttons_have_base_opacity(self):
         assert 'opacity-60' in self.content, "编辑按钮应有基础可见度 opacity-60"
 
-    def test_custom_gm_card_has_h16(self):
-        # CustomGM cards should also have h-16 (降低自 h-24)
+    def test_custom_gm_card_has_dynamic_height(self):
+        # CustomGM cards should also have dynamic btnHeight
         in_custom = False
         for line in self.content.split('\n'):
             if 'customGmList.map' in line:
                 in_custom = True
-            if in_custom and 'h-16' in line:
+            if in_custom and 'btnHeight' in line:
                 assert True
                 return
             if in_custom and '</div>' in line and 'gridStyle' not in line:
                 continue
-        pytest.fail("自定义 GM 卡片应有 h-16")
+        pytest.fail("自定义 GM 卡片应有动态 btnHeight")
 
     def test_edit_icon_size_increased(self):
         # Edit icon should be size={14} not size={12}
