@@ -3,5 +3,10 @@
     "004adea1": {
       "nickname": "本机雷电"
     }
+  },
+  "path_history": {
+    "pull": [
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/log"
+    ]
   }
 }

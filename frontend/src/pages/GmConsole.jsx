@@ -37,6 +37,8 @@ function GmConsole() {
     return saved ? parseInt(saved) : 64
   })
 
+  useEffect(() => { document.title = 'GM Console - EncyHub' }, [])
+
   // 持久化滑块值
   useEffect(() => { localStorage.setItem('gm_gridCols', String(gridCols)) }, [gridCols])
   useEffect(() => { localStorage.setItem('gm_btnHeight', String(btnHeight)) }, [btnHeight])

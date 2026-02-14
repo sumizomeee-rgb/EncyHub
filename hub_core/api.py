@@ -128,27 +128,54 @@ async def proxy_to_tool(tool_id: str, path: str, request: Request):
 
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            # 转发请求
-            body = await request.body()
-            headers = dict(request.headers)
-            # 移除 host 头
-            headers.pop("host", None)
+            content_type = request.headers.get("content-type", "")
 
-            resp = await client.request(
-                method=request.method,
-                url=target_url,
-                content=body,
-                headers=headers,
-            )
+            # multipart/form-data 需要特殊处理：解析后用 httpx files 重新编码
+            if "multipart/form-data" in content_type:
+                form = await request.form()
+                files = []
+                data = {}
+                for key in form:
+                    value = form[key]
+                    if hasattr(value, "read"):  # UploadFile
+                        file_bytes = await value.read()
+                        files.append((key, (value.filename, file_bytes, value.content_type or "application/octet-stream")))
+                    else:
+                        data[key] = value
+                resp = await client.request(
+                    method=request.method,
+                    url=target_url,
+                    files=files if files else None,
+                    data=data if data else None,
+                )
+                await form.close()
+            else:
+                # 普通请求：转发原始 body
+                body = await request.body()
+                headers = dict(request.headers)
+                for h in ("host", "transfer-encoding", "connection", "content-length", "expect"):
+                    headers.pop(h, None)
+                resp = await client.request(
+                    method=request.method,
+                    url=target_url,
+                    content=body,
+                    headers=headers,
+                )
+
+            # 移除响应中的 hop-by-hop 头
+            resp_headers = dict(resp.headers)
+            for h in ("transfer-encoding", "connection", "content-length"):
+                resp_headers.pop(h, None)
 
             return Response(
                 content=resp.content,
                 status_code=resp.status_code,
-                headers=dict(resp.headers),
+                headers=resp_headers,
             )
     except httpx.ConnectError:
         raise HTTPException(503, f"无法连接到工具: {tool_id}")
     except Exception as e:
+        print(f"[Hub] 代理请求失败 ({request.method} {tool_id}/{path}): {e}")
         raise HTTPException(500, f"代理请求失败: {str(e)}")
 
 

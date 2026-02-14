@@ -17,6 +17,7 @@ function AdbMaster() {
   const [logcatRunning, setLogcatRunning] = useState(false)
   const wsRef = useRef(null)
   const logcatEndRef = useRef(null)
+  const logcatContainerRef = useRef(null)
 
   // 展开面板状态
   const [expandLogcat, setExpandLogcat] = useState(true)
@@ -25,11 +26,11 @@ function AdbMaster() {
   // 弹窗状态
   const [showInstallModal, setShowInstallModal] = useState(false)
 
-  // 表单状态
-  const [pushLocalPath, setPushLocalPath] = useState('')
-  const [pushRemotePath, setPushRemotePath] = useState('/sdcard/')
-  const [pullRemotePath, setPullRemotePath] = useState('')
-  const [pullLocalPath, setPullLocalPath] = useState('')
+  // 表单状态 (从 localStorage 恢复)
+  const [pushLocalPath, setPushLocalPath] = useState(() => localStorage.getItem('adb_pushLocalPath') || '')
+  const [pushRemotePath, setPushRemotePath] = useState(() => localStorage.getItem('adb_pushRemotePath') || '/sdcard/')
+  const [pullRemotePath, setPullRemotePath] = useState(() => localStorage.getItem('adb_pullRemotePath') || '')
+  const [pullLocalPath, setPullLocalPath] = useState(() => localStorage.getItem('adb_pullLocalPath') || '')
   const [installFile, setInstallFile] = useState(null)
 
   // 操作状态
@@ -100,6 +101,8 @@ function AdbMaster() {
     }
   }
 
+  useEffect(() => { document.title = 'ADB Master - EncyHub' }, [])
+
   useEffect(() => {
     fetchDevices()
     fetchPathHistory()
@@ -108,7 +111,10 @@ function AdbMaster() {
   }, [])
 
   useEffect(() => {
-    logcatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const container = logcatContainerRef.current
+    if (container) {
+      container.scrollTop = container.scrollHeight
+    }
   }, [logcat])
 
   useEffect(() => {
@@ -200,12 +206,18 @@ function AdbMaster() {
         const data = JSON.parse(text)
         if (res.ok) {
           toast.success(data.message || '推送成功')
+          localStorage.setItem('adb_pushLocalPath', pushLocalPath)
+          localStorage.setItem('adb_pushRemotePath', pushRemotePath)
           fetchPathHistory()
         } else {
           toast.error(data.detail || '推送失败')
         }
       } catch {
-        if (res.ok) toast.success('推送成功')
+        if (res.ok) {
+          toast.success('推送成功')
+          localStorage.setItem('adb_pushLocalPath', pushLocalPath)
+          localStorage.setItem('adb_pushRemotePath', pushRemotePath)
+        }
         else toast.error('推送失败: ' + text.substring(0, 100))
       }
     } catch (err) {
@@ -241,7 +253,8 @@ function AdbMaster() {
           URL.revokeObjectURL(url)
           toast.success('拉取成功')
         }
-        setPullRemotePath('')
+        localStorage.setItem('adb_pullRemotePath', pullRemotePath)
+        if (pullLocalPath) localStorage.setItem('adb_pullLocalPath', pullLocalPath)
         fetchPathHistory()
       } else {
         const text = await res.text()
@@ -587,7 +600,7 @@ function AdbMaster() {
                       </button>
                     </div>
                     {expandLogcat && (
-                      <div className="mt-2 bg-[var(--coffee-deep)] rounded-xl p-4 h-72 max-h-[50vh] overflow-auto font-mono text-xs text-[var(--sage)] leading-relaxed">
+                      <div ref={logcatContainerRef} className="mt-2 bg-[var(--coffee-deep)] rounded-xl p-4 h-72 max-h-[50vh] overflow-auto font-mono text-xs text-[var(--sage)] leading-relaxed">
                         {logcat.length === 0 ? (
                           <div className="text-[var(--coffee-muted)]">
                             {logcatRunning ? '等待日志输出...' : '点击"开始"按钮抓取日志'}

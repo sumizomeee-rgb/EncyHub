@@ -30,6 +30,8 @@ function Dashboard() {
     }
   }
 
+  useEffect(() => { document.title = 'EncyHub' }, [])
+
   useEffect(() => {
     fetchTools()
     const interval = setInterval(fetchTools, 5000)

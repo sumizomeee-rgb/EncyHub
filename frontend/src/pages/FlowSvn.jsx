@@ -78,6 +78,8 @@ function FlowSvn() {
     }
   }
 
+  useEffect(() => { document.title = 'FlowSVN - EncyHub' }, [])
+
   useEffect(() => {
     fetchData()
   }, [])
