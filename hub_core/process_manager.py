@@ -139,6 +139,27 @@ class ProcessManager:
     async def startup_restore(self):
         """启动时恢复上次启用的工具"""
         for tool_id, tool in registry.get_all().items():
+            # 清理可能残留的旧进程（registry 中记录的 PID）
+            if tool.pid:
+                try:
+                    old_proc = psutil.Process(tool.pid)
+                    if old_proc.is_running():
+                        children = old_proc.children(recursive=True)
+                        for child in children:
+                            try:
+                                child.kill()
+                            except psutil.NoSuchProcess:
+                                pass
+                        old_proc.kill()
+                        old_proc.wait(timeout=3)
+                        print(f"[ProcessManager] 清理旧进程: {tool_id} (PID={tool.pid})")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+                except Exception as e:
+                    print(f"[ProcessManager] 清理旧进程异常: {tool_id}: {e}")
+                # 无论如何都重置状态
+                registry.set_stopped(tool_id)
+
             if tool.enabled:
                 print(f"[ProcessManager] 恢复启动: {tool_id}")
                 success, msg = await self.start_tool(tool_id)

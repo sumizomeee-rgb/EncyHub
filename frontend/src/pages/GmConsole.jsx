@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
-  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe
+  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
@@ -21,7 +21,8 @@ function GmConsole() {
   const logsEndRef = useRef(null)
   const wsRef = useRef(null)
 
-  // 标签页: 'lua_gm' | 'custom_gm'
+  // WS 连接状态: 'connecting' | 'connected' | 'disconnected'
+  const [wsStatus, setWsStatus] = useState('connecting')
   const [activeTab, setActiveTab] = useState('lua_gm')
 
   // 缩放: 列数 2-8
@@ -105,6 +106,7 @@ function GmConsole() {
 
       ws.onopen = () => {
         setLoading(false)
+        setWsStatus('connected')
         // 清除 fallback 轮询
         if (fallbackInterval) {
           clearInterval(fallbackInterval)
@@ -140,12 +142,16 @@ function GmConsole() {
 
       ws.onclose = () => {
         wsRef.current = null
+        setWsStatus('disconnected')
         // 降级到 HTTP 轮询
         if (!fallbackInterval) {
-          fallbackInterval = setInterval(fetchDataHttp, 10000)
+          fallbackInterval = setInterval(fetchDataHttp, 3000)
         }
         // 尝试重连
-        setTimeout(connectWs, 3000)
+        setTimeout(() => {
+          setWsStatus('connecting')
+          connectWs()
+        }, 3000)
       }
 
       ws.onerror = () => {
@@ -159,7 +165,7 @@ function GmConsole() {
     connectWs()
 
     // 低频 fallback 轮询（WS 连接成功后会被清除）
-    fallbackInterval = setInterval(fetchDataHttp, 10000)
+    fallbackInterval = setInterval(fetchDataHttp, 3000)
 
     return () => {
       if (ws) ws.close()
@@ -496,7 +502,21 @@ function GmConsole() {
           </button>
           <div className="flex-1">
             <h1 className="font-display text-2xl font-semibold text-[var(--coffee-deep)]">GM Console</h1>
-            <p className="text-[var(--coffee-muted)] text-sm">游戏 GM 控制台</p>
+            <div className="flex items-center gap-2">
+              <p className="text-[var(--coffee-muted)] text-sm">游戏 GM 控制台</p>
+              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
+                wsStatus === 'connected' ? 'bg-[var(--sage-soft)]/30 text-[var(--sage)]' :
+                wsStatus === 'connecting' ? 'bg-[var(--amber-soft)]/30 text-[var(--amber)]' :
+                'bg-[var(--error-soft)]/30 text-[var(--terracotta)]'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  wsStatus === 'connected' ? 'bg-[var(--sage)] animate-pulse' :
+                  wsStatus === 'connecting' ? 'bg-[var(--amber)] animate-pulse' :
+                  'bg-[var(--terracotta)]'
+                }`} />
+                {wsStatus === 'connected' ? '已连接' : wsStatus === 'connecting' ? '连接中' : '已断开'}
+              </span>
+            </div>
           </div>
           <button
             className="btn-primary flex items-center gap-2"
@@ -646,24 +666,52 @@ function GmConsole() {
 
                   {/* Zoom Controls */}
                   <div className="flex items-center gap-2">
+                    {activeTab === 'lua_gm' && (
+                      <button
+                        className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                        onClick={async () => {
+                          const cmd = 'RuntimeGMClient.ReloadGM(true)'
+                          if (broadcastMode) {
+                            await fetch('/api/gm_console/broadcast', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ cmd }),
+                            })
+                          } else if (selectedClient) {
+                            await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ cmd }),
+                            })
+                          } else {
+                            toast.warning('请先选择客户端或广播模式')
+                            return
+                          }
+                          toast.success('已发送刷新GM信号')
+                        }}
+                        title="刷新 LuaGM 树"
+                      >
+                        <RefreshCw size={16} />
+                      </button>
+                    )}
                     <button
                       className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
-                      onClick={() => setGridCols(c => Math.max(2, c - 1))}
+                      onClick={() => setGridCols(c => Math.max(1, c - 1))}
                       title="减少列数"
                     >
                       <ZoomOut size={16} />
                     </button>
                     <input
                       type="range"
-                      min="2"
-                      max="8"
+                      min="1"
+                      max="10"
                       value={gridCols}
                       onChange={e => setGridCols(parseInt(e.target.value))}
-                      className="w-20 h-1.5 accent-[var(--caramel)]"
+                      className="w-28 h-1.5 accent-[var(--caramel)]"
                     />
                     <button
                       className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
-                      onClick={() => setGridCols(c => Math.min(8, c + 1))}
+                      onClick={() => setGridCols(c => Math.min(10, c + 1))}
                       title="增加列数"
                     >
                       <ZoomIn size={16} />
@@ -723,11 +771,11 @@ function GmConsole() {
                             return (
                               <button
                                 key={i}
-                                className="flex items-center gap-2 p-3 bg-[var(--cream-warm)]/70 rounded-xl hover:bg-[var(--caramel-light)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm font-medium text-left"
+                                className="flex items-center gap-2 p-3 h-16 bg-[var(--cream-warm)]/70 rounded-xl hover:bg-[var(--caramel-light)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm font-medium text-left overflow-hidden"
                                 onClick={() => navigateToNode(node)}
                               >
                                 <ChevronRight size={14} className="shrink-0" />
-                                <span className="truncate">{node.name}</span>
+                                <span className="line-clamp-2">{node.name}</span>
                               </button>
                             )
                           }
@@ -737,10 +785,10 @@ function GmConsole() {
                             return (
                               <div
                                 key={i}
-                                className="flex items-center justify-between gap-2 p-3 bg-[var(--cream-warm)]/50 rounded-xl text-sm"
+                                className="flex flex-col justify-between gap-2 p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
                                 title={node.name}
                               >
-                                <span className="truncate text-[var(--coffee-deep)]">{node.name}</span>
+                                <span className="line-clamp-2 text-[var(--coffee-deep)]">{node.name}</span>
                                 <button
                                   className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
                                     isOn ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'
@@ -759,7 +807,7 @@ function GmConsole() {
                             return (
                               <div
                                 key={i}
-                                className="flex flex-col gap-1.5 p-3 bg-[var(--cream-warm)]/50 rounded-xl text-sm"
+                                className="flex flex-col justify-between gap-1.5 p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
                                 title={node.name}
                               >
                                 <span className="truncate text-[var(--coffee-deep)] text-xs font-medium">{node.name}</span>
@@ -799,11 +847,11 @@ function GmConsole() {
                           return (
                             <button
                               key={i}
-                              className="p-3 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm text-left truncate"
+                              className="p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm text-left overflow-hidden"
                               onClick={() => handleExecGm(node.id || node.name)}
                               title={node.name}
                             >
-                              {node.name}
+                              <span className="line-clamp-2">{node.name}</span>
                             </button>
                           )
                         })}
@@ -839,18 +887,18 @@ function GmConsole() {
                         {customGmList.map((item, i) => (
                           <div
                             key={i}
-                            className="group relative p-3 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel-light)]/30 transition-all"
+                            className="group relative p-3 h-16 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel-light)]/30 transition-all overflow-hidden"
                           >
                             <button
-                              className="w-full text-left text-sm font-medium text-[var(--coffee-deep)] truncate pr-12"
+                              className="w-full text-left text-sm font-medium text-[var(--coffee-deep)] pr-12"
                               onClick={() => handleExecCustomGm(item.cmd)}
                               title={`${item.name}\n${item.cmd}`}
                             >
-                              {item.name}
+                              <span className="line-clamp-2">{item.name}</span>
                             </button>
-                            <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
                               <button
-                                className="p-1 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                                className="p-1.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   setEditingCustomGm(i)
@@ -858,16 +906,16 @@ function GmConsole() {
                                   setShowCustomGmModal(true)
                                 }}
                               >
-                                <Edit size={12} />
+                                <Edit size={14} />
                               </button>
                               <button
-                                className="p-1 rounded hover:bg-[var(--error-soft)] text-[var(--terracotta)] transition-colors"
+                                className="p-1.5 rounded hover:bg-[var(--error-soft)] text-[var(--terracotta)] transition-colors"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   handleDeleteCustomGm(i)
                                 }}
                               >
-                                <Trash2 size={12} />
+                                <Trash2 size={14} />
                               </button>
                             </div>
                           </div>

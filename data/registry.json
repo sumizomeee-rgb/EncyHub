@@ -4,9 +4,9 @@
     "display_name": "ADB Master",
     "description": "Android 设备管理工具",
     "enabled": true,
-    "port": null,
-    "pid": null,
-    "last_started": "2026-02-14 19:58:47"
+    "port": 14457,
+    "pid": 86912,
+    "last_started": "2026-02-14 21:30:44"
   },
   "flow_svn": {
     "tool_id": "flow_svn",
@@ -15,15 +15,15 @@
     "enabled": true,
     "port": null,
     "pid": null,
-    "last_started": "2026-02-14 19:58:48"
+    "last_started": "2026-02-14 21:30:45"
   },
   "gm_console": {
     "tool_id": "gm_console",
     "display_name": "GM Console",
     "description": "游戏 GM 控制台",
     "enabled": true,
-    "port": null,
-    "pid": null,
-    "last_started": "2026-02-14 19:58:50"
+    "port": 14474,
+    "pid": 56828,
+    "last_started": "2026-02-14 21:30:47"
   }
 }

@@ -127,7 +127,7 @@ async def proxy_to_tool(tool_id: str, path: str, request: Request):
         target_url += f"?{request.url.query}"
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             # 转发请求
             body = await request.body()
             headers = dict(request.headers)
@@ -216,8 +216,13 @@ async def proxy_websocket(websocket: WebSocket, tool_id: str, path: str):
         for task in pending:
             task.cancel()
 
-    except Exception:
-        pass
+    except Exception as e:
+        # 连接上游失败时，向前端发送错误消息
+        try:
+            await websocket.send_text(f'{{"error": "无法连接到工具服务: {tool_id}"}}')
+        except Exception:
+            pass
+        print(f"[Hub] WS 代理连接失败 ({tool_id}/{path}): {e}")
     finally:
         if upstream_ws and not upstream_ws.closed:
             await upstream_ws.close()

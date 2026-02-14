@@ -35,8 +35,10 @@ async def broadcast_event(event: dict):
     for ws in ws_connections[:]:
         try:
             await ws.send_json(event)
-        except:
-            ws_connections.remove(ws)
+        except Exception as e:
+            print(f"[GmConsole] WS 广播失败, 移除连接: {e}")
+            if ws in ws_connections:
+                ws_connections.remove(ws)
 
 
 @asynccontextmanager

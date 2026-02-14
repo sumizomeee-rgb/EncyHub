@@ -34,7 +34,6 @@ function AdbMaster() {
 
   // 操作状态
   const [operating, setOperating] = useState(false)
-  const [pushFile, setPushFile] = useState(null)
 
   // 路径历史
   const [pushHistory, setPushHistory] = useState([])
@@ -145,12 +144,28 @@ function AdbMaster() {
       if (!selectedDevice) return
       const wsUrl = `ws://${window.location.host}/api/adb_master/devices/${selectedDevice.hardware_id}/logcat`
       const ws = new WebSocket(wsUrl)
+      let connectTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          ws.close()
+          setLogcatRunning(false)
+          toast.error('Logcat 连接超时')
+        }
+      }, 5000)
       ws.onopen = () => {
+        clearTimeout(connectTimeout)
         setLogcatRunning(true)
         setLogcat([])
       }
       ws.onmessage = (e) => {
         if (e.data) {
+          // 检查是否为 JSON 错误消息
+          try {
+            const json = JSON.parse(e.data)
+            if (json.error) {
+              toast.error(json.error)
+              return
+            }
+          } catch {}
           setLogcat(prev => {
             const newLogs = [...prev, e.data]
             if (newLogs.length > 500) {
@@ -160,7 +175,11 @@ function AdbMaster() {
           })
         }
       }
-      ws.onerror = () => setLogcatRunning(false)
+      ws.onerror = () => {
+        clearTimeout(connectTimeout)
+        setLogcatRunning(false)
+        toast.error('Logcat 连接失败')
+      }
       ws.onclose = () => setLogcatRunning(false)
       wsRef.current = ws
     }
@@ -168,23 +187,26 @@ function AdbMaster() {
 
   // 推送文件
   const handlePush = async () => {
-    if (!pushFile || !selectedDevice) return
+    if (!pushLocalPath.trim() || !selectedDevice) return
     setOperating(true)
     try {
-      const formData = new FormData()
-      formData.append('file', pushFile)
-
-      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/push?remote_path=${encodeURIComponent(pushRemotePath)}`, {
+      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/push`, {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ local_path: pushLocalPath, remote_path: pushRemotePath }),
       })
-      const data = await res.json()
-      if (res.ok) {
-        toast.success(data.message || '推送成功')
-        setPushFile(null)
-        fetchPathHistory()
-      } else {
-        toast.error(data.detail || '推送失败')
+      const text = await res.text()
+      try {
+        const data = JSON.parse(text)
+        if (res.ok) {
+          toast.success(data.message || '推送成功')
+          fetchPathHistory()
+        } else {
+          toast.error(data.detail || '推送失败')
+        }
+      } catch {
+        if (res.ok) toast.success('推送成功')
+        else toast.error('推送失败: ' + text.substring(0, 100))
       }
     } catch (err) {
       toast.error('推送失败: ' + err.message)
@@ -201,21 +223,34 @@ function AdbMaster() {
       const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/pull`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: pullRemotePath }),
+        body: JSON.stringify({ path: pullRemotePath, local_path: pullLocalPath || '' }),
       })
       if (res.ok) {
-        const blob = await res.blob()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = pullRemotePath.split('/').pop() || 'file'
-        a.click()
-        URL.revokeObjectURL(url)
+        const contentType = res.headers.get('content-type') || ''
+        if (contentType.includes('application/json')) {
+          const data = await res.json()
+          toast.success(data.message || '拉取成功')
+        } else {
+          // FileResponse fallback - browser download
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = pullRemotePath.split('/').pop() || 'file'
+          a.click()
+          URL.revokeObjectURL(url)
+          toast.success('拉取成功')
+        }
         setPullRemotePath('')
         fetchPathHistory()
       } else {
-        const data = await res.json()
-        toast.error(data.detail || '拉取失败')
+        const text = await res.text()
+        try {
+          const data = JSON.parse(text)
+          toast.error(data.detail || '拉取失败')
+        } catch {
+          toast.error('拉取失败: ' + text.substring(0, 100))
+        }
       }
     } catch (err) {
       toast.error('拉取失败: ' + err.message)
@@ -411,6 +446,11 @@ function AdbMaster() {
                             <div className="text-xs text-[var(--coffee-muted)] mt-1 font-mono truncate">
                               {device.hardware_id?.slice(0, 16)}...
                             </div>
+                            {device.wifi_ip && (
+                              <div className="text-xs text-[var(--sky)] mt-0.5 font-mono">
+                                ⊛ {device.wifi_ip}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -585,27 +625,18 @@ function AdbMaster() {
                             <span className="text-sm font-medium text-[var(--coffee-deep)]">推送文件 (本地 → 设备)</span>
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div>
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">选择本地文件</label>
+                            <div className="relative">
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">本地路径 (文件或文件夹)</label>
                               <input
-                                type="file"
-                                id="push-file-input"
-                                className="hidden"
-                                onChange={e => setPushFile(e.target.files?.[0] || null)}
+                                type="text"
+                                value={pushLocalPath}
+                                onChange={e => setPushLocalPath(e.target.value)}
+                                placeholder="例: D:\project\assets"
+                                className="font-mono text-sm"
                               />
-                              <button
-                                className="btn-secondary text-xs py-2 px-3 flex items-center gap-2 w-full justify-center"
-                                onClick={() => document.getElementById('push-file-input').click()}
-                              >
-                                <Upload size={14} />
-                                {pushFile ? pushFile.name : '选择文件'}
-                              </button>
-                              {pushFile && (
-                                <div className="text-xs text-[var(--coffee-muted)] mt-1">{(pushFile.size / 1024).toFixed(1)} KB</div>
-                              )}
                             </div>
                             <div className="relative">
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">目标路径</label>
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备目标路径</label>
                               <input
                                 type="text"
                                 value={pushRemotePath}
@@ -633,7 +664,7 @@ function AdbMaster() {
                           <button
                             className="btn-primary mt-3 flex items-center gap-2"
                             onClick={handlePush}
-                            disabled={!pushFile || operating}
+                            disabled={!pushLocalPath.trim() || operating}
                           >
                             <Upload size={14} />
                             {operating ? '推送中...' : '推送'}
@@ -672,6 +703,16 @@ function AdbMaster() {
                                 ))}
                               </div>
                             )}
+                          </div>
+                          <div className="mt-2">
+                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">本地保存路径 (留空则浏览器下载)</label>
+                            <input
+                              type="text"
+                              value={pullLocalPath}
+                              onChange={e => setPullLocalPath(e.target.value)}
+                              placeholder="例: D:\Downloads\file.txt"
+                              className="font-mono text-sm"
+                            />
                           </div>
                           <button
                             className="btn-secondary mt-3 flex items-center gap-2"

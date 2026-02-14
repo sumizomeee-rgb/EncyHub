@@ -69,6 +69,7 @@ class NicknameRequest(BaseModel):
 
 class PathRequest(BaseModel):
     path: str
+    local_path: str = ""
 
 
 class InstallRequest(BaseModel):
@@ -202,7 +203,15 @@ async def websocket_logcat(websocket: WebSocket, hw_id: str):
                     logcat_connections[hw_id].remove(ws)
 
     # 启动 Logcat
-    await adb_mgr.start_logcat(dev.active_serial, on_line)
+    try:
+        await adb_mgr.start_logcat(dev.active_serial, on_line)
+    except Exception as e:
+        print(f"[AdbMaster] Logcat 启动失败 ({dev.active_serial}): {e}")
+        await websocket.send_json({"error": f"Logcat 启动失败: {str(e)}"})
+        if websocket in logcat_connections.get(hw_id, []):
+            logcat_connections[hw_id].remove(websocket)
+        await websocket.close()
+        return
 
     try:
         while True:
@@ -223,35 +232,31 @@ async def websocket_logcat(websocket: WebSocket, hw_id: str):
 # File Transfer API
 # ============================================================================
 
+class PushRequest(BaseModel):
+    local_path: str
+    remote_path: str = "/sdcard/"
+
+
 @app.post("/devices/{hw_id}/push")
-async def push_file(hw_id: str, file: UploadFile = File(...), remote_path: str = "/sdcard/"):
-    """推送文件到设备"""
+async def push_file(hw_id: str, req: PushRequest):
+    """推送文件/文件夹到设备"""
     devices = await adb_mgr.get_unified_devices()
     dev = next((d for d in devices if d.hardware_id == hw_id), None)
     if not dev or not dev.active_serial:
         raise HTTPException(404, "设备不存在或离线")
 
-    # 保存上传的文件
-    temp_path = os.path.join(DATA_DIR, "temp", file.filename)
-    os.makedirs(os.path.dirname(temp_path), exist_ok=True)
-    with open(temp_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
+    # 验证本地路径存在
+    if not os.path.exists(req.local_path):
+        raise HTTPException(400, f"本地路径不存在: {req.local_path}")
 
-    # 推送到设备
-    success, msg = await adb_mgr.push_file(dev.active_serial, temp_path, remote_path)
-
-    # 清理临时文件
-    try:
-        os.remove(temp_path)
-    except:
-        pass
+    # 推送到设备（adb push 原生支持文件夹递归）
+    success, msg = await adb_mgr.push_file(dev.active_serial, req.local_path, req.remote_path)
 
     if not success:
         raise HTTPException(400, msg)
 
     # 记录路径历史
-    config_mgr.add_path_history(remote_path, "push")
+    config_mgr.add_path_history(req.remote_path, "push")
 
     return {"message": msg}
 
@@ -264,9 +269,16 @@ async def pull_file(hw_id: str, req: PathRequest):
     if not dev or not dev.active_serial:
         raise HTTPException(404, "设备不存在或离线")
 
-    # 拉取到本地
-    local_path = os.path.join(DATA_DIR, "downloads", os.path.basename(req.path))
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    # 确定本地保存路径
+    if req.local_path and req.local_path.strip():
+        local_path = req.local_path.strip()
+        os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+    else:
+        # 默认保存到设备专属目录
+        from .path_utils import ensure_device_dirs
+        dirs = ensure_device_dirs(hw_id)
+        local_path = os.path.join(dirs['sync_area'], os.path.basename(req.path))
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
     success, msg = await adb_mgr.pull_file(dev.active_serial, req.path, local_path)
     if not success:
@@ -274,6 +286,10 @@ async def pull_file(hw_id: str, req: PathRequest):
 
     # 记录路径历史
     config_mgr.add_path_history(req.path, "pull")
+
+    # 如果指定了本地路径，返回 JSON 而非文件流
+    if req.local_path and req.local_path.strip():
+        return {"message": f"已保存到 {local_path}", "local_path": local_path}
 
     return FileResponse(local_path, filename=os.path.basename(req.path))
 
