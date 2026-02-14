@@ -129,6 +129,22 @@ async def build_frontend():
 
 
 
+@router.post("/shutdown")
+async def shutdown_hub():
+    """安全关闭 EncyHub 平台（先停所有工具，再退出进程）"""
+    import os
+
+    async def graceful_shutdown():
+        await asyncio.sleep(0.5)
+        # 停止所有工具子进程
+        await process_manager.shutdown_all()
+        print("[EncyHub] 所有工具已停止，正在退出...")
+        os._exit(0)
+
+    asyncio.create_task(graceful_shutdown())
+    return {"success": True, "message": "平台正在安全关闭..."}
+
+
 @router.post("/restart-hub")
 async def restart_hub():
     """重启 EncyHub 平台"""

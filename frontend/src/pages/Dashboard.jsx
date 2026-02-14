@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Play, Square, RotateCcw, ExternalLink, Sparkles, Smartphone, GitBranch, Terminal, Hammer, RefreshCw } from 'lucide-react'
+import { Play, Square, RotateCcw, ExternalLink, Sparkles, Smartphone, GitBranch, Terminal, Hammer, RefreshCw, Power } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
 const API_BASE = '/api/hub'
@@ -17,6 +17,7 @@ function Dashboard() {
   const [actionLoading, setActionLoading] = useState({})
   const [buildLoading, setBuildLoading] = useState(false)
   const [restartLoading, setRestartLoading] = useState(false)
+  const [shutdownLoading, setShutdownLoading] = useState(false)
   const navigate = useNavigate()
   const toast = useToast()
 
@@ -28,7 +29,6 @@ function Dashboard() {
       const data = await res.json()
       if (data.success) {
         toast.success('平台正在重启，请稍候刷新页面...')
-        // 3秒后自动刷新
         setTimeout(() => window.location.reload(), 3000)
       } else {
         toast.error(data.message || '重启失败')
@@ -37,6 +37,18 @@ function Dashboard() {
     } catch (err) {
       toast.error('请求失败: ' + err.message)
       setRestartLoading(false)
+    }
+  }
+
+  const handleShutdown = async () => {
+    if (!confirm('确定要停止整个平台吗？所有工具进程都会被关闭。')) return
+    setShutdownLoading(true)
+    try {
+      await fetch(`${API_BASE}/shutdown`, { method: 'POST' })
+      toast.success('平台正在安全关闭...')
+    } catch (err) {
+      // 连接断开说明已经在关闭了
+      toast.success('平台已关闭')
     }
   }
 
@@ -133,7 +145,7 @@ function Dashboard() {
                          hover:border-[var(--caramel-light)] hover:text-[var(--coffee-deep)] hover:shadow-md hover:shadow-[var(--caramel)]/10
                          active:scale-[0.97] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={handleBuildFrontend}
-              disabled={buildLoading || restartLoading}
+              disabled={buildLoading || restartLoading || shutdownLoading}
             >
               {buildLoading
                 ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
@@ -148,10 +160,22 @@ function Dashboard() {
                          hover:border-[var(--terracotta)] hover:text-[var(--terracotta)] hover:bg-[var(--error-soft)]/30 hover:shadow-md hover:shadow-[var(--terracotta)]/10
                          active:scale-[0.97] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={handleRestartHub}
-              disabled={buildLoading || restartLoading}
+              disabled={buildLoading || restartLoading || shutdownLoading}
             >
               <RefreshCw size={14} className={restartLoading ? 'animate-spin' : ''} />
               {restartLoading ? '重启中...' : '重启平台'}
+            </button>
+
+            <button
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium
+                         bg-[var(--cream-soft)] border border-[var(--glass-border)] text-[var(--coffee-medium)]
+                         hover:border-red-500 hover:text-red-600 hover:bg-red-50 hover:shadow-md hover:shadow-red-500/10
+                         active:scale-[0.97] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleShutdown}
+              disabled={buildLoading || restartLoading || shutdownLoading}
+            >
+              <Power size={14} />
+              {shutdownLoading ? '关闭中...' : '停止平台'}
             </button>
           </div>
         </div>
