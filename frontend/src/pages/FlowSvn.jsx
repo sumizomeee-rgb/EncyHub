@@ -365,6 +365,7 @@ function FlowSvn() {
                   <table className="data-table">
                     <thead>
                       <tr>
+                        <th className="w-14 text-center">启用</th>
                         <th>任务名称</th>
                         <th>SVN 路径</th>
                         <th>计划时间</th>
@@ -381,17 +382,17 @@ function FlowSvn() {
                         const template = templates.find(t => t.id === task.template_id)
                         return (
                           <tr key={task.id}>
+                            <td className="text-center">
+                              <button
+                                className={`relative inline-flex w-11 h-6 rounded-full transition-colors shrink-0 focus:outline-none focus:ring-2 focus:ring-[var(--caramel)]/50 ${task.enabled ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'}`}
+                                onClick={() => handleToggleEnabled(task)}
+                                title={task.enabled ? '点击禁用' : '点击启用'}
+                              >
+                                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform duration-200 ${task.enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                              </button>
+                            </td>
                             <td>
-                              <div className="flex items-center gap-3">
-                                <button
-                                  className={`relative w-11 h-6 rounded-full transition-colors shrink-0 focus:outline-none focus:ring-2 focus:ring-[var(--caramel)]/50 ${task.enabled ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'}`}
-                                  onClick={() => handleToggleEnabled(task)}
-                                  title={task.enabled ? '点击禁用' : '点击启用'}
-                                >
-                                  <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform duration-200 ${task.enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                                </button>
-                                <span className="font-medium text-[var(--coffee-deep)]">{task.name}</span>
-                              </div>
+                              <span className="font-medium text-[var(--coffee-deep)]">{task.name}</span>
                             </td>
                             <td>
                               <code className="text-xs bg-[var(--cream-warm)] px-2 py-1 rounded font-mono text-[var(--coffee-light)]">
