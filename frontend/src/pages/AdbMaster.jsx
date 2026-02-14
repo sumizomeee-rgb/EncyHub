@@ -20,7 +20,7 @@ function AdbMaster() {
   const logcatContainerRef = useRef(null)
 
   // 展开面板状态
-  const [expandLogcat, setExpandLogcat] = useState(true)
+  const [expandLogcat, setExpandLogcat] = useState(false)
   const [expandTransfer, setExpandTransfer] = useState(false)
 
   // 弹窗状态

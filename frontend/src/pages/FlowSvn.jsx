@@ -382,13 +382,13 @@ function FlowSvn() {
                         return (
                           <tr key={task.id}>
                             <td>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-3">
                                 <button
-                                  className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${task.enabled ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'}`}
+                                  className={`relative w-11 h-6 rounded-full transition-colors shrink-0 focus:outline-none focus:ring-2 focus:ring-[var(--caramel)]/50 ${task.enabled ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'}`}
                                   onClick={() => handleToggleEnabled(task)}
                                   title={task.enabled ? '点击禁用' : '点击启用'}
                                 >
-                                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${task.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                  <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform duration-200 ${task.enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
                                 </button>
                                 <span className="font-medium text-[var(--coffee-deep)]">{task.name}</span>
                               </div>

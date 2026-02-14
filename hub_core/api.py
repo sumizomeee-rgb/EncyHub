@@ -101,6 +101,60 @@ async def get_tool_logs(tool_id: str, lines: int = 100):
         raise HTTPException(500, f"读取日志失败: {str(e)}")
 
 
+@router.post("/build-frontend")
+async def build_frontend():
+    """编译前端资源"""
+    import subprocess
+    import sys
+
+    frontend_dir = str(LOGS_DIR.parent / "frontend")
+    try:
+        result = subprocess.run(
+            ["npm", "run", "build"],
+            cwd=frontend_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            shell=True,
+        )
+        if result.returncode == 0:
+            return {"success": True, "message": "前端编译成功", "output": result.stdout[-500:] if result.stdout else ""}
+        else:
+            return {"success": False, "message": "编译失败", "output": (result.stderr or result.stdout)[-500:]}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "message": "编译超时 (60秒)"}
+    except Exception as e:
+        return {"success": False, "message": f"编译出错: {str(e)}"}
+
+
+
+
+@router.post("/restart-hub")
+async def restart_hub():
+    """重启 EncyHub 平台"""
+    import subprocess
+    import sys
+    import os
+    from .config import ROOT_DIR
+
+    start_bat = ROOT_DIR / "start.bat"
+    
+    # 延迟 1 秒后退出当前进程，给新进程清理时间
+    async def delayed_exit():
+        await asyncio.sleep(1)
+        os._exit(0)
+
+    try:
+        # 启动新的 CMD 窗口运行 start.bat
+        cmd = ["cmd", "/c", "start", str(start_bat)]
+        subprocess.Popen(cmd, shell=True)
+        
+        asyncio.create_task(delayed_exit())
+        return {"success": True, "message": "平台正在重启..."}
+    except Exception as e:
+        return {"success": False, "message": f"重启失败: {str(e)}"}
+
+
 # 代理路由 - 转发请求到工具子进程
 proxy_router = APIRouter()
 
@@ -251,8 +305,11 @@ async def proxy_websocket(websocket: WebSocket, tool_id: str, path: str):
             pass
         print(f"[Hub] WS 代理连接失败 ({tool_id}/{path}): {e}")
     finally:
-        if upstream_ws and not upstream_ws.closed:
-            await upstream_ws.close()
+        if upstream_ws:
+            try:
+                await upstream_ws.close()
+            except Exception:
+                pass
         try:
             await websocket.close()
         except Exception:

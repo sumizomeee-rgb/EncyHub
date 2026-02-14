@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Play, Square, RotateCcw, ExternalLink, Sparkles, Smartphone, GitBranch, Terminal } from 'lucide-react'
+import { Play, Square, RotateCcw, ExternalLink, Sparkles, Smartphone, GitBranch, Terminal, Hammer, RefreshCw } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
 const API_BASE = '/api/hub'
@@ -15,8 +15,47 @@ function Dashboard() {
   const [tools, setTools] = useState([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState({})
+  const [buildLoading, setBuildLoading] = useState(false)
+  const [restartLoading, setRestartLoading] = useState(false)
   const navigate = useNavigate()
   const toast = useToast()
+
+  const handleRestartHub = async () => {
+    if (!confirm('确定要重启整个平台吗？这会中断当前的连接。')) return
+    setRestartLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/restart-hub`, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        toast.success('平台正在重启，请稍候刷新页面...')
+        // 3秒后自动刷新
+        setTimeout(() => window.location.reload(), 3000)
+      } else {
+        toast.error(data.message || '重启失败')
+        setRestartLoading(false)
+      }
+    } catch (err) {
+      toast.error('请求失败: ' + err.message)
+      setRestartLoading(false)
+    }
+  }
+
+  const handleBuildFrontend = async () => {
+    setBuildLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/build-frontend`, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        toast.success('前端编译成功，刷新页面即可生效')
+      } else {
+        toast.error(data.message || '编译失败')
+      }
+    } catch (err) {
+      toast.error('编译请求失败: ' + err.message)
+    } finally {
+      setBuildLoading(false)
+    }
+  }
 
   const fetchTools = async () => {
     try {
@@ -86,6 +125,35 @@ function Dashboard() {
           <p className="text-[var(--coffee-muted)] max-w-xl mt-4">
             集成 ADB 设备管理、SVN 自动化、GM 控制台等开发工具，提供统一的管理界面和 API 接口。
           </p>
+
+          <div className="mt-5 flex gap-3">
+            <button
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium
+                         bg-[var(--cream-soft)] border border-[var(--glass-border)] text-[var(--coffee-medium)]
+                         hover:border-[var(--caramel-light)] hover:text-[var(--coffee-deep)] hover:shadow-md hover:shadow-[var(--caramel)]/10
+                         active:scale-[0.97] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleBuildFrontend}
+              disabled={buildLoading || restartLoading}
+            >
+              {buildLoading
+                ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                : <Hammer size={14} />
+              }
+              {buildLoading ? '编译中...' : '编译前端'}
+            </button>
+
+            <button
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium
+                         bg-[var(--cream-soft)] border border-[var(--glass-border)] text-[var(--coffee-medium)]
+                         hover:border-[var(--terracotta)] hover:text-[var(--terracotta)] hover:bg-[var(--error-soft)]/30 hover:shadow-md hover:shadow-[var(--terracotta)]/10
+                         active:scale-[0.97] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleRestartHub}
+              disabled={buildLoading || restartLoading}
+            >
+              <RefreshCw size={14} className={restartLoading ? 'animate-spin' : ''} />
+              {restartLoading ? '重启中...' : '重启平台'}
+            </button>
+          </div>
         </div>
       </header>
 

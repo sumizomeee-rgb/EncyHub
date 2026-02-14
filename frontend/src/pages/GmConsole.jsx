@@ -25,10 +25,10 @@ function GmConsole() {
   const [wsStatus, setWsStatus] = useState('connecting')
   const [activeTab, setActiveTab] = useState('lua_gm')
 
-  // 缩放: 列数 2-8
-  const [gridCols, setGridCols] = useState(() => {
-    const saved = localStorage.getItem('gm_gridCols')
-    return saved ? parseInt(saved) : 5
+  // 按钮最小宽度 (px)
+  const [btnMinWidth, setBtnMinWidth] = useState(() => {
+    const saved = localStorage.getItem('gm_btnMinWidth')
+    return saved ? parseInt(saved) : 120
   })
 
   // 按钮高度 (px)
@@ -40,7 +40,7 @@ function GmConsole() {
   useEffect(() => { document.title = 'GM Console - EncyHub' }, [])
 
   // 持久化滑块值
-  useEffect(() => { localStorage.setItem('gm_gridCols', String(gridCols)) }, [gridCols])
+  useEffect(() => { localStorage.setItem('gm_btnMinWidth', String(btnMinWidth)) }, [btnMinWidth])
   useEffect(() => { localStorage.setItem('gm_btnHeight', String(btnHeight)) }, [btnHeight])
 
   // 面包屑导航
@@ -212,15 +212,9 @@ function GmConsole() {
   const handleSelectBroadcast = useCallback(() => {
     setBroadcastMode(true)
     setSelectedClient(null)
-    // 广播模式下使用第一个客户端的 GM 树作为参考
-    if (clients.length > 0) {
-      const tree = Array.isArray(clients[0].gm_tree) ? clients[0].gm_tree : []
-      setGmTree(tree)
-      setCurrentNodes(tree)
-    } else {
-      setGmTree([])
-      setCurrentNodes([])
-    }
+    // 广播模式下不显示特定设备的 GM 树，因为不同设备的 GM 可能不同
+    setGmTree([])
+    setCurrentNodes([])
     setBreadcrumb([])
     setSearchFilter('')
   }, [clients])
@@ -305,7 +299,6 @@ function GmConsole() {
       return
     }
     const cmd = luaInput
-    setLuaInput('')
     try {
       const url = broadcastMode
         ? '/api/gm_console/broadcast'
@@ -331,7 +324,6 @@ function GmConsole() {
   const handleBroadcast = async () => {
     if (!luaInput.trim()) return
     const cmd = luaInput
-    setLuaInput('')
     setLogs(prev => [...prev, { type: 'broadcast', text: `[广播] ${cmd}`, local: true }])
     try {
       const res = await fetch('/api/gm_console/broadcast', {
@@ -490,10 +482,10 @@ function GmConsole() {
     ? currentNodes.filter(n => n.name?.toLowerCase().includes(searchFilter.toLowerCase()))
     : currentNodes
 
-  // 网格列数样式
+  // 网格样式：自动填充，按钮最小宽度控制
   const gridStyle = {
     display: 'grid',
-    gridTemplateColumns: `repeat(${gridCols}, 1fr)`,
+    gridTemplateColumns: `repeat(auto-fill, minmax(${btnMinWidth}px, 1fr))`,
     gap: '8px',
   }
 
@@ -700,10 +692,10 @@ function GmConsole() {
 
                 {/* Slider Controls Row */}
                 <div className="flex items-center gap-2 mb-3 px-1">
-                  <ZoomOut size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setGridCols(c => Math.max(1, c - 1))} />
-                  <input type="range" min="1" max="10" value={gridCols} onChange={e => setGridCols(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="列数" />
-                  <ZoomIn size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setGridCols(c => Math.min(10, c + 1))} />
-                  <span className="text-[10px] text-[var(--coffee-muted)] w-3 text-center">{gridCols}</span>
+                  <ZoomOut size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.max(60, w - 4))} />
+                  <input type="range" min="60" max="300" step="4" value={btnMinWidth} onChange={e => setBtnMinWidth(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮最小宽度" />
+                  <ZoomIn size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.min(300, w + 4))} />
+                  <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnMinWidth}</span>
                   <span className="w-px h-3 bg-[var(--glass-border)]" />
                   <span className="text-[10px] text-[var(--coffee-muted)]">H</span>
                   <input type="range" min="32" max="128" step="4" value={btnHeight} onChange={e => setBtnHeight(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮高度" />
@@ -761,11 +753,11 @@ function GmConsole() {
                             return (
                               <button
                                 key={i}
-                                className="flex items-center gap-2 p-3 bg-[var(--cream-warm)]/70 rounded-xl hover:bg-[var(--caramel-light)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm font-medium text-left overflow-hidden"
+                                className="gm-btn-core folder group/btn flex items-center gap-2"
                                 style={{ height: btnHeight }}
                                 onClick={() => navigateToNode(node)}
                               >
-                                <ChevronRight size={14} className="shrink-0" />
+                                <ChevronRight size={14} className="shrink-0 transition-transform duration-200 group-hover/btn:translate-x-0.5" />
                                 <span className="line-clamp-2">{node.name}</span>
                               </button>
                             )
@@ -776,18 +768,18 @@ function GmConsole() {
                             return (
                               <div
                                 key={i}
-                                className="flex flex-col justify-between gap-2 p-3 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
+                                className="gm-btn-core flex flex-col justify-between gap-2"
                                 style={{ height: btnHeight }}
                                 title={node.name}
                               >
-                                <span className="line-clamp-2 text-[var(--coffee-deep)]">{node.name}</span>
+                                <span className="line-clamp-2 text-xs font-medium">{node.name}</span>
                                 <button
-                                  className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
-                                    isOn ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'
+                                  className={`relative w-10 h-5 rounded-full transition-all duration-300 shrink-0 ${
+                                    isOn ? 'bg-[var(--sage)] shadow-sm shadow-[var(--sage)]/30' : 'bg-[var(--coffee-muted)]/30'
                                   }`}
                                   onClick={() => handleToggleGm(node)}
                                 >
-                                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-300 ${
                                     isOn ? 'translate-x-5' : 'translate-x-0.5'
                                   }`} />
                                 </button>
@@ -799,15 +791,15 @@ function GmConsole() {
                             return (
                               <div
                                 key={i}
-                                className="flex flex-col justify-between gap-1.5 p-3 bg-[var(--cream-warm)]/50 rounded-xl text-sm overflow-hidden"
+                                className="gm-btn-core flex flex-col justify-between gap-1.5"
                                 style={{ height: btnHeight }}
                                 title={node.name}
                               >
-                                <span className="truncate text-[var(--coffee-deep)] text-xs font-medium">{node.name}</span>
+                                <span className="truncate text-xs font-medium">{node.name}</span>
                                 <div className="flex gap-1">
                                   <input
                                     type="text"
-                                    className="flex-1 text-xs px-2 py-1 rounded-md bg-white border border-[var(--glass-border)] min-w-0"
+                                    className="flex-1 text-xs px-2 py-1 rounded-lg bg-white/80 border border-[var(--glass-border)]/80 min-w-0 focus:border-[var(--caramel)]/60 focus:ring-1 focus:ring-[var(--caramel)]/20 transition-all"
                                     placeholder="输入值..."
                                     defaultValue={gmUiStates[stateKey] || ''}
                                     onKeyDown={(e) => {
@@ -819,7 +811,7 @@ function GmConsole() {
                                     }}
                                   />
                                   <button
-                                    className="px-2 py-1 rounded-md bg-[var(--caramel)] text-white text-xs shrink-0 hover:bg-[var(--caramel-dark)] transition-colors"
+                                    className="px-2 py-1 rounded-lg bg-gradient-to-r from-[var(--caramel)] to-[var(--caramel-dark)] text-white text-xs shrink-0 hover:shadow-md hover:shadow-[var(--caramel)]/20 active:scale-95 transition-all duration-200"
                                     onClick={(e) => {
                                       const input = e.target.closest('div').querySelector('input')
                                       if (input) {
@@ -840,7 +832,7 @@ function GmConsole() {
                           return (
                             <button
                               key={i}
-                              className="p-3 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel)] hover:text-white transition-all text-[var(--coffee-deep)] text-sm text-left overflow-hidden"
+                              className="gm-btn-core"
                               style={{ height: btnHeight }}
                               onClick={() => handleExecGm(node.id || node.name)}
                               title={node.name}
@@ -881,19 +873,20 @@ function GmConsole() {
                         {customGmList.map((item, i) => (
                           <div
                             key={i}
-                            className="group relative p-3 bg-[var(--cream-warm)]/50 rounded-xl hover:bg-[var(--caramel-light)]/30 transition-all overflow-hidden"
+                            className="gm-btn-core group"
                             style={{ height: btnHeight }}
+                            onClick={() => handleExecCustomGm(item.cmd)}
+                            title={`${item.name}\n${item.cmd}`}
                           >
-                            <button
-                              className="w-full text-left text-sm font-medium text-[var(--coffee-deep)] pr-12"
-                              onClick={() => handleExecCustomGm(item.cmd)}
-                              title={`${item.name}\n${item.cmd}`}
-                            >
+                            <div className="w-full text-left pr-7">
                               <span className="line-clamp-2">{item.name}</span>
-                            </button>
-                            <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
+                            </div>
+                            <div
+                              className="absolute right-0.5 top-0 bottom-0 flex flex-col justify-center gap-0"
+                              style={{ display: 'flex', flexDirection: 'column' }}
+                            >
                               <button
-                                className="p-1.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                                className="p-1 rounded-md text-[var(--coffee-muted)]/50 hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-all"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   setEditingCustomGm(i)
@@ -901,16 +894,16 @@ function GmConsole() {
                                   setShowCustomGmModal(true)
                                 }}
                               >
-                                <Edit size={14} />
+                                <Edit size={11} />
                               </button>
                               <button
-                                className="p-1.5 rounded hover:bg-[var(--error-soft)] text-[var(--terracotta)] transition-colors"
+                                className="p-1 rounded-md text-[var(--coffee-muted)]/50 hover:text-[var(--terracotta)] hover:bg-[var(--error-soft)] transition-all"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   handleDeleteCustomGm(i)
                                 }}
                               >
-                                <Trash2 size={14} />
+                                <Trash2 size={11} />
                               </button>
                             </div>
                           </div>
@@ -992,7 +985,7 @@ function GmConsole() {
 
       {/* Add Listener Modal */}
       {showAddListener && (
-        <div className="modal-overlay" onClick={() => setShowAddListener(false)}>
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowAddListener(false) }}>
           <div
             className="glass-card p-6 w-96"
             style={{ animation: 'slideUp 0.3s ease' }}
@@ -1037,11 +1030,10 @@ function GmConsole() {
 
       {/* Custom GM Modal */}
       {showCustomGmModal && (
-        <div className="modal-overlay" onClick={() => setShowCustomGmModal(false)}>
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowCustomGmModal(false) }}>
           <div
             className="glass-card p-6 w-[500px]"
             style={{ animation: 'slideUp 0.3s ease' }}
-            onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-3">

@@ -114,7 +114,7 @@ class Registry:
 
     def set_stopped(self, tool_id: str):
         """设置工具为停止状态"""
-        self.update(tool_id, port=None, pid=None)
+        self.update(tool_id, port=None, pid=None, enabled=False)
 
     def is_running(self, tool_id: str) -> bool:
         """检查工具是否运行中"""
