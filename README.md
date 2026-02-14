@@ -1,116 +1,144 @@
-# EncyHub
+# EncyHub 🛠️
 
-开发工具聚合平台 - 将分散的开发工具统一管理，采用现代前端技术栈（React + Tailwind），便于 AI 辅助开发和维护。
+**开发工具聚合平台** - 为游戏开发、测试与运维打造的一站式工具箱。
 
-## 功能特性
+EncyHub 将分散的开发工具（如 ADB 管理、SVN 自动化、GM 指令台）统一整合到一个现代化的 Web 界面中。基于 **FastAPI (Python)** 和 **React (Vite + Tailwind CSS)** 构建，支持插件化扩展、热重启和内网访问，是提升团队效率的理想选择。
 
-- 🔧 **工具聚合**：统一管理多个开发工具，告别目录翻找
-- 🚀 **热重启**：修改工具代码后，单独重启该工具即可生效
-- 🌐 **内网访问**：支持局域网内其他设备访问
-- 📦 **独立打包**：各工具保留独立 build.py，可单独打包成 EXE
-- 🎨 **现代 UI**：React + Tailwind CSS，AI 友好
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Python](https://img.shields.io/badge/backend-FastAPI-green.svg)
+![React](https://img.shields.io/badge/frontend-React-61DAFB.svg)
 
-## 集成工具
+---
 
-| 工具 | 功能 |
-|------|------|
-| **ADB Master** | Android 设备管理（Logcat、文件传输、APK 安装） |
-| **FlowSVN** | SVN 定时更新 + 触发器自动化 |
-| **GM Console** | 游戏 GM 控制台（TCP 服务器 + Lua 执行） |
+## ✨ 核心特性
 
-## 快速开始
+- **🔌 统一入口**：在一个网页中管理所有开发工具，无需切换多个窗口或命令行。
+- **🚀 进程管理 V2**：
+  - **自动清理**：启动时自动识别并清理僵尸进程和端口占用，告别 "Address already in use"。
+  - **热重启**：支持单个工具的独立停止、启动和重启，不影响平台其他功能。
+- **🌐 远程协作**：天然支持内网访问，手机、平板均可作为控制器。
+- **⚡ 高性能**：
+  - 前端采用 React + Tailwind CSS，响应迅速，界面美观。
+  - 后端使用 FastAPI 异步框架，支持 WebSocket 实时通信。
+  - 针对长连接任务（如 Logcat、文件传输）优化了代理超时策略（支持 5分钟+ 长连接）。
+- **🎨 现代化 UI**：
+  - 支持暗色模式（Dark Mode）。
+  - 动态标题显示，清晰区分当前工具。
+  - 响应式设计，适配不同屏幕尺寸。
+
+---
+
+## 📦 内置工具
+
+平台目前集成以下核心工具：
+
+### 1. 📱 ADB Master (安卓设备管理)
+专为游戏开发和测试设计的 ADB 图形化工具。
+- **设备概览**：实时显示连接设备，支持 **WiFi 无线调试**（自动显示 WiFi IP）。
+- **文件管理**：可视化的 Push/Pull 操作，支持进度条显示和本地路径记忆。
+- **Logcat 查看器**：Web 端实时查看日志，支持过滤、暂停和错误检测。
+- **应用管理**：一键安装 APK，卸载应用。
+
+### 2. 🎮 GM Console (游戏控制台)
+连接游戏服务器的调试利器。
+- **TCP 通信**：直接与游戏服务器建立 TCP 连接。
+- **Lua 执行**：即时发送 Lua 代码并获取返回结果。
+- **宏按钮**：可自定义的常用指令网格（支持 1-5 列布局调节）。
+- **参数控件**：
+  - **滑块控制**：精细的参数调节（如时间流速、视野距离），支持范围修正。
+  - **开关/输入框**：丰富的参数输入类型。
+
+### 3. 🔄 FlowSVN (SVN 自动化)
+版本控制自动化助手。
+- **定时更新**：配置定时任务自动更新指定目录。
+- **以及更多**：支持触发器和钩子脚本（WIP）。
+
+---
+
+## 🚀 快速开始
 
 ### 环境要求
+- **Python** 3.10+
+- **Node.js** 18+
+- **uv** (推荐) 或 pip
 
-- Python 3.10+
-- Node.js 18+
-- [uv](https://docs.astral.sh/uv/) (Python 包管理器)
+### 安装与运行
 
-### 启动
-
+#### Windows (推荐)
+直接运行根目录下的启动脚本：
 ```bash
-# Windows
 start.bat
-
-# 或手动启动
-uv sync
-cd frontend && npm install && npm run build && cd ..
-uv run main.py
 ```
+脚本会自动检查依赖并启动服务。
+
+#### 手动启动
+1. **安装依赖**:
+   ```bash
+   # 后端
+   uv sync
+   
+   # 前端
+   cd frontend
+   npm install
+   ```
+
+2. **启动开发服务**:
+   ```bash
+   # 终端 1: 启动后端 API
+   uv run main.py
+   
+   # 终端 2: 启动前端 (开发模式)
+   cd frontend
+   npm run dev
+   ```
+
+3. **构建生产版本**:
+   ```bash
+   cd frontend
+   npm run build
+   cd ..
+   uv run main.py
+   ```
 
 启动后访问：
-- 本机：http://localhost:9524
-- 内网：http://[本机IP]:9524
+- **本机**: `http://localhost:9524`
+- **内网**: `http://<本机IP>:9524`
 
-## 目录结构
+---
 
-```
+## 🛠️ 目录结构
+
+```text
 EncyHub/
-├── main.py                 # 平台入口
-├── pyproject.toml          # Python 依赖
-├── start.bat               # 启动脚本
-├── hub_core/               # 平台核心模块
-│   ├── config.py           # 全局配置
-│   ├── registry.py         # 工具注册表
-│   ├── process_manager.py  # 进程管理
-│   └── api.py              # 平台 API
-├── tools/                  # 工具后端模块
-│   ├── adb_master/
-│   ├── flow_svn/
-│   └── gm_console/
-├── frontend/               # React 前端
-├── data/                   # 运行时数据
-├── assets/                 # 静态资源
-└── logs/                   # 日志目录
+├── main.py                 # 平台主入口 (FastAPI)
+├── start.bat               # Windows 一键启动脚本
+├── pyproject.toml          # Python 依赖配置
+├── hub_core/               # 平台核心框架
+│   ├── api.py              # 核心 API 与 代理逻辑
+│   ├── process_manager.py  # 子进程生命周期管理
+│   └── registry.py         # 工具注册表
+├── tools/                  # 插件化工具目录
+│   ├── adb_master/         # ADB 工具后端
+│   ├── gm_console/         # GM 控制台后端
+│   └── flow_svn/           # SVN 工具后端
+├── frontend/               # 前端项目 (React + Vite)
+│   ├── src/pages/          # 页面组件
+│   └── ...
+└── data/                   # 运行时数据 (日志、配置)
 ```
 
-## API 文档
+## 📝 开发指南
 
-启动后访问 http://localhost:9524/docs 查看 Swagger API 文档。
+想要添加新工具？只需三步：
 
-### 平台 API
+1. **后端**：在 `tools/` 下创建新目录（如 `my_tool`），编写 `main.py` (FastAPI app)。
+2. **注册**：在 `hub_core/registry.py` 中注册该工具的元数据（ID、名称、端口）。
+3. **前端**：在 `frontend/src/pages/` 下创建对应页面组件，并在路由中配置。
 
-| 端点 | 方法 | 功能 |
-|------|------|------|
-| `/api/hub/tools` | GET | 获取所有工具状态 |
-| `/api/hub/tools/{id}/start` | POST | 启动工具 |
-| `/api/hub/tools/{id}/stop` | POST | 停止工具 |
-| `/api/hub/tools/{id}/restart` | POST | 热重启工具 |
-| `/api/hub/tools/{id}/logs` | GET | 获取工具日志 |
+详情请参考 `docs/dev_guide.md` (计划中)。
 
-### 工具 API
+---
 
-各工具的 API 通过代理访问：`/api/{tool_id}/...`
+## 📄 许可证
 
-## 开发指南
-
-### 添加新工具
-
-1. 在 `tools/` 下创建工具目录
-2. 创建 `main.py`（FastAPI 入口）
-3. 在 `hub_core/registry.py` 的 `DEFAULT_TOOLS` 中注册
-4. 创建对应的前端页面
-
-### 工具入口模板
-
-```python
-# tools/my_tool/main.py
-import os
-from fastapi import FastAPI
-import uvicorn
-
-app = FastAPI(title="My Tool")
-
-@app.get("/")
-async def index():
-    return {"message": "Hello from My Tool"}
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    host = os.environ.get("HOST", "0.0.0.0")
-    uvicorn.run(app, host=host, port=port)
-```
-
-## 许可证
-
-MIT License
+本项目采用 [MIT 许可证](LICENSE) 开源。
