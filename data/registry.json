@@ -13,8 +13,8 @@
     "display_name": "FlowSVN",
     "description": "SVN 定时更新 + 触发器自动化",
     "enabled": true,
-    "port": 5790,
-    "pid": 80456,
+    "port": null,
+    "pid": null,
     "last_started": "2026-02-15 00:16:54"
   },
   "gm_console": {
