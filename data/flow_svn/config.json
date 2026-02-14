@@ -1,0 +1,22 @@
+{
+  "settings": {
+    "svn_idle_timeout": 300,
+    "svn_max_timeout": 7200
+  },
+  "tasks": [
+    {
+      "id": "7f3c9892",
+      "name": "Haru主干",
+      "svn_path": "F:\\HaruTrunk",
+      "template_id": "",
+      "schedule_time": "09:00",
+      "enabled": true,
+      "last_run": null,
+      "last_status": "pending",
+      "last_log": "",
+      "execution_history": [],
+      "total_runs": 0
+    }
+  ],
+  "templates": []
+}

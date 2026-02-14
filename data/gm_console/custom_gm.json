@@ -1,0 +1,18 @@
+[
+  {
+    "name": "1",
+    "cmd": "print(3)"
+  },
+  {
+    "name": "90级全角色",
+    "cmd": "CS.Debugger.XDebuggerCheat.SendCheat(\"allchar\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"allstage\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"lv 90\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 7 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 8 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 45 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 39 99999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 23 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 1 9999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 2 9999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 62723 9999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 62723 999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 30013 99999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 12 99999\")"
+  },
+  {
+    "name": "EmmyLuaDebug",
+    "cmd": "--连接EmmyLua\nlocal function split(line, sep, maxsplit)\n    if string.len(line) == 0 then\n        return {}\n    end\n    sep = sep or \" \"\n    maxsplit = maxsplit or 0\n    local retval = {}\n    local pos = 1\n    local step = 0\n    while true do\n        local from, to = string.find(line, sep, pos, true)\n        step = step + 1\n        if (maxsplit ~= 0 and step > maxsplit) or not from then\n            local item = string.sub(line, pos)\n            table.insert(retval, item)\n            break\n        else\n            local item = string.sub(line, pos, from - 1)\n            table.insert(retval, item)\n            pos = to + 1\n        end\n    end\n    return retval\nend\n\nlocal function connectEmmyLua()\n    local func = function()\n        local assets = CS.UnityEngine.Application.dataPath\n        local assetDict = split(assets, \"/\")\n        local path = ''\n        for i = 1, #assetDict-1 do\n            path = path .. assetDict[i] .. '/'\n        end\n        package.cpath = package.cpath .. ';' .. path .. 'Tools/EmmyLua/emmy_core.dll'\n        local dbg = require('emmy_core')\n        dbg.tcpConnect('localhost', 12580)\n    end\n\n    local handle = function(error)\n        print('hyx IDE没有开启调试', error)\n    end\n\n    xpcall(func, handle)\nend\nconnectEmmyLua()\n--连接EmmyLua"
+  },
+  {
+    "name": "可肝任务Debug",
+    "cmd": "CS.Debugger.XDebuggerCheat.SendCheat(\"lv 90\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"task 12526\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"task 12527\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"task 12528\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 97074 2600\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"allstage\")"
+  }
+]
