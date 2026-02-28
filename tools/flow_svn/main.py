@@ -39,6 +39,16 @@ async def lifespan(app: FastAPI):
     task_scheduler = TaskScheduler()
     svn_executor = SVNExecutor()
 
+    # 同步配置中的任务到 Windows 任务计划
+    tasks = config_mgr.get_all_tasks()
+    for task in tasks:
+        if task.enabled:
+            success, msg = task_scheduler.create_task(task.id, task.name, task.schedule_time)
+            if success:
+                print(f"[FlowSVN] Scheduled task: {task.name} at {task.schedule_time}")
+            else:
+                print(f"[FlowSVN] Failed to schedule task {task.name}: {msg}")
+
     print(f"[FlowSVN] Started: {HOST}:{PORT}")
 
     yield
@@ -199,8 +209,33 @@ async def run_task(task_id: str):
     if not task:
         raise HTTPException(404, "任务不存在")
 
+    import time
+    start_time = time.time()
+
+    # 设置任务状态为 running
+    task.update_status("running", "任务开始执行")
+    config_mgr.update_task(task)
+
     # 执行 SVN 更新
-    success, output = svn_executor.update(task.svn_path)
+    output_lines = []
+    success = False
+    try:
+        for line in svn_executor.execute_update(task.svn_path):
+            output_lines.append(line)
+        success = True
+    except Exception as e:
+        output_lines.append(f"ERROR: {str(e)}")
+
+    output = "\n".join(output_lines)
+    duration = time.time() - start_time
+
+    # 更新任务状态
+    if success:
+        task.update_status("success", output[:1000], duration)  # 限制日志长度
+    else:
+        task.update_status("failed", output[:1000], duration)
+
+    config_mgr.update_task(task)
 
     if not success:
         return {"message": "SVN 更新失败", "output": output, "success": False}

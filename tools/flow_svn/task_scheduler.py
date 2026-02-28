@@ -19,7 +19,6 @@ class TaskScheduler:
             # Running as EXE
             self.python_exe = sys.executable
             self.is_frozen = True
-            # Script path is not needed when running as EXE
             self.script_path = None
         else:
             # Running from source
