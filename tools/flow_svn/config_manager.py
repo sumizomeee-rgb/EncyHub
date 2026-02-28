@@ -115,6 +115,7 @@ class ConfigManager:
     
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get task by ID"""
+        self.config = self._load_config()
         for task_dict in self.config.get("tasks", []):
             if task_dict["id"] == task_id:
                 return Task.from_dict(task_dict)
@@ -141,6 +142,7 @@ class ConfigManager:
         Returns:
             True if successful, False if task not found
         """
+        self.config = self._load_config()
         tasks = self.config.get("tasks", [])
         for i, t in enumerate(tasks):
             if t["id"] == task.id:
@@ -156,6 +158,7 @@ class ConfigManager:
         Returns:
             True if successful, False if task not found
         """
+        self.config = self._load_config()
         tasks = self.config.get("tasks", [])
         original_len = len(tasks)
         self.config["tasks"] = [t for t in tasks if t["id"] != task_id]
@@ -173,6 +176,7 @@ class ConfigManager:
     
     def get_template(self, template_id: str) -> Optional[Template]:
         """Get template by ID"""
+        self.config = self._load_config()
         for template_dict in self.config.get("templates", []):
             if template_dict["id"] == template_id:
                 return Template.from_dict(template_dict)
@@ -199,6 +203,7 @@ class ConfigManager:
         Returns:
             True if successful, False if template not found
         """
+        self.config = self._load_config()
         templates = self.config.get("templates", [])
         for i, t in enumerate(templates):
             if t["id"] == template.id:
@@ -214,6 +219,7 @@ class ConfigManager:
         Returns:
             True if successful, False if template not found or in use
         """
+        self.config = self._load_config()
         # Check if template is in use by any task
         for task in self.get_all_tasks():
             if task.template_id == template_id:

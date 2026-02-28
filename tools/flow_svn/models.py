@@ -160,10 +160,10 @@ class Task:
         
         # Add to execution history (keep last 20 records)
         history_entry = {
-            "timestamp": now,
+            "time": now,
             "status": status,
             "duration": duration_seconds,
-            "log_preview": log[:200] if log else ""  # Store preview only
+            "message": log[:200] if log else ""  # Store preview only
         }
         self.execution_history.insert(0, history_entry)
         if len(self.execution_history) > 20:
