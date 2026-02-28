@@ -151,7 +151,7 @@ async def connect_wifi(hw_id: str):
     if not dev.usb_serial:
         raise HTTPException(400, "需要先通过 USB 连接设备")
 
-    success, msg = await adb_mgr.connect_wifi(dev.usb_serial)
+    success, msg, _ = await adb_mgr.wifi_handshake(dev.usb_serial)
     if not success:
         raise HTTPException(400, msg)
     return {"message": msg}

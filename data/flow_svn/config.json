@@ -11,11 +11,24 @@
       "template_id": "",
       "schedule_time": "09:00",
       "enabled": true,
-      "last_run": null,
-      "last_status": "pending",
-      "last_log": "",
-      "execution_history": [],
-      "total_runs": 0
+      "last_run": "2026-02-28T10:52:20.532177",
+      "last_status": "success",
+      "last_log": "[2026-02-28 10:49:33] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nRestored 'Product\\File\\win\\debug\\assets\\product\\common\\xdefaultmaterial.mat.ab'\nU    Res\\Assets\\Editor\\Builder\\XBuilderCheckAsset.cs\nA    Res\\Assets\\I18N\\JP\\Assets\\Product\\Ui\\Scene\\UiTask.asset\nA    Res\\Assets\\I18N\\JP\\Assets\\Product\\Ui\\Scene\\UiTask.asset.meta\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2605.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2605.mat.meta\nU    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2606.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2607.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2607.mat.meta\nU    Res\\Assets\\Product\\Effect\\Material\\FxPet3L",
+      "execution_history": [
+        {
+          "status": "success",
+          "duration": 167.0143518447876,
+          "time": "2026-02-28T10:52:20.532177",
+          "message": "[2026-02-28 10:49:33] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "status": "running",
+          "duration": 0,
+          "time": "2026-02-28T10:49:33.517825",
+          "message": "任务开始执行"
+        }
+      ],
+      "total_runs": 1
     }
   ],
   "templates": []

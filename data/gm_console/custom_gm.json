@@ -1,7 +1,7 @@
 [
   {
     "name": "1",
-    "cmd": "print(1)"
+    "cmd": "print('hyx',1)"
   },
   {
     "name": "90级全角色",
