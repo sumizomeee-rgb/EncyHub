@@ -809,6 +809,13 @@ function GmConsole() {
                                         handleInputGm(node, val)
                                       }
                                     }}
+                                    onBlur={(e) => {
+                                      const val = e.target.value
+                                      if (val !== (gmUiStates[stateKey] || '')) {
+                                        setGmUiStates(prev => ({ ...prev, [stateKey]: val }))
+                                        handleInputGm(node, val)
+                                      }
+                                    }}
                                   />
                                   <button
                                     className="px-2 py-1 rounded-lg bg-gradient-to-r from-[var(--caramel)] to-[var(--caramel-dark)] text-white text-xs shrink-0 hover:shadow-md hover:shadow-[var(--caramel)]/20 active:scale-95 transition-all duration-200"

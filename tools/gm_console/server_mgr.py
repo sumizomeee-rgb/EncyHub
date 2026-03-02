@@ -98,12 +98,23 @@ class ServerMgr:
             print(f"[ServerMgr] 端口 {port} 清理异常: {e}")
 
     async def add_listener(self, port: int) -> tuple[bool, str]:
-        """添加监听端口"""
+        """添加监听端口（支持重启）"""
+        # 如果端口已在监听，先关闭（支持重启）
         if port in self.listeners:
-            return False, f"端口 {port} 已在监听"
+            print(f"[ServerMgr] 端口 {port} 已在监听，准备重启...")
+            await self.remove_listener(port)
 
         # 清理占用该端口的旧进程
         self._kill_port_holder(port)
+
+        # 清理该端口的僵尸客户端
+        dead_clients = [cid for cid, c in self.clients.items() if c.port == port]
+        for cid in dead_clients:
+            if cid in self.clients:
+                c = self.clients.pop(cid)
+                self._add_log("info", f"清理端口 {port} 的旧客户端: {cid}", cid)
+        if dead_clients and self.on_update:
+            self.on_update()
 
         # 检查端口是否可用
         try:
@@ -122,6 +133,7 @@ class ServerMgr:
                 reuse_address=True
             )
             self.listeners[port] = srv
+            print(f"[ServerMgr] 监听端口 {port} 成功")
             if self.on_update:
                 self.on_update()
             return True, f"监听端口 {port} 成功"
@@ -165,8 +177,10 @@ class ServerMgr:
             oc = self.clients.pop(ocid)
             try:
                 oc.writer.close()
-            except:
-                pass
+                await oc.writer.wait_closed()
+                self._add_log("info", f"断开旧连接: {ocid}", ocid)
+            except Exception as e:
+                print(f"[ServerMgr] 断开旧连接失败 {ocid}: {e}")
 
         self.clients[cid] = Client(id=cid, port=port, writer=writer)
         self._add_log("info", f"客户端连接: {cid}", cid)
@@ -178,18 +192,22 @@ class ServerMgr:
             while True:
                 line = await reader.readline()
                 if not line:
+                    print(f"[ServerMgr] 客户端 {cid} 主动断开连接")
                     break
                 try:
                     pkt = json.loads(line.decode().strip())
                     self._process_packet(cid, pkt)
-                except:
-                    pass
-        except:
-            pass
+                except json.JSONDecodeError as e:
+                    print(f"[ServerMgr] JSON 解析失败: {e}, data={line.decode().strip()}")
+                except Exception as e:
+                    print(f"[ServerMgr] 处理数据包失败: {e}")
+        except Exception as e:
+            print(f"[ServerMgr] 客户端 {cid} 连接异常: {e}")
         finally:
             if cid in self.clients:
                 del self.clients[cid]
             self._add_log("info", f"客户端断开: {cid}", cid)
+            print(f"[ServerMgr] TCP 客户端断开: {cid}, 剩余客户端数={len(self.clients)}")
             if self.on_update:
                 self.on_update()
 
@@ -240,11 +258,19 @@ class ServerMgr:
 
         try:
             data = json.dumps({"type": "EXEC", "id": self.cmd_id, "cmd": cmd}, ensure_ascii=False) + "\n"
-            self.cmd_id += 1
             client.writer.write(data.encode())
             await client.writer.drain()
+            self.cmd_id += 1
             return True, f"已发送到 {client.device}"
         except Exception as e:
+            print(f"[ServerMgr] send_to_port 发送失败: port={port}, error={e}")
+            # 发送失败时清理该客户端
+            client_id = next((cid for cid, c in self.clients.items() if c.port == port), None)
+            if client_id and client_id in self.clients:
+                self.clients.pop(client_id)
+                self._add_log("warning", f"客户端断开（端口发送失败）: {client_id}", client_id)
+                if self.on_update:
+                    self.on_update()
             return False, str(e)
 
     async def send_to_client(self, client_id: str, cmd: str) -> tuple[bool, str]:
@@ -255,11 +281,18 @@ class ServerMgr:
 
         try:
             data = json.dumps({"type": "EXEC", "id": self.cmd_id, "cmd": cmd}, ensure_ascii=False) + "\n"
-            self.cmd_id += 1
             client.writer.write(data.encode())
             await client.writer.drain()
+            self.cmd_id += 1
             return True, f"已发送到 {client.device}"
         except Exception as e:
+            print(f"[ServerMgr] send_to_client 发送失败: cid={client_id}, error={e}")
+            # 发送失败时清理该客户端
+            if client_id in self.clients:
+                self.clients.pop(client_id)
+                self._add_log("warning", f"客户端断开（发送失败）: {client_id}", client_id)
+                if self.on_update:
+                    self.on_update()
             return False, str(e)
 
     async def send_gm_to_port(self, port: Optional[int], gm_id: str, val: Any = None) -> tuple[bool, str]:
@@ -281,6 +314,14 @@ class ServerMgr:
             await client.writer.drain()
             return True, f"GM 指令已发送到 {client.device}"
         except Exception as e:
+            print(f"[ServerMgr] send_gm_to_port 发送失败: port={port}, error={e}")
+            # 发送失败时清理该客户端
+            client_id = next((cid for cid, c in self.clients.items() if c.port == port), None)
+            if client_id and client_id in self.clients:
+                self.clients.pop(client_id)
+                self._add_log("warning", f"客户端断开（端口GM发送失败）: {client_id}", client_id)
+                if self.on_update:
+                    self.on_update()
             return False, str(e)
 
     async def send_gm_to_client(self, client_id: str, gm_id: str, val: Any = None) -> tuple[bool, str]:
@@ -294,32 +335,67 @@ class ServerMgr:
 
         try:
             data = json.dumps({"type": "EXEC_GM", "id": gm_id, "value": val}, ensure_ascii=False) + "\n"
+            # 调试：打印实际发送的数据
+            val_type = type(val).__name__
+            val_repr = repr(val) if val is not None else "None"
+            print(f"[ServerMgr] send_gm_to_client: gm_id={gm_id} (type={type(gm_id).__name__}), value={val_repr} (type={val_type})")
+            print(f"[ServerMgr] 发送数据: {data.strip()}")
             client.writer.write(data.encode())
             await client.writer.drain()
             return True, f"GM 指令已发送到 {client.device}"
         except Exception as e:
+            print(f"[ServerMgr] send_gm_to_client 发送失败: cid={client_id}, error={e}")
+            # 发送失败时清理该客户端
+            if client_id in self.clients:
+                self.clients.pop(client_id)
+                self._add_log("warning", f"客户端断开（GM发送失败）: {client_id}", client_id)
+                if self.on_update:
+                    self.on_update()
             return False, str(e)
 
     async def broadcast(self, cmd: str):
         """广播命令到所有客户端"""
-        for c in self.clients.values():
+        dead_clients = []
+        for cid, c in list(self.clients.items()):
             try:
                 data = json.dumps({"type": "EXEC", "id": self.cmd_id, "cmd": cmd}, ensure_ascii=False) + "\n"
                 c.writer.write(data.encode())
                 await c.writer.drain()
-            except:
-                pass
+            except Exception as e:
+                print(f"[ServerMgr] broadcast 发送失败: cid={cid}, error={e}")
+                dead_clients.append(cid)
+        # 清理失效的客户端
+        for cid in dead_clients:
+            if cid in self.clients:
+                c = self.clients.pop(cid)
+                self._add_log("warning", f"客户端断开（broadcast检测）: {cid}", cid)
+                if self.on_update:
+                    self.on_update()
         self.cmd_id += 1
 
     async def broadcast_gm(self, gm_id: str, val: Any = None):
         """广播 GM 指令到所有客户端"""
-        for c in self.clients.values():
+        # 调试：打印广播的参数
+        val_type = type(val).__name__
+        val_repr = repr(val) if val is not None else "None"
+        print(f"[ServerMgr] broadcast_gm: gm_id={gm_id} (type={type(gm_id).__name__}), value={val_repr} (type={val_type})")
+
+        dead_clients = []
+        for cid, c in list(self.clients.items()):
             try:
                 data = json.dumps({"type": "EXEC_GM", "id": gm_id, "value": val}, ensure_ascii=False) + "\n"
                 c.writer.write(data.encode())
                 await c.writer.drain()
-            except:
-                pass
+            except Exception as e:
+                print(f"[ServerMgr] broadcast_gm 发送失败: cid={cid}, error={e}")
+                dead_clients.append(cid)
+        # 清理失效的客户端
+        for cid in dead_clients:
+            if cid in self.clients:
+                c = self.clients.pop(cid)
+                self._add_log("warning", f"客户端断开（broadcast GM检测）: {cid}", cid)
+                if self.on_update:
+                    self.on_update()
 
     def get_listeners_info(self) -> list:
         """获取监听端口信息"""

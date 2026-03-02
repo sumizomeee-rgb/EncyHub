@@ -180,6 +180,11 @@ async def exec_lua(client_id: str, req: ExecRequest):
 @app.post("/clients/{client_id}/exec-gm")
 async def exec_gm(client_id: str, req: ExecGmRequest):
     """执行 GM 指令"""
+    # 调试：打印接收到的参数
+    val_type = type(req.value).__name__
+    gm_id_type = type(req.gm_id).__name__
+    val_repr = repr(req.value) if req.value is not None else "None"
+    print(f"[GmConsole API] exec_gm 接收: client_id={client_id}, gm_id={req.gm_id} (type={gm_id_type}), value={val_repr} (type={val_type})")
     success, msg = await server_mgr.send_gm_to_client(client_id, req.gm_id, req.value)
     if not success:
         raise HTTPException(400, msg)
@@ -200,6 +205,11 @@ async def broadcast(req: ExecRequest):
 @app.post("/broadcast-gm")
 async def broadcast_gm(req: ExecGmRequest):
     """广播 GM 指令到所有客户端"""
+    # 调试：打印接收到的参数
+    val_type = type(req.value).__name__
+    gm_id_type = type(req.gm_id).__name__
+    val_repr = repr(req.value) if req.value is not None else "None"
+    print(f"[GmConsole API] broadcast_gm 接收: gm_id={req.gm_id} (type={gm_id_type}), value={val_repr} (type={val_type})")
     await server_mgr.broadcast_gm(req.gm_id, req.value)
     return {"message": "已广播 GM 指令"}
 
