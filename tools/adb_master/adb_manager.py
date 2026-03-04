@@ -580,6 +580,13 @@ class AdbManager:
         output = stdout + stderr
         success = returncode == 0 and 'error' not in output.lower()
         
+        # 兼容 Android 11+ Scoped Storage (FUSE) 权限限制：
+        # 首次 push 时 secure_mkdirs(chmod/chown) 会被拒绝报错，但目录已成功创建且文件已推入
+        if not success and 'remote secure_mkdirs failed' in output:
+            # 检查是否有文件正常被 push
+            if re.search(r'[1-9]\d*\s+files?\s+pushed', output.lower()):
+                success = True
+        
         return success, output.strip()
     
     async def pull_file(

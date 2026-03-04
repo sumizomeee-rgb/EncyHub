@@ -92,6 +92,7 @@ function AdbMaster() {
         if (selectedDevice) {
           const updated = data.devices?.find(d => d.hardware_id === selectedDevice.hardware_id)
           if (updated) setSelectedDevice(updated)
+          else setSelectedDevice(null)  // 设备彻底消失时清除选中
         }
       }
     } catch (err) {
@@ -133,6 +134,8 @@ function AdbMaster() {
       return { icon: '◉', label: 'WiFi', className: 'badge-wifi' }
     } else if (device.usb_connected) {
       return { icon: '⚡', label: 'USB', className: 'badge-usb' }
+    } else if (device.has_known_wifi) {
+      return { icon: '◌', label: '离线 · 可重连', className: 'badge-reconnect' }
     }
     return { icon: '○', label: '离线', className: 'badge-offline' }
   }
@@ -336,6 +339,25 @@ function AdbMaster() {
     }
   }
 
+  // WiFi 快速重连（无需 USB）
+  const handleReconnectWifi = async () => {
+    if (!selectedDevice) return
+    try {
+      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/reconnect-wifi`, {
+        method: 'POST',
+      })
+      const data = await res.json()
+      if (res.ok) {
+        toast.success(data.message || '重连成功')
+        fetchDevices()
+      } else {
+        toast.error(data.detail || '重连失败')
+      }
+    } catch (err) {
+      toast.error('重连失败: ' + err.message)
+    }
+  }
+
   // 断开连接
   const handleDisconnect = async () => {
     if (!selectedDevice) return
@@ -451,6 +473,7 @@ function AdbMaster() {
                                 badge.className === 'badge-dual' ? 'bg-[var(--amber-soft)]/30 text-[var(--amber)]' :
                                 badge.className === 'badge-wifi' ? 'bg-[var(--sky-soft)]/30 text-[var(--sky)]' :
                                 badge.className === 'badge-usb' ? 'bg-[var(--sage-soft)]/30 text-[var(--sage)]' :
+                                badge.className === 'badge-reconnect' ? 'bg-[var(--amber-soft)]/20 text-[var(--coffee-muted)] border border-dashed border-[var(--caramel-light)]' :
                                 'bg-[var(--cream-warm)] text-[var(--coffee-muted)]'
                               }`}>
                                 {badge.icon} {badge.label}
@@ -555,6 +578,15 @@ function AdbMaster() {
                         >
                           <Wifi size={16} />
                           WiFi 连接
+                        </button>
+                      )}
+                      {!selectedDevice.usb_connected && !selectedDevice.wifi_connected && selectedDevice.has_known_wifi && (
+                        <button
+                          className="btn-primary flex items-center gap-2"
+                          onClick={handleReconnectWifi}
+                        >
+                          <Wifi size={16} />
+                          重连 WiFi
                         </button>
                       )}
                       {selectedDevice.wifi_connected && (

@@ -54,6 +54,20 @@ class ConfigManager:
         config['devices'][safe_id].update(kwargs)
         return self._save(config)
 
+    def get_all_known_devices(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有已知设备配置（hardware_id -> config）"""
+        config = self._load()
+        return config.get('devices', {})
+
+    def remove_device_config(self, hardware_id: str) -> bool:
+        """移除设备配置"""
+        config = self._load()
+        safe_id = hardware_id.replace(':', '_').replace('.', '_')
+        if safe_id in config.get('devices', {}):
+            del config['devices'][safe_id]
+            return self._save(config)
+        return False
+
     # 路径历史
     def get_path_history(self, category: str = "push") -> list:
         """获取路径历史 (category: push/pull)"""

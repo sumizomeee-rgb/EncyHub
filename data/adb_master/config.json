@@ -2,6 +2,12 @@
   "devices": {
     "004adea1": {
       "nickname": "本机雷电"
+    },
+    "5HGUYXKRRK6XQ8CY": {
+      "nickname": "QA-红米Note1",
+      "last_wifi_ip": "10.101.0.171",
+      "last_model": "23054RA19C",
+      "original_hardware_id": "5HGUYXKRRK6XQ8CY"
     }
   },
   "path_history": {
@@ -11,6 +17,7 @@
     ],
     "push": [
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/",
+      "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/Lua"
     ]

@@ -14,5 +14,9 @@
   {
     "name": "可肝任务Debug",
     "cmd": "CS.Debugger.XDebuggerCheat.SendCheat(\"lv 90\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"task 12526\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"task 12527\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"task 12528\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 97074 2600\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"allstage\")"
+  },
+  {
+    "name": "打开陀螺仪",
+    "cmd": "XMVCA.XBigWorldSkipFunction:SkipTo(300101)"
   }
 ]

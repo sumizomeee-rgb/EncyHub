@@ -87,21 +87,51 @@ class PathHistoryRequest(BaseModel):
 
 @app.get("/devices")
 async def get_devices():
-    """获取设备列表"""
+    """获取设备列表（含离线但有已知 WiFi IP 的设备）"""
     devices = await adb_mgr.get_unified_devices()
     result = []
+    online_hw_ids = set()
+
     for dev in devices:
         config = config_mgr.get_device_config(dev.hardware_id)
+        wifi_ip = dev.wifi_ip or config.get("last_wifi_ip", "")
         result.append({
             "hardware_id": dev.hardware_id,
             "model": dev.model,
             "usb_connected": dev.usb_serial is not None,
             "wifi_connected": dev.wifi_address is not None,
-            "wifi_ip": dev.wifi_ip,
+            "wifi_ip": wifi_ip,
             "connection_status": dev.connection_status,
             "nickname": config.get("nickname", ""),
             "active_serial": dev.active_serial,
+            "has_known_wifi": bool(config.get("last_wifi_ip")),
         })
+        online_hw_ids.add(
+            dev.hardware_id.replace(':', '_').replace('.', '_')
+        )
+
+    # 追加离线但有已知 WiFi IP 的设备（配置中有记录但当前不在线）
+    known = config_mgr.get_all_known_devices()
+    for safe_id, cfg in known.items():
+        if safe_id in online_hw_ids:
+            continue
+        last_ip = cfg.get("last_wifi_ip")
+        if not last_ip:
+            continue
+        # 这是一个离线设备，但有已知 WiFi IP 可以重连
+        result.append({
+            "hardware_id": cfg.get("original_hardware_id", safe_id),
+            "model": cfg.get("last_model", None),
+            "usb_connected": False,
+            "wifi_connected": False,
+            "wifi_ip": last_ip,
+            "connection_status": "离线",
+            "nickname": cfg.get("nickname", ""),
+            "active_serial": None,
+            "has_known_wifi": True,
+            "offline": True,
+        })
+
     return {"devices": result}
 
 
@@ -142,7 +172,7 @@ async def set_nickname(hw_id: str, req: NicknameRequest):
 
 @app.post("/devices/{hw_id}/connect-wifi")
 async def connect_wifi(hw_id: str):
-    """连接 WiFi"""
+    """连接 WiFi（首次，需要 USB）"""
     devices = await adb_mgr.get_unified_devices()
     dev = next((d for d in devices if d.hardware_id == hw_id), None)
     if not dev:
@@ -151,10 +181,48 @@ async def connect_wifi(hw_id: str):
     if not dev.usb_serial:
         raise HTTPException(400, "需要先通过 USB 连接设备")
 
-    success, msg, _ = await adb_mgr.wifi_handshake(dev.usb_serial)
+    success, msg, wifi_address = await adb_mgr.wifi_handshake(dev.usb_serial)
     if not success:
         raise HTTPException(400, msg)
+
+    # 保存 WiFi IP 到配置，用于后续快速重连
+    if wifi_address:
+        ip = wifi_address.split(':')[0]
+        config_mgr.set_device_config(
+            hw_id,
+            last_wifi_ip=ip,
+            last_model=dev.model,
+            original_hardware_id=hw_id,
+        )
+
     return {"message": msg}
+
+
+@app.post("/devices/{hw_id}/reconnect-wifi")
+async def reconnect_wifi(hw_id: str):
+    """
+    WiFi 快速重连（无需 USB）。
+    使用配置中保存的 WiFi IP 直接 adb connect。
+    前提：设备之前已成功连接过 WiFi（tcpip 模式未因重启失效）。
+    """
+    # 先检查是否在线设备中（可能已经通过其他方式连上了）
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if dev and dev.wifi_address:
+        return {"message": f"设备已通过 WiFi 连接: {dev.wifi_address}"}
+
+    # 从配置中获取已知 WiFi IP
+    config = config_mgr.get_device_config(hw_id)
+    last_ip = config.get("last_wifi_ip")
+    if not last_ip:
+        raise HTTPException(400, "无已知 WiFi IP，请先通过 USB 连接并建立 WiFi 连接")
+
+    # 直接用已知 IP 重连
+    success, msg = await adb_mgr.connect_wifi(last_ip)
+    if not success:
+        raise HTTPException(400, f"重连失败: {msg}。可能设备已重启或 IP 已变更，请重新 USB 连接。")
+
+    return {"message": f"WiFi 重连成功: {last_ip}:5555"}
 
 
 @app.post("/devices/{hw_id}/disconnect")
