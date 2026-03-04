@@ -561,7 +561,10 @@ function GmConsole() {
                           </span>
                           <button
                             className="p-1 rounded text-[var(--coffee-muted)] hover:text-[var(--terracotta)] hover:bg-[var(--error-soft)] opacity-0 group-hover:opacity-100 transition-all"
-                            onClick={() => handleRemoveListener(listener.port)}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleRemoveListener(listener.port)
+                            }}
                           >
                             <Trash2 size={12} />
                           </button>
