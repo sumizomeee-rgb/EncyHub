@@ -41,6 +41,7 @@ function AdbMaster() {
   const scrcpyCanvasRef = useRef(null)
   const scrcpyWsRef = useRef(null)
   const scrcpyDecoderRef = useRef(null)
+  const scrcpyStreamingHwIdRef = useRef(null) // 当前正在投屏的设备 ID，用于切换设备时停止
 
   // 弹窗状态
   const [showInstallModal, setShowInstallModal] = useState(false)
@@ -145,20 +146,31 @@ function AdbMaster() {
     }
   }, [])
 
-  // 投屏: 组件卸载或设备切换时清理 WS
+  // 投屏: 设备切换时停止当前投屏
   useEffect(() => {
+    // 当 selectedDevice 变化时，停止之前的投屏会话
     return () => {
+      const prevHwId = scrcpyStreamingHwIdRef.current
+      if (prevHwId) {
+        // 异步停止后端会话（不等待结果）
+        fetch(`/api/adb_master/devices/${prevHwId}/scrcpy/stop`, { method: 'POST' }).catch(() => {})
+        console.log(`[Scrcpy] 切换设备，停止 ${prevHwId} 的投屏`)
+      }
+      // 关闭 WebSocket
       if (scrcpyWsRef.current) {
         scrcpyWsRef.current.close()
         scrcpyWsRef.current = null
       }
+      // 关闭解码器
       if (scrcpyDecoderRef.current && scrcpyDecoderRef.current.state !== 'closed') {
         scrcpyDecoderRef.current.close()
         scrcpyDecoderRef.current = null
       }
+      // 重置前端状态
       setScrcpyStreaming(false)
       setScrcpyStatus({ running: false })
       setScrcpyMeta(null)
+      scrcpyStreamingHwIdRef.current = null
     }
   }, [selectedDevice])
 
@@ -709,6 +721,8 @@ function AdbMaster() {
         // 使用默认值，会在收到 SPS 后重新配置
         initScrcpyDecoder(data.width, data.height, 0x42, 0xC0, 0x29)
         toast.success('投屏已连接')
+        // 记录当前正在投屏的设备 ID
+        scrcpyStreamingHwIdRef.current = selectedDevice.hardware_id
       }
       ws.onmessage = (evt) => {
         console.log('[ScrcpyPlayer] 收到 WebSocket 消息, 类型:', typeof evt.data, 'ArrayBuffer:', evt.data instanceof ArrayBuffer, 'byteLength:', evt.data?.byteLength || 'N/A')
@@ -723,6 +737,7 @@ function AdbMaster() {
         setScrcpyStreaming(false)
         setScrcpyStatus({ running: false })
         setScrcpyMeta(null)
+        scrcpyStreamingHwIdRef.current = null
         if (scrcpyDecoderRef.current && scrcpyDecoderRef.current.state !== 'closed') {
           scrcpyDecoderRef.current.close()
         }
@@ -756,6 +771,7 @@ function AdbMaster() {
     scrcpyDecoderRef.current = null
     setScrcpyStreaming(false)
     setScrcpyMeta(null)
+    scrcpyStreamingHwIdRef.current = null
     try {
       const res = await fetch(
         `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/stop`,
