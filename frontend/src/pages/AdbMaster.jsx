@@ -24,18 +24,23 @@ function AdbMaster() {
   const [expandTransfer, setExpandTransfer] = useState(false)
   const [expandScrcpy, setExpandScrcpy] = useState(false)
 
-  // 投屏控制 State
+  // 投屏控制 State (Phase 2 - Web 嵌入)
   const [scrcpyStatus, setScrcpyStatus] = useState({ running: false })
   const [scrcpyConfig, setScrcpyConfig] = useState({
-    max_size: 800,
+    max_size: 1280,
     max_fps: 30,
-    video_bit_rate: '4M',
+    video_bit_rate: 4000000,
     stay_awake: true,
     show_touches: true,
     turn_screen_off: false,
-    no_audio: true,
   })
   const [scrcpyLoading, setScrcpyLoading] = useState(false)
+  const [scrcpyStreaming, setScrcpyStreaming] = useState(false)
+  const [scrcpyMeta, setScrcpyMeta] = useState(null) // {width, height, codec}
+  const scrcpyMetaRef = useRef({ width: 800, height: 448 }) // 实际分辨率 ref
+  const scrcpyCanvasRef = useRef(null)
+  const scrcpyWsRef = useRef(null)
+  const scrcpyDecoderRef = useRef(null)
 
   // 弹窗状态
   const [showInstallModal, setShowInstallModal] = useState(false)
@@ -140,24 +145,277 @@ function AdbMaster() {
     }
   }, [])
 
-  // 投屏状态轮询
+  // 投屏: 组件卸载或设备切换时清理 WS
   useEffect(() => {
-    if (!selectedDevice) return
-    const fetchScrcpyStatus = async () => {
-      try {
-        const res = await fetch(
-          `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/status`
-        )
-        if (res.ok) {
-          const data = await res.json()
-          setScrcpyStatus(data)
-        }
-      } catch {}
+    return () => {
+      if (scrcpyWsRef.current) {
+        scrcpyWsRef.current.close()
+        scrcpyWsRef.current = null
+      }
+      if (scrcpyDecoderRef.current && scrcpyDecoderRef.current.state !== 'closed') {
+        scrcpyDecoderRef.current.close()
+        scrcpyDecoderRef.current = null
+      }
+      setScrcpyStreaming(false)
+      setScrcpyStatus({ running: false })
+      setScrcpyMeta(null)
     }
-    fetchScrcpyStatus()
-    const interval = setInterval(fetchScrcpyStatus, 2000)
-    return () => clearInterval(interval)
   }, [selectedDevice])
+
+  // ======== Scrcpy WebCodecs 解码逻辑 ========
+  // 收集 SPS/PPS 用于构建 AVCC description
+  const spsRef = useRef(null)
+  const ppsRef = useRef(null)
+
+  const initScrcpyDecoder = (width, height, profile, profileCompat, level, description = null) => {
+    const canvas = scrcpyCanvasRef.current
+    if (!canvas) {
+      console.error('[ScrcpyPlayer] Canvas not found')
+      return
+    }
+
+    const maxW = 640  // 增加最大宽度以获得更好的显示效果
+    const scale = Math.min(1, maxW / width)
+    canvas.width = Math.round(width * scale)
+    canvas.height = Math.round(height * scale)
+    const ctx = canvas.getContext('2d')
+    // 绘制黑色背景
+    ctx.fillStyle = 'black'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    console.log('[ScrcpyPlayer] 初始化解码器:', width, 'x', height, 'scale:', scale, 'canvas:', canvas.width, 'x', canvas.height)
+    console.log('[ScrcpyPlayer] profile/level:', profile, profileCompat, level, 'description:', description ? '已提供' : '未提供')
+
+    // 构建 codec 字符串: avc1.profile(2 hex).profile_compat(2 hex).level(2 hex)
+    const profileHex = profile.toString(16).padStart(2, '0').toUpperCase()
+    const profileCompatHex = profileCompat.toString(16).padStart(2, '0').toUpperCase()
+    const levelHex = level.toString(16).padStart(2, '0').toUpperCase()
+    const codec = `avc1.${profileHex}${profileCompatHex}${levelHex}`
+
+    console.log('[ScrcpyPlayer] codec 字符串:', codec)
+
+    const config = {
+      codec: codec,
+      codedWidth: width,
+      codedHeight: height,
+      optimizeForLatency: true,
+    }
+    // 如果有 AVCC description，添加到配置中
+    if (description) {
+      config.description = description
+    }
+
+    const decoder = new VideoDecoder({
+      output: (frame) => {
+        // 根据实际输出帧的分辨率调整 Canvas
+        const actualWidth = frame.codedWidth
+        const actualHeight = frame.codedHeight
+
+        console.log('[ScrcpyPlayer] 解码成功输出帧:', {
+          codedWidth: actualWidth,
+          codedHeight: actualHeight,
+          timestamp: frame.timestamp,
+          duration: frame.duration,
+          displayWidth: frame.displayWidth,
+          displayHeight: frame.displayHeight,
+          alpha: frame.alpha
+        })
+
+        // 更新 Canvas 尺寸（如果需要）
+        const maxW = 640
+        const scale = Math.min(1, maxW / actualWidth)
+        const newCanvasW = Math.round(actualWidth * scale)
+        const newCanvasH = Math.round(actualHeight * scale)
+
+        if (canvas.width !== newCanvasW || canvas.height !== newCanvasH) {
+          canvas.width = newCanvasW
+          canvas.height = newCanvasH
+          // 更新 meta ref 供触摸控制使用
+          scrcpyMetaRef.current = { width: actualWidth, height: actualHeight, codec: 'h264' }
+          setScrcpyMeta({ width: actualWidth, height: actualHeight, codec: 'h264' })
+        }
+
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height)
+        frame.close()
+      },
+      error: (e) => console.error('[ScrcpyPlayer] decode error:', e),
+    })
+    decoder.configure(config)
+    scrcpyDecoderRef.current = decoder
+    console.log('[ScrcpyPlayer] 解码器配置完成, state:', decoder.state)
+  }
+
+  const handleScrcpyFrame = (data) => {
+    const decoder = scrcpyDecoderRef.current
+    if (!decoder) {
+      console.error('[ScrcpyPlayer] 解码器未初始化')
+      return
+    }
+    if (decoder.state === 'closed') {
+      console.error('[ScrcpyPlayer] 解码器已关闭')
+      return
+    }
+
+    const view = new DataView(data)
+    const flags = view.getUint8(0)
+    const ptsHigh = view.getUint32(1)
+    const ptsLow = view.getUint32(5)
+    const pts = ptsHigh * 4294967296 + ptsLow
+    const isConfig = !!(flags & 0x01)
+    const isKeyFrame = !!(flags & 0x02)
+
+    // 消息格式: [Flags(1)][PTS(8)][Length(4)][NALU...]
+    const naluLen = view.getUint32(9, false) // big-endian
+    const naluData = new Uint8Array(data, 13, naluLen)
+
+    console.log('[ScrcpyPlayer] 收到帧:', {
+      size: naluLen,
+      isConfig,
+      isKeyFrame,
+      pts,
+      decoderState: decoder.state,
+      naluType: naluData[0] & 0x1F,
+    })
+
+    try {
+      const naluType = naluData[0] & 0x1F
+
+      // 收集 SPS 和 PPS
+      if (isConfig) {
+        if (naluType === 7) { // SPS
+          spsRef.current = naluData
+          console.log('[ScrcpyPlayer] 收到 SPS, 内容:', Array.from(naluData).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '))
+          console.log('[ScrcpyPlayer] SPS profile/compat/level:', naluData[0] & 0x1F, naluData[1], naluData[2], naluData[3])
+          return // SPS 不需要解码
+        } else if (naluType === 8) { // PPS
+          ppsRef.current = naluData
+          console.log('[ScrcpyPlayer] 收到 PPS, 内容:', Array.from(naluData).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '))
+
+          // 如果 SPS 和 PPS 都有了，重新配置解码器
+          if (spsRef.current) {
+            const sps = spsRef.current
+            const pps = ppsRef.current
+
+            const profile = sps[1]
+            const profileCompat = sps[2]
+            const level = sps[3]
+
+            // 创建 AVCC description
+            const avccDesc = createAVCCDescription(sps, pps)
+            console.log('[ScrcpyPlayer] AVCC description 内容:', Array.from(avccDesc).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '))
+            console.log('[ScrcpyPlayer] 重新配置解码器，包含 AVCC description, codec:', `avc1.${profile.toString(16).padStart(2, '0').toUpperCase()}${profileCompat.toString(16).padStart(2, '0').toUpperCase()}${level.toString(16).padStart(2, '0').toUpperCase()}`)
+
+            // 重新配置解码器
+            decoder.configure({
+              codec: `avc1.${profile.toString(16).padStart(2, '0').toUpperCase()}${profileCompat.toString(16).padStart(2, '0').toUpperCase()}${level.toString(16).padStart(2, '0').toUpperCase()}`,
+              codedWidth: scrcpyMetaRef.current.width,
+              codedHeight: scrcpyMetaRef.current.height,
+              optimizeForLatency: true,
+              description: avccDesc,
+            })
+            console.log('[ScrcpyPlayer] 解码器重新配置完成, state:', decoder.state)
+          }
+          return // PPS 不需要解码
+        }
+      }
+
+      // VideoDecoder 需要 AVCC 格式（NALU 带 4 字节长度前缀）
+      // 当前 naluData 是 Annex-B 格式（无起始码），需要添加长度前缀
+      const avccData = new Uint8Array(naluLen + 4)
+      new DataView(avccData.buffer).setUint32(0, naluLen, false) // big-endian length prefix
+      avccData.set(naluData, 4)
+
+      // 解码视频帧（AVCC 格式，已有长度前缀）
+      const chunk = new EncodedVideoChunk({
+        type: isKeyFrame ? 'key' : 'delta',
+        timestamp: pts,
+        data: avccData,
+      })
+      console.log('[ScrcpyPlayer] 解码:', {
+        type: chunk.type,
+        timestamp: chunk.timestamp,
+        dataLen: chunk.byteLength,
+        naluType: naluData[0] & 0x1F,
+        firstBytes: Array.from(avccData.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')
+      })
+      decoder.decode(chunk)
+    } catch (e) {
+      console.error('[ScrcpyPlayer] 解码失败:', e)
+    }
+  }
+
+  // 创建 AVCC description（不含 AVCC box header）
+  const createAVCCDescription = (sps, pps) => {
+    const spsLen = sps.length
+    const ppsLen = pps.length
+    const data = new Uint8Array(6 + 2 + spsLen + 3 + ppsLen)
+    let offset = 0
+
+    // AVCC header
+    data[offset++] = 1 // version
+    data[offset++] = sps[1] // profile
+    data[offset++] = sps[2] // profile compatibility
+    data[offset++] = sps[3] // level
+    data[offset++] = 0xFF // 6 bits reserved + 2 bits length size (minus 1, so length = 4)
+    data[offset++] = 0xE1 // 3 bits reserved + 5 bits num SPS (1 SPS)
+
+    // SPS (length + data)
+    data[offset++] = (spsLen >> 8) & 0xFF
+    data[offset++] = spsLen & 0xFF
+    data.set(sps, offset)
+    offset += spsLen
+
+    // PPS (num PPS + length + data)
+    data[offset++] = 1 // num PPS = 1
+    data[offset++] = (ppsLen >> 8) & 0xFF
+    data[offset++] = ppsLen & 0xFF
+    data.set(pps, offset)
+    offset += ppsLen
+
+    return data.slice(0, offset)
+  }
+
+  const sendScrcpyTouch = (action, e) => {
+    const ws = scrcpyWsRef.current
+    const meta = scrcpyMetaRef.current
+    const canvas = scrcpyCanvasRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN || !canvas) {
+      console.log('[ScrcpyPlayer] 发送触摸失败:', {
+        wsReady: ws?.readyState,
+        meta: !!meta,
+        canvas: !!canvas
+      })
+      return
+    }
+    const rect = canvas.getBoundingClientRect()
+    const scaleX = meta.width / canvas.width
+    const scaleY = meta.height / canvas.height
+    const x = Math.round((e.clientX - rect.left) * scaleX)
+    const y = Math.round((e.clientY - rect.top) * scaleY)
+    console.log('[ScrcpyPlayer] 发送触摸:', {
+      action,
+      x,
+      y,
+      meta,
+      canvasSize: `${canvas.width}x${canvas.height}`,
+      rect: `${rect.width}x${rect.height}`
+    })
+    ws.send(JSON.stringify({ type: 'touch', action, x, y }))
+  }
+
+  const sendScrcpyKey = (keycode) => {
+    const ws = scrcpyWsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.log('[ScrcpyPlayer] 发送按键失败:', {
+        wsReady: ws?.readyState,
+        keycode
+      })
+      return
+    }
+    console.log('[ScrcpyPlayer] 发送按键:', keycode)
+    ws.send(JSON.stringify({ type: 'keycode', action: 0, keycode }))
+    setTimeout(() => ws.send(JSON.stringify({ type: 'keycode', action: 1, keycode })), 50)
+  }
 
   // 获取连接状态徽章
   const getConnectionBadge = (device) => {
@@ -410,11 +668,12 @@ function AdbMaster() {
     }
   }
 
-  // 启动投屏
+  // ======== 启动 Web 嵌入投屏 ========
   const handleStartScrcpy = async () => {
     if (!selectedDevice) return
     setScrcpyLoading(true)
     try {
+      // Step 1: REST 启动 scrcpy-server + TCP 连接
       const res = await fetch(
         `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/start`,
         {
@@ -424,12 +683,57 @@ function AdbMaster() {
         }
       )
       const data = await res.json()
-      if (res.ok) {
-        toast.success(data.message || '投屏已启动')
-        setScrcpyStatus({ running: true, pid: data.pid, uptime: 0 })
-      } else {
+      if (!res.ok) {
         toast.error(data.detail || '启动失败')
+        return
       }
+
+      setScrcpyMeta({ width: data.width, height: data.height, codec: data.codec })
+      scrcpyMetaRef.current = { width: data.width, height: data.height, codec: data.codec }
+      setScrcpyStatus({ running: true })
+
+      // Step 2: 先显示 Canvas 区域，然后初始化解码器
+      setScrcpyStreaming(true)
+
+      // 等待 Canvas 渲染
+      await new Promise(r => setTimeout(r, 200))
+
+      // Step 3: 打开 WebSocket 接收视频流
+      const wsUrl = `ws://${window.location.host}/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/stream`
+      const ws = new WebSocket(wsUrl)
+      ws.binaryType = 'arraybuffer'
+
+      ws.onopen = () => {
+        console.log('[ScrcpyPlayer] WebSocket 已连接')
+        // 在这里初始化解码器，确保 Canvas 已渲染
+        // 使用默认值，会在收到 SPS 后重新配置
+        initScrcpyDecoder(data.width, data.height, 0x42, 0xC0, 0x29)
+        toast.success('投屏已连接')
+      }
+      ws.onmessage = (evt) => {
+        console.log('[ScrcpyPlayer] 收到 WebSocket 消息, 类型:', typeof evt.data, 'ArrayBuffer:', evt.data instanceof ArrayBuffer, 'byteLength:', evt.data?.byteLength || 'N/A')
+        if (evt.data instanceof ArrayBuffer) {
+          handleScrcpyFrame(evt.data)
+        } else {
+          console.error('[ScrcpyPlayer] 意外的数据类型:', typeof evt.data, evt.data)
+        }
+      }
+      ws.onclose = () => {
+        console.log('[ScrcpyPlayer] WebSocket 已关闭')
+        setScrcpyStreaming(false)
+        setScrcpyStatus({ running: false })
+        setScrcpyMeta(null)
+        if (scrcpyDecoderRef.current && scrcpyDecoderRef.current.state !== 'closed') {
+          scrcpyDecoderRef.current.close()
+        }
+        scrcpyDecoderRef.current = null
+      }
+      ws.onerror = (e) => {
+        console.error('[ScrcpyPlayer] WebSocket 错误:', e)
+        toast.error('投屏连接异常')
+      }
+      scrcpyWsRef.current = ws
+
     } catch (err) {
       toast.error('启动失败: ' + err.message)
     } finally {
@@ -437,9 +741,21 @@ function AdbMaster() {
     }
   }
 
-  // 停止投屏
+  // ======== 停止投屏 ========
   const handleStopScrcpy = async () => {
     if (!selectedDevice) return
+    // 关闭 WS
+    if (scrcpyWsRef.current) {
+      scrcpyWsRef.current.close()
+      scrcpyWsRef.current = null
+    }
+    // 关闭解码器
+    if (scrcpyDecoderRef.current && scrcpyDecoderRef.current.state !== 'closed') {
+      scrcpyDecoderRef.current.close()
+    }
+    scrcpyDecoderRef.current = null
+    setScrcpyStreaming(false)
+    setScrcpyMeta(null)
     try {
       const res = await fetch(
         `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/stop`,
@@ -447,10 +763,10 @@ function AdbMaster() {
       )
       const data = await res.json()
       toast.success(data.message || '投屏已停止')
-      setScrcpyStatus({ running: false })
     } catch (err) {
       toast.error('停止失败: ' + err.message)
     }
+    setScrcpyStatus({ running: false })
   }
 
   return (
@@ -898,7 +1214,7 @@ function AdbMaster() {
                     )}
                   </div>
 
-                  {/* Scrcpy 投屏控制面板 */}
+                  {/* Scrcpy Web 投屏面板 */}
                   <div className="mt-4">
                     <button
                       className="w-full flex items-center justify-between p-3 rounded-lg bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)] transition-colors"
@@ -908,7 +1224,7 @@ function AdbMaster() {
                         {expandScrcpy ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                         <Monitor size={18} className="text-[var(--caramel)]" />
                         <span className="font-medium">投屏控制</span>
-                        {scrcpyStatus.running && (
+                        {scrcpyStreaming && (
                           <span className="ml-2 flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--sage)]/15 text-[var(--sage)] font-medium">
                             <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
                             投屏中
@@ -918,78 +1234,69 @@ function AdbMaster() {
                     </button>
                     {expandScrcpy && (
                       <div className="mt-2 p-4 bg-[var(--cream-warm)]/30 rounded-xl space-y-4">
-                        {/* 参数配置区 */}
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">分辨率上限</label>
-                            <select
-                              value={scrcpyConfig.max_size}
-                              onChange={e => setScrcpyConfig(c => ({...c, max_size: Number(e.target.value)}))}
-                              className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
-                              disabled={scrcpyStatus.running}
-                            >
-                              <option value={480}>480p (流畅)</option>
-                              <option value={720}>720p (标准)</option>
-                              <option value={800}>800p (推荐)</option>
-                              <option value={1024}>1024p (高清)</option>
-                              <option value={0}>原始分辨率</option>
-                            </select>
+                        {/* 参数配置区 (未投屏时可修改) */}
+                        {!scrcpyStreaming && (
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">分辨率上限</label>
+                              <select
+                                value={scrcpyConfig.max_size}
+                                onChange={e => setScrcpyConfig(c => ({...c, max_size: Number(e.target.value)}))}
+                                className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
+                              >
+                                <option value={480}>480p (流畅)</option>
+                                <option value={720}>720p (标准)</option>
+                                <option value={800}>800p (推荐)</option>
+                                <option value={1024}>1024p (高清)</option>
+                                <option value={0}>原始分辨率</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">视频码率</label>
+                              <select
+                                value={scrcpyConfig.video_bit_rate}
+                                onChange={e => setScrcpyConfig(c => ({...c, video_bit_rate: Number(e.target.value)}))}
+                                className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
+                              >
+                                <option value={2000000}>2 Mbps (省带宽)</option>
+                                <option value={4000000}>4 Mbps (推荐)</option>
+                                <option value={8000000}>8 Mbps (高画质)</option>
+                                <option value={16000000}>16 Mbps (极限)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">最大帧率</label>
+                              <select
+                                value={scrcpyConfig.max_fps}
+                                onChange={e => setScrcpyConfig(c => ({...c, max_fps: Number(e.target.value)}))}
+                                className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
+                              >
+                                <option value={15}>15 FPS</option>
+                                <option value={24}>24 FPS</option>
+                                <option value={30}>30 FPS (推荐)</option>
+                                <option value={60}>60 FPS</option>
+                              </select>
+                            </div>
+                            <div className="flex flex-col justify-end gap-1.5">
+                              <label className="flex items-center gap-2 text-sm text-[var(--coffee-deep)] cursor-pointer">
+                                <input type="checkbox" checked={scrcpyConfig.show_touches}
+                                  onChange={e => setScrcpyConfig(c => ({...c, show_touches: e.target.checked}))}
+                                  className="rounded" />
+                                显示触摸点
+                              </label>
+                              <label className="flex items-center gap-2 text-sm text-[var(--coffee-deep)] cursor-pointer">
+                                <input type="checkbox" checked={scrcpyConfig.turn_screen_off}
+                                  onChange={e => setScrcpyConfig(c => ({...c, turn_screen_off: e.target.checked}))}
+                                  className="rounded" />
+                                关闭设备屏幕
+                              </label>
+                            </div>
                           </div>
-                          <div>
-                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">视频码率</label>
-                            <select
-                              value={scrcpyConfig.video_bit_rate}
-                              onChange={e => setScrcpyConfig(c => ({...c, video_bit_rate: e.target.value}))}
-                              className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
-                              disabled={scrcpyStatus.running}
-                            >
-                              <option value="2M">2 Mbps (省带宽)</option>
-                              <option value="4M">4 Mbps (推荐)</option>
-                              <option value="8M">8 Mbps (高画质)</option>
-                              <option value="16M">16 Mbps (极限)</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">最大帧率</label>
-                            <select
-                              value={scrcpyConfig.max_fps}
-                              onChange={e => setScrcpyConfig(c => ({...c, max_fps: Number(e.target.value)}))}
-                              className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
-                              disabled={scrcpyStatus.running}
-                            >
-                              <option value={15}>15 FPS</option>
-                              <option value={24}>24 FPS</option>
-                              <option value={30}>30 FPS (推荐)</option>
-                              <option value={60}>60 FPS</option>
-                            </select>
-                          </div>
-                          <div className="flex flex-col justify-end gap-1.5">
-                            <label className="flex items-center gap-2 text-sm text-[var(--coffee-deep)] cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={scrcpyConfig.show_touches}
-                                onChange={e => setScrcpyConfig(c => ({...c, show_touches: e.target.checked}))}
-                                disabled={scrcpyStatus.running}
-                                className="rounded"
-                              />
-                              显示触摸点
-                            </label>
-                            <label className="flex items-center gap-2 text-sm text-[var(--coffee-deep)] cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={scrcpyConfig.turn_screen_off}
-                                onChange={e => setScrcpyConfig(c => ({...c, turn_screen_off: e.target.checked}))}
-                                disabled={scrcpyStatus.running}
-                                className="rounded"
-                              />
-                              关闭设备屏幕
-                            </label>
-                          </div>
-                        </div>
+                        )}
 
-                        {/* 操作按钮区 */}
+                        {/* 操作按钮 */}
                         <div className="flex items-center gap-3 pt-2 border-t border-[var(--glass-border)]">
-                          {!scrcpyStatus.running ? (
+                          {!scrcpyStreaming ? (
                             <button
                               className="btn-primary flex items-center gap-2"
                               onClick={handleStartScrcpy}
@@ -1007,15 +1314,50 @@ function AdbMaster() {
                               停止投屏
                             </button>
                           )}
-
-                          {/* 运行状态 */}
-                          {scrcpyStatus.running && (
-                            <div className="flex items-center gap-3 text-xs text-[var(--coffee-muted)]">
-                              <span className="font-mono">PID: {scrcpyStatus.pid}</span>
-                              <span>运行: {Math.floor(scrcpyStatus.uptime || 0)}s</span>
-                            </div>
-                          )}
                         </div>
+
+                        {/* Web 嵌入 Canvas 播放器 + 虚拟按键 */}
+                        {scrcpyStreaming && (
+                          <div className="mt-2 flex flex-col items-center gap-2">
+                            <canvas
+                              ref={scrcpyCanvasRef}
+                              className="rounded-lg border-2 border-[var(--glass-border)] shadow-md cursor-crosshair bg-black"
+                              style={{ maxWidth: '100%', touchAction: 'none' }}
+                              onMouseDown={e => { e.preventDefault(); sendScrcpyTouch(0, e) }}
+                              onMouseMove={e => { if (e.buttons) sendScrcpyTouch(2, e) }}
+                              onMouseUp={e => sendScrcpyTouch(1, e)}
+                              onContextMenu={e => e.preventDefault()}
+                            />
+                            {/* 虚拟按键栏 */}
+                            <div className="flex items-center gap-1.5">
+                              <button onClick={() => sendScrcpyKey(4)} title="返回"
+                                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--cream-warm)] hover:bg-[var(--glass-border)] transition-colors">
+                                ← Back
+                              </button>
+                              <button onClick={() => sendScrcpyKey(3)} title="Home"
+                                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--cream-warm)] hover:bg-[var(--glass-border)] transition-colors">
+                                ○ Home
+                              </button>
+                              <button onClick={() => sendScrcpyKey(187)} title="多任务"
+                                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--cream-warm)] hover:bg-[var(--glass-border)] transition-colors">
+                                □ Recent
+                              </button>
+                              <span className="w-px h-5 bg-[var(--glass-border)]" />
+                              <button onClick={() => sendScrcpyKey(25)} title="音量-"
+                                className="px-2 py-1.5 rounded-lg text-xs bg-[var(--cream-warm)] hover:bg-[var(--glass-border)] transition-colors">
+                                🔉
+                              </button>
+                              <button onClick={() => sendScrcpyKey(24)} title="音量+"
+                                className="px-2 py-1.5 rounded-lg text-xs bg-[var(--cream-warm)] hover:bg-[var(--glass-border)] transition-colors">
+                                🔊
+                              </button>
+                              <button onClick={() => sendScrcpyKey(26)} title="电源"
+                                className="px-2 py-1.5 rounded-lg text-xs bg-[var(--cream-warm)] hover:bg-[var(--glass-border)] transition-colors">
+                                ⏻
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

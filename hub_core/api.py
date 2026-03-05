@@ -282,25 +282,37 @@ async def proxy_websocket(websocket: WebSocket, tool_id: str, path: str):
             try:
                 while True:
                     msg = await websocket.receive()
-                    if msg.get("type") == "websocket.disconnect":
-                        break
-                    if "text" in msg:
-                        await upstream_ws.send(msg["text"])
-                    elif "bytes" in msg:
-                        await upstream_ws.send(msg["bytes"])
-            except (WebSocketDisconnect, Exception):
-                pass
+                    # FastAPI WebSocket.receive() 返回值可能是字符串、字节或字典
+                    if isinstance(msg, dict):
+                        # 字典格式：{"type": "websocket.receive"|"websocket.disconnect", "text": "...", "bytes": b"..."}
+                        msg_type = msg.get("type")
+                        if msg_type == "websocket.disconnect":
+                            print(f"[Hub WS] 前端断开连接")
+                            break
+                        if "text" in msg:
+                            print(f"[Hub WS] 前端→后端 文本: {msg['text'][:50]}...")
+                            await upstream_ws.send(msg["text"])
+                        elif "bytes" in msg:
+                            await upstream_ws.send(msg["bytes"])
+                    elif isinstance(msg, str):
+                        print(f"[Hub WS] 前端→后端 字符串: {msg[:50]}...")
+                        await upstream_ws.send(msg)
+                    elif isinstance(msg, bytes):
+                        await upstream_ws.send(msg)
+            except (WebSocketDisconnect, Exception) as e:
+                print(f"[Hub WS] 前端转发错误: {e}")
 
         async def forward_to_client():
             """工具子进程 → 前端"""
             try:
                 async for message in upstream_ws:
+                    print(f"[Hub WS] 上游收到消息: type={type(message)}, len={len(message) if isinstance(message, (str, bytes)) else 'N/A'}")
                     if isinstance(message, str):
                         await websocket.send_text(message)
                     elif isinstance(message, bytes):
                         await websocket.send_bytes(message)
-            except (WebSocketDisconnect, Exception):
-                pass
+            except (WebSocketDisconnect, Exception) as e:
+                print(f"[Hub] WS 上游转发错误 ({tool_id}/{path}): {e}")
 
         # 双向转发，任一方断开则结束
         done, pending = await asyncio.wait(

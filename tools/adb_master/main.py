@@ -14,7 +14,7 @@ import uvicorn
 
 from .adb_manager import AdbManager
 from .config_manager import ConfigManager
-from .scrcpy_manager import ScrcpyManager
+from .scrcpy_web_manager import ScrcpyWebManager
 
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
@@ -24,7 +24,7 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), ".
 # 全局实例
 adb_mgr: Optional[AdbManager] = None
 config_mgr: Optional[ConfigManager] = None
-scrcpy_mgr: Optional[ScrcpyManager] = None
+scrcpy_mgr: Optional[ScrcpyWebManager] = None
 
 # WebSocket 连接池（用于 Logcat）
 logcat_connections: dict[str, list[WebSocket]] = {}
@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     os.makedirs(DATA_DIR, exist_ok=True)
     adb_mgr = AdbManager()
     config_mgr = ConfigManager(os.path.join(DATA_DIR, "config.json"))
-    scrcpy_mgr = ScrcpyManager()
+    scrcpy_mgr = ScrcpyWebManager()
 
     print(f"[AdbMaster] 服务启动: {HOST}:{PORT}")
 
@@ -476,62 +476,65 @@ async def add_path_history(req: PathHistoryRequest):
 # ============================================================================
 
 class ScrcpyStartRequest(BaseModel):
-    max_size: int = 800           # 最大分辨率 (宽或高, 0=原始分辨率)
-    max_fps: int = 30             # 最大帧率
-    video_bit_rate: str = "4M"    # 视频码率
-    stay_awake: bool = True       # 保持亮屏
-    show_touches: bool = True     # 显示触摸点
-    turn_screen_off: bool = False # 关闭设备屏幕
-    no_audio: bool = True         # 禁用音频 (降低延迟)
+    max_size: int = 800
+    max_fps: int = 30
+    video_bit_rate: int = 4000000  # 直接使用数字，比如 4M = 4000000
+    stay_awake: bool = True
+    show_touches: bool = True
+    turn_screen_off: bool = False
 
 
 @app.post("/devices/{hw_id}/scrcpy/start")
 async def start_scrcpy(hw_id: str, req: ScrcpyStartRequest = ScrcpyStartRequest()):
-    """启动 scrcpy 投屏"""
+    """启动设备端 scrcpy-server，并建立 TCP 通信连接"""
     devices = await adb_mgr.get_unified_devices()
     dev = next((d for d in devices if d.hardware_id == hw_id), None)
     if not dev or not dev.active_serial:
         raise HTTPException(404, "设备不存在或离线")
 
-    # 组合显示名称 (优先: 昵称 > 型号 > hardware_id 前12位)
-    dev_config = config_mgr.get_device_config(hw_id)
-    device_name = dev_config.get("nickname") or dev.model or hw_id[:12]
+    # 构建配置
+    config = {
+        "max_size": req.max_size,
+        "max_fps": req.max_fps,
+        "video_bit_rate": req.video_bit_rate,
+        "stay_awake": req.stay_awake,
+        "show_touches": req.show_touches,
+        "turn_screen_off": req.turn_screen_off,
+    }
 
-    result = await scrcpy_mgr.start(
-        hw_id=hw_id,
-        serial=dev.active_serial,
-        device_name=device_name,
-        max_size=req.max_size,
-        max_fps=req.max_fps,
-        video_bit_rate=req.video_bit_rate,
-        stay_awake=req.stay_awake,
-        show_touches=req.show_touches,
-        turn_screen_off=req.turn_screen_off,
-        no_audio=req.no_audio,
-    )
-
+    result = await scrcpy_mgr.start(hw_id, dev.active_serial, config)
     if not result["success"]:
         raise HTTPException(400, result["message"])
+        
     return result
 
 
 @app.post("/devices/{hw_id}/scrcpy/stop")
 async def stop_scrcpy(hw_id: str):
-    """停止 scrcpy 投屏"""
+    """停止 scrcpy 投屏并释放资源"""
     result = await scrcpy_mgr.stop(hw_id)
     return result
 
 
 @app.get("/devices/{hw_id}/scrcpy/status")
 async def get_scrcpy_status(hw_id: str):
-    """获取投屏状态"""
+    """查询状态"""
     return scrcpy_mgr.get_status(hw_id)
 
 
-@app.get("/scrcpy/sessions")
-async def list_scrcpy_sessions():
-    """获取所有活跃投屏会话"""
-    return {"sessions": scrcpy_mgr.get_all_sessions()}
+@app.websocket("/devices/{hw_id}/scrcpy/stream")
+async def scrcpy_stream(websocket: WebSocket, hw_id: str):
+    """WebSocket 双向流：视频流下发和控制流上传"""
+    await websocket.accept()
+    try:
+        await scrcpy_mgr.stream(hw_id, websocket)
+    except Exception as e:
+        print(f"[AdbMaster] Scrcpy stream 退出了: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
 
 
 # ============================================================================

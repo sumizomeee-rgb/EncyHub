@@ -119,11 +119,6 @@ def get_scrcpy_dir() -> str:
     return os.path.join(get_base_path(), 'assets', 'scrcpy')
 
 
-def get_scrcpy_exe_path() -> str:
-    """获取 scrcpy.exe 的完整路径。"""
-    return os.path.join(get_scrcpy_dir(), 'scrcpy.exe')
-
-
 def get_scrcpy_server_path() -> str:
     """获取 scrcpy-server 的完整路径。"""
     return os.path.join(get_scrcpy_dir(), 'scrcpy-server')
