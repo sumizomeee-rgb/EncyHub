@@ -43,7 +43,9 @@ class ScrcpyWebSession:
 
     @property
     def is_running(self) -> bool:
-        return self._running and self.server_process.returncode is None
+        if self.server_process and self.server_process.returncode is not None:
+            return False
+        return self._running
 
 
 def _find_free_port() -> int:
@@ -71,6 +73,7 @@ class ScrcpyWebManager:
         if hw_id in self._sessions and self._sessions[hw_id].is_running:
             return {"success": False, "message": "该设备投屏已在运行中"}
 
+        # 清理旧会话并启动新的
         await self.stop(hw_id)  # 清理可能残留的死会话
 
         # scrcpy-server 用 Integer.parseInt(value, 16) 解析 scid
@@ -208,12 +211,15 @@ class ScrcpyWebManager:
 
     async def stream(self, hw_id: str, websocket: WebSocket):
         """处理 WebSocket 双向流: 下行发视频帧, 上行收控制JSON"""
+        print(f"[Scrcpy] stream: 收到连接请求, hw_id={hw_id}")
+
         session = self._sessions.get(hw_id)
         if not session or not session.is_running:
-            await websocket.close(reason="流不存在")
+            print(f"[Scrcpy] stream: 会话不存在或已停止")
+            await websocket.close(reason="会话不存在或已停止")
             return
 
-        print(f"[Scrcpy] 流已启动, 屏幕: {session.width}x{session.height}")
+        print(f"[Scrcpy] stream: 会话有效, 屏幕: {session.width}x{session.height}")
 
         # 创建一个队列用于处理视频帧
         video_queue = asyncio.Queue(maxsize=10)
@@ -228,8 +234,17 @@ class ScrcpyWebManager:
                 print(f"[Scrcpy] 视频采集任务已启动")
                 while session._running:
                     # 读取数据块
-                    chunk = await reader.read(8192)
+                    try:
+                        chunk = await reader.read(8192)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as read_e:
+                        print(f"[Scrcpy] 视频读取错误 {hw_id}: {read_e}")
+                        break
+
                     if not chunk:
+                        # EOF - 视频流结束
+                        print(f"[Scrcpy] 视频流到达 EOF: {hw_id}")
                         break
 
                     buffer.extend(chunk)
@@ -279,6 +294,8 @@ class ScrcpyWebManager:
                                 video_queue.put_nowait(msg)
                             except asyncio.QueueFull:
                                 pass  # 丢弃队列中最旧的帧
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
                 print(f"[Scrcpy] 视频采集中断 {hw_id}: {e}")
             finally:
@@ -287,6 +304,8 @@ class ScrcpyWebManager:
         # WebSocket 处理任务（发送视频帧，接收控制消息）
         async def websocket_handler():
             try:
+                print(f"[Scrcpy] WebSocket 已连接")
+
                 writer = session.control_writer
                 screen_w, screen_h = session.width, session.height
 
@@ -383,50 +402,35 @@ class ScrcpyWebManager:
 
             except Exception as e:
                 print(f"[Scrcpy] WebSocket 处理中断 {hw_id}: {e}")
-            finally:
-                await self.stop(hw_id)
 
-        # 并行运行视频采集和 WebSocket 处理
-        t1 = asyncio.create_task(video_collector())
-        t2 = asyncio.create_task(websocket_handler())
+        try:
+            # 并行运行视频采集和 WebSocket 处理
+            t1 = asyncio.create_task(video_collector())
+            t2 = asyncio.create_task(websocket_handler())
 
-        done, pending = await asyncio.wait([t1, t2], return_when=asyncio.FIRST_COMPLETED)
-        for t in pending:
-            t.cancel()
+            done, pending = await asyncio.wait([t1, t2], return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+        except Exception as e:
+            print(f"[Scrcpy] stream: 异常 {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # WebSocket 断开或视频流结束，立即停止整个会话
+            print(f"[Scrcpy] stream 结束，停止会话: {hw_id}")
+            await self._stop_internal(hw_id)
+            try:
+                await websocket.close()
+            except:
+                pass
 
     async def stop(self, hw_id: str) -> dict:
-        session = self._sessions.get(hw_id)
-        if not session:
-            return {"success": True, "message": "未在投屏"}
-
-        session._running = False
-
-        # 1. 关闭 TCP
-        if session.video_writer:
-            session.video_writer.close()
-        if session.control_writer:
-            session.control_writer.close()
-
-        # 2. 终止 Process
-        if session.server_process:
-            try:
-                session.server_process.terminate()
-                await asyncio.wait_for(session.server_process.wait(), timeout=2.0)
-            except:
-                session.server_process.kill()
-
-        # 3. 删除 Forward
-        if session.video_port:
-            adb = get_adb_path()
-            env = os.environ.copy()
-            env["MSYS_NO_PATHCONV"] = "1"
-            await asyncio.create_subprocess_exec(
-                adb, "-s", session.serial, "forward", "--remove", f"tcp:{session.video_port}",
-                env=env
-            )
-
-        self._sessions.pop(hw_id, None)
-        print(f"[ScrcpyWebManager] 投屏已停止: {hw_id}")
+        """停止投屏"""
+        await self._stop_internal(hw_id)
         return {"success": True, "message": "已停止"}
 
     async def stop_all(self):
@@ -435,11 +439,65 @@ class ScrcpyWebManager:
             await self.stop(hw_id)
 
     def get_status(self, hw_id: str) -> dict:
+        """获取投屏状态"""
         session = self._sessions.get(hw_id)
-        if not session or not session.is_running:
-            self._sessions.pop(hw_id, None)
+        if not session:
             return {"running": False}
-        return {"running": True}
+
+        # 检查进程是否还在运行
+        if session.server_process and session.server_process.returncode is not None:
+            # 进程已退出，清理会话
+            asyncio.create_task(self._stop_internal(hw_id))
+            return {"running": False}
+
+        return {"running": session.is_running}
+
+    async def _stop_internal(self, hw_id: str) -> None:
+        """内部停止方法，不返回响应"""
+        session = self._sessions.get(hw_id)
+        if not session:
+            return
+
+        session._running = False
+
+        # 1. 关闭 TCP
+        if session.video_writer:
+            try:
+                session.video_writer.close()
+            except:
+                pass
+        if session.control_writer:
+            try:
+                session.control_writer.close()
+            except:
+                pass
+
+        # 2. 终止 Process
+        if session.server_process:
+            try:
+                session.server_process.terminate()
+                await asyncio.wait_for(session.server_process.wait(), timeout=2.0)
+            except:
+                try:
+                    session.server_process.kill()
+                except:
+                    pass
+
+        # 3. 删除 Forward
+        if session.video_port:
+            try:
+                adb = get_adb_path()
+                env = os.environ.copy()
+                env["MSYS_NO_PATHCONV"] = "1"
+                await asyncio.create_subprocess_exec(
+                    adb, "-s", session.serial, "forward", "--remove", f"tcp:{session.video_port}",
+                    env=env
+                )
+            except:
+                pass
+
+        self._sessions.pop(hw_id, None)
+        print(f"[ScrcpyWebManager] 投屏已停止: {hw_id}")
 
     # =========== 内部辅助方法 ===========
     async def _deploy_server(self, serial: str) -> bool:
@@ -564,40 +622,3 @@ class ScrcpyWebManager:
         codec_name = codec_map.get(codec_id, "h264")
 
         return device_name, codec_name, width, height
-
-    async def _connect_video(self, port: int) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter, dict]:
-        """连接 video socket 并读取设备元数据和编解码器元数据。
-
-        scrcpy v2.5 协议顺序（当 send_device_meta=true, send_codec_meta=true 时）：
-        1. Dummy byte (1 byte) - 由 _connect_socket 读取（仅第一个 socket 收到）
-        2. Device name (64 bytes) - UTF-8 编码，以 \0 填充
-        3. Codec meta (12 bytes) - codec_id(4) + width(4) + height(4)
-        4. 然后开始视频帧流
-        """
-        # video socket 是第一个连接，需要读取 dummy byte
-        reader, writer = await self._connect_socket(port, read_dummy_byte=True)
-
-        # 读取 device name = 64 bytes，增加超时时间
-        print("[_connect_video] 读取设备名称 (64 bytes)...")
-        device_name_raw = await asyncio.wait_for(reader.readexactly(64), timeout=5.0)
-        device_name = device_name_raw.rstrip(b'\x00').decode('utf-8', errors='replace')
-        print(f"[_connect_video] 设备名称: {device_name}")
-
-        # 读取 codec meta = 12 bytes
-        print("[_connect_video] 读取编解码器元数据 (12 bytes)...")
-        codec_meta = await asyncio.wait_for(reader.readexactly(12), timeout=5.0)
-        codec_id = struct.unpack('>I', codec_meta[0:4])[0]
-        width = struct.unpack('>I', codec_meta[4:8])[0]
-        height = struct.unpack('>I', codec_meta[8:12])[0]
-        print(f"[_connect_video] Codec ID: 0x{codec_id:08x}, 分辨率: {width}x{height}")
-
-        codec_map = {0x68323634: "h264", 0x68323635: "h265", 0x00617631: "av1"}
-        codec_name = codec_map.get(codec_id, "h264")
-
-        meta = {
-            "device_name": device_name,
-            "codec": codec_name,
-            "width": width,
-            "height": height,
-        }
-        return reader, writer, meta

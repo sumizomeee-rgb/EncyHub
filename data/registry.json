@@ -4,9 +4,9 @@
     "display_name": "ADB Master",
     "description": "Android 设备管理工具",
     "enabled": true,
-    "port": 7919,
-    "pid": 185496,
-    "last_started": "2026-03-06 01:00:33"
+    "port": 11994,
+    "pid": 202592,
+    "last_started": "2026-03-06 03:25:59"
   },
   "flow_svn": {
     "tool_id": "flow_svn",

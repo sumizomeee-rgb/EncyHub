@@ -525,11 +525,22 @@ async def get_scrcpy_status(hw_id: str):
 @app.websocket("/devices/{hw_id}/scrcpy/stream")
 async def scrcpy_stream(websocket: WebSocket, hw_id: str):
     """WebSocket 双向流：视频流下发和控制流上传"""
-    await websocket.accept()
+    print(f"[AdbMaster] WebSocket 连接请求, hw_id={hw_id}")
+    try:
+        await websocket.accept()
+        print(f"[AdbMaster] WebSocket 已接受, hw_id={hw_id}, 现有会话: {list(scrcpy_mgr._sessions.keys())}")
+    except Exception as e:
+        print(f"[AdbMaster] WebSocket accept 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
     try:
         await scrcpy_mgr.stream(hw_id, websocket)
     except Exception as e:
         print(f"[AdbMaster] Scrcpy stream 退出了: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         try:
             await websocket.close()

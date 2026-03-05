@@ -36,12 +36,12 @@ function AdbMaster() {
   })
   const [scrcpyLoading, setScrcpyLoading] = useState(false)
   const [scrcpyStreaming, setScrcpyStreaming] = useState(false)
+  const [scrcpyStreamingDeviceId, setScrcpyStreamingDeviceId] = useState(null) // 记录正在投屏的设备ID
   const [scrcpyMeta, setScrcpyMeta] = useState(null) // {width, height, codec}
   const scrcpyMetaRef = useRef({ width: 800, height: 448 }) // 实际分辨率 ref
   const scrcpyCanvasRef = useRef(null)
   const scrcpyWsRef = useRef(null)
   const scrcpyDecoderRef = useRef(null)
-  const scrcpyStreamingHwIdRef = useRef(null) // 当前正在投屏的设备 ID，用于切换设备时停止
 
   // 弹窗状态
   const [showInstallModal, setShowInstallModal] = useState(false)
@@ -146,31 +146,20 @@ function AdbMaster() {
     }
   }, [])
 
-  // 投屏: 设备切换时停止当前投屏
+  // 投屏: 设备切换时清理 WebSocket 和解码器
   useEffect(() => {
-    // 当 selectedDevice 变化时，停止之前的投屏会话
     return () => {
-      const prevHwId = scrcpyStreamingHwIdRef.current
-      if (prevHwId) {
-        // 异步停止后端会话（不等待结果）
-        fetch(`/api/adb_master/devices/${prevHwId}/scrcpy/stop`, { method: 'POST' }).catch(() => {})
-        console.log(`[Scrcpy] 切换设备，停止 ${prevHwId} 的投屏`)
-      }
-      // 关闭 WebSocket
       if (scrcpyWsRef.current) {
         scrcpyWsRef.current.close()
         scrcpyWsRef.current = null
       }
-      // 关闭解码器
       if (scrcpyDecoderRef.current && scrcpyDecoderRef.current.state !== 'closed') {
         scrcpyDecoderRef.current.close()
         scrcpyDecoderRef.current = null
       }
-      // 重置前端状态
       setScrcpyStreaming(false)
-      setScrcpyStatus({ running: false })
+      setScrcpyStreamingDeviceId(null)
       setScrcpyMeta(null)
-      scrcpyStreamingHwIdRef.current = null
     }
   }, [selectedDevice])
 
@@ -680,6 +669,23 @@ function AdbMaster() {
     }
   }
 
+  // ======== 设备切换处理 ========
+  const handleSelectDevice = async (device) => {
+    // 如果点击的是当前已选中的设备，不做任何处理
+    if (selectedDevice?.hardware_id === device.hardware_id) {
+      return
+    }
+
+    // 如果正在投屏，先停止当前投屏
+    if (scrcpyStreaming && selectedDevice) {
+      const prevDeviceName = selectedDevice.nickname || selectedDevice.model || selectedDevice.hardware_id
+      await handleStopScrcpy(true) // silent = true, 不显示默认 toast
+      toast.info(`已停止 ${prevDeviceName} 的投屏`)
+    }
+
+    setSelectedDevice(device)
+  }
+
   // ======== 启动 Web 嵌入投屏 ========
   const handleStartScrcpy = async () => {
     if (!selectedDevice) return
@@ -706,6 +712,7 @@ function AdbMaster() {
 
       // Step 2: 先显示 Canvas 区域，然后初始化解码器
       setScrcpyStreaming(true)
+      setScrcpyStreamingDeviceId(selectedDevice.hardware_id)
 
       // 等待 Canvas 渲染
       await new Promise(r => setTimeout(r, 200))
@@ -721,8 +728,6 @@ function AdbMaster() {
         // 使用默认值，会在收到 SPS 后重新配置
         initScrcpyDecoder(data.width, data.height, 0x42, 0xC0, 0x29)
         toast.success('投屏已连接')
-        // 记录当前正在投屏的设备 ID
-        scrcpyStreamingHwIdRef.current = selectedDevice.hardware_id
       }
       ws.onmessage = (evt) => {
         console.log('[ScrcpyPlayer] 收到 WebSocket 消息, 类型:', typeof evt.data, 'ArrayBuffer:', evt.data instanceof ArrayBuffer, 'byteLength:', evt.data?.byteLength || 'N/A')
@@ -737,7 +742,6 @@ function AdbMaster() {
         setScrcpyStreaming(false)
         setScrcpyStatus({ running: false })
         setScrcpyMeta(null)
-        scrcpyStreamingHwIdRef.current = null
         if (scrcpyDecoderRef.current && scrcpyDecoderRef.current.state !== 'closed') {
           scrcpyDecoderRef.current.close()
         }
@@ -757,7 +761,7 @@ function AdbMaster() {
   }
 
   // ======== 停止投屏 ========
-  const handleStopScrcpy = async () => {
+  const handleStopScrcpy = async (silent = false) => {
     if (!selectedDevice) return
     // 关闭 WS
     if (scrcpyWsRef.current) {
@@ -770,17 +774,21 @@ function AdbMaster() {
     }
     scrcpyDecoderRef.current = null
     setScrcpyStreaming(false)
+    setScrcpyStreamingDeviceId(null) // 清除投屏设备ID
     setScrcpyMeta(null)
-    scrcpyStreamingHwIdRef.current = null
     try {
       const res = await fetch(
         `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/stop`,
         { method: 'POST' }
       )
       const data = await res.json()
-      toast.success(data.message || '投屏已停止')
+      if (!silent) {
+        toast.success(data.message || '投屏已停止')
+      }
     } catch (err) {
-      toast.error('停止失败: ' + err.message)
+      if (!silent) {
+        toast.error('停止失败: ' + err.message)
+      }
     }
     setScrcpyStatus({ running: false })
   }
@@ -869,7 +877,7 @@ function AdbMaster() {
                             ? 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-[var(--caramel)]'
                             : 'bg-[var(--cream-warm)]/50 border-transparent hover:border-[var(--caramel-light)] hover:bg-[var(--cream-warm)]'
                         }`}
-                        onClick={() => setSelectedDevice(device)}
+                        onClick={() => handleSelectDevice(device)}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex-1 min-w-0">
@@ -886,6 +894,13 @@ function AdbMaster() {
                               }`}>
                                 {badge.icon} {badge.label}
                               </span>
+                              {/* 投屏中指示 */}
+                              {scrcpyStreaming && scrcpyStreamingDeviceId === device.hardware_id && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--sage)]/15 text-[var(--sage)]">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
+                                  投屏中
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-[var(--coffee-muted)] mt-1 font-mono truncate">
                               {device.hardware_id?.slice(0, 16)}...
@@ -1247,6 +1262,12 @@ function AdbMaster() {
                           </span>
                         )}
                       </div>
+                      {/* 显示正在投屏的设备名称 */}
+                      {scrcpyStreaming && (
+                        <span className="text-xs text-[var(--coffee-muted)]">
+                          {selectedDevice?.nickname || selectedDevice?.model || '设备'}
+                        </span>
+                      )}
                     </button>
                     {expandScrcpy && (
                       <div className="mt-2 p-4 bg-[var(--cream-warm)]/30 rounded-xl space-y-4">
