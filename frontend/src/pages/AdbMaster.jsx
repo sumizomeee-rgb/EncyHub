@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, RefreshCw, Smartphone, Wifi, Usb, FileText, Upload, Download,
   X, Package, RotateCcw, WifiOff, ChevronDown, ChevronRight, FolderOpen,
-  Play, Square, Zap, Edit, Check
+  Play, Square, Zap, Edit, Check, Monitor
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
@@ -22,6 +22,20 @@ function AdbMaster() {
   // 展开面板状态
   const [expandLogcat, setExpandLogcat] = useState(false)
   const [expandTransfer, setExpandTransfer] = useState(false)
+  const [expandScrcpy, setExpandScrcpy] = useState(false)
+
+  // 投屏控制 State
+  const [scrcpyStatus, setScrcpyStatus] = useState({ running: false })
+  const [scrcpyConfig, setScrcpyConfig] = useState({
+    max_size: 800,
+    max_fps: 30,
+    video_bit_rate: '4M',
+    stay_awake: true,
+    show_touches: true,
+    turn_screen_off: false,
+    no_audio: true,
+  })
+  const [scrcpyLoading, setScrcpyLoading] = useState(false)
 
   // 弹窗状态
   const [showInstallModal, setShowInstallModal] = useState(false)
@@ -125,6 +139,25 @@ function AdbMaster() {
       }
     }
   }, [])
+
+  // 投屏状态轮询
+  useEffect(() => {
+    if (!selectedDevice) return
+    const fetchScrcpyStatus = async () => {
+      try {
+        const res = await fetch(
+          `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/status`
+        )
+        if (res.ok) {
+          const data = await res.json()
+          setScrcpyStatus(data)
+        }
+      } catch {}
+    }
+    fetchScrcpyStatus()
+    const interval = setInterval(fetchScrcpyStatus, 2000)
+    return () => clearInterval(interval)
+  }, [selectedDevice])
 
   // 获取连接状态徽章
   const getConnectionBadge = (device) => {
@@ -374,6 +407,49 @@ function AdbMaster() {
       }
     } catch (err) {
       toast.error('断开失败: ' + err.message)
+    }
+  }
+
+  // 启动投屏
+  const handleStartScrcpy = async () => {
+    if (!selectedDevice) return
+    setScrcpyLoading(true)
+    try {
+      const res = await fetch(
+        `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/start`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(scrcpyConfig),
+        }
+      )
+      const data = await res.json()
+      if (res.ok) {
+        toast.success(data.message || '投屏已启动')
+        setScrcpyStatus({ running: true, pid: data.pid, uptime: 0 })
+      } else {
+        toast.error(data.detail || '启动失败')
+      }
+    } catch (err) {
+      toast.error('启动失败: ' + err.message)
+    } finally {
+      setScrcpyLoading(false)
+    }
+  }
+
+  // 停止投屏
+  const handleStopScrcpy = async () => {
+    if (!selectedDevice) return
+    try {
+      const res = await fetch(
+        `/api/adb_master/devices/${selectedDevice.hardware_id}/scrcpy/stop`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      toast.success(data.message || '投屏已停止')
+      setScrcpyStatus({ running: false })
+    } catch (err) {
+      toast.error('停止失败: ' + err.message)
     }
   }
 
@@ -817,6 +893,128 @@ function AdbMaster() {
                             <Download size={14} />
                             {operating ? '拉取中...' : '拉取'}
                           </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Scrcpy 投屏控制面板 */}
+                  <div className="mt-4">
+                    <button
+                      className="w-full flex items-center justify-between p-3 rounded-lg bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)] transition-colors"
+                      onClick={() => setExpandScrcpy(!expandScrcpy)}
+                    >
+                      <div className="flex items-center gap-2">
+                        {expandScrcpy ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                        <Monitor size={18} className="text-[var(--caramel)]" />
+                        <span className="font-medium">投屏控制</span>
+                        {scrcpyStatus.running && (
+                          <span className="ml-2 flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--sage)]/15 text-[var(--sage)] font-medium">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
+                            投屏中
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                    {expandScrcpy && (
+                      <div className="mt-2 p-4 bg-[var(--cream-warm)]/30 rounded-xl space-y-4">
+                        {/* 参数配置区 */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">分辨率上限</label>
+                            <select
+                              value={scrcpyConfig.max_size}
+                              onChange={e => setScrcpyConfig(c => ({...c, max_size: Number(e.target.value)}))}
+                              className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
+                              disabled={scrcpyStatus.running}
+                            >
+                              <option value={480}>480p (流畅)</option>
+                              <option value={720}>720p (标准)</option>
+                              <option value={800}>800p (推荐)</option>
+                              <option value={1024}>1024p (高清)</option>
+                              <option value={0}>原始分辨率</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">视频码率</label>
+                            <select
+                              value={scrcpyConfig.video_bit_rate}
+                              onChange={e => setScrcpyConfig(c => ({...c, video_bit_rate: e.target.value}))}
+                              className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
+                              disabled={scrcpyStatus.running}
+                            >
+                              <option value="2M">2 Mbps (省带宽)</option>
+                              <option value="4M">4 Mbps (推荐)</option>
+                              <option value="8M">8 Mbps (高画质)</option>
+                              <option value="16M">16 Mbps (极限)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-[var(--coffee-muted)] mb-1">最大帧率</label>
+                            <select
+                              value={scrcpyConfig.max_fps}
+                              onChange={e => setScrcpyConfig(c => ({...c, max_fps: Number(e.target.value)}))}
+                              className="w-full text-sm rounded-lg border border-[var(--glass-border)] px-3 py-1.5 bg-white"
+                              disabled={scrcpyStatus.running}
+                            >
+                              <option value={15}>15 FPS</option>
+                              <option value={24}>24 FPS</option>
+                              <option value={30}>30 FPS (推荐)</option>
+                              <option value={60}>60 FPS</option>
+                            </select>
+                          </div>
+                          <div className="flex flex-col justify-end gap-1.5">
+                            <label className="flex items-center gap-2 text-sm text-[var(--coffee-deep)] cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={scrcpyConfig.show_touches}
+                                onChange={e => setScrcpyConfig(c => ({...c, show_touches: e.target.checked}))}
+                                disabled={scrcpyStatus.running}
+                                className="rounded"
+                              />
+                              显示触摸点
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-[var(--coffee-deep)] cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={scrcpyConfig.turn_screen_off}
+                                onChange={e => setScrcpyConfig(c => ({...c, turn_screen_off: e.target.checked}))}
+                                disabled={scrcpyStatus.running}
+                                className="rounded"
+                              />
+                              关闭设备屏幕
+                            </label>
+                          </div>
+                        </div>
+
+                        {/* 操作按钮区 */}
+                        <div className="flex items-center gap-3 pt-2 border-t border-[var(--glass-border)]">
+                          {!scrcpyStatus.running ? (
+                            <button
+                              className="btn-primary flex items-center gap-2"
+                              onClick={handleStartScrcpy}
+                              disabled={scrcpyLoading}
+                            >
+                              <Play size={14} />
+                              {scrcpyLoading ? '启动中...' : '启动投屏'}
+                            </button>
+                          ) : (
+                            <button
+                              className="px-4 py-2 rounded-xl text-sm font-medium bg-[var(--terracotta)] text-white hover:brightness-110 transition-all flex items-center gap-2"
+                              onClick={handleStopScrcpy}
+                            >
+                              <Square size={14} />
+                              停止投屏
+                            </button>
+                          )}
+
+                          {/* 运行状态 */}
+                          {scrcpyStatus.running && (
+                            <div className="flex items-center gap-3 text-xs text-[var(--coffee-muted)]">
+                              <span className="font-mono">PID: {scrcpyStatus.pid}</span>
+                              <span>运行: {Math.floor(scrcpyStatus.uptime || 0)}s</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}

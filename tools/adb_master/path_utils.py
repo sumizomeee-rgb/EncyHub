@@ -97,3 +97,33 @@ def get_logcat_filename(serial: str) -> str:
     dirs = ensure_device_dirs(serial)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     return os.path.join(dirs['logs_dir'], f'logcat_{timestamp}.log')
+
+
+def get_scrcpy_dir() -> str:
+    """
+    获取内置 scrcpy 目录路径。
+    - PyInstaller: bundled in _MEIPASS/scrcpy
+    - EncyHub mode: EncyHub/assets/scrcpy/
+    - Standalone: assets/scrcpy/ relative to base
+    """
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, 'scrcpy')
+
+    if os.environ.get("ENCYHUB_MODE"):
+        encyhub_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        return os.path.join(encyhub_root, 'assets', 'scrcpy')
+
+    # Standalone mode
+    return os.path.join(get_base_path(), 'assets', 'scrcpy')
+
+
+def get_scrcpy_exe_path() -> str:
+    """获取 scrcpy.exe 的完整路径。"""
+    return os.path.join(get_scrcpy_dir(), 'scrcpy.exe')
+
+
+def get_scrcpy_server_path() -> str:
+    """获取 scrcpy-server 的完整路径。"""
+    return os.path.join(get_scrcpy_dir(), 'scrcpy-server')
