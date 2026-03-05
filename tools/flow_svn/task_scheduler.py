@@ -23,7 +23,7 @@ class TaskScheduler:
         else:
             # Running from source
             self.python_exe = sys.executable
-            self.script_path = Path(__file__).parent.parent / "flowsvn.py"
+            self.script_path = Path(__file__).parent / "cli.py"
             self.is_frozen = False
     
     def create_task(self, task_id: str, task_name: str, schedule_time: str) -> Tuple[bool, str]:
