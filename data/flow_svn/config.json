@@ -11,10 +11,34 @@
       "template_id": "",
       "schedule_time": "09:00",
       "enabled": true,
-      "last_run": "2026-02-28T10:52:20.532177",
+      "last_run": "2026-03-06T11:29:49.156064",
       "last_status": "success",
-      "last_log": "[2026-02-28 10:49:33] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nRestored 'Product\\File\\win\\debug\\assets\\product\\common\\xdefaultmaterial.mat.ab'\nU    Res\\Assets\\Editor\\Builder\\XBuilderCheckAsset.cs\nA    Res\\Assets\\I18N\\JP\\Assets\\Product\\Ui\\Scene\\UiTask.asset\nA    Res\\Assets\\I18N\\JP\\Assets\\Product\\Ui\\Scene\\UiTask.asset.meta\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2605.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2605.mat.meta\nU    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2606.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2607.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxPet3LionoffMaterial\\FxUiPet3GoldenLion2607.mat.meta\nU    Res\\Assets\\Product\\Effect\\Material\\FxPet3L",
+      "last_log": "[2026-03-06 11:27:07] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nU    Res\\Assets\\Product\\DummyShader\\VariantShaderHistory.txt\nU    Res\\Assets\\Product\\Effect\\Material\\FxR5LifuMaterial\\FxR5LifuMd019371Material\\FxR5LifuMd019371H11071.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxR5LifuMaterial\\FxR5LifuMd019371Material\\FxR5LifuMd019371H11075.mat\nA    Res\\Assets\\Product\\Effect\\Material\\FxR5LifuMaterial\\FxR5LifuMd019371Material\\FxR5LifuMd019371H11075.mat.meta\nA    Res\\Assets\\Product\\Effect\\Mesh\\FxR5LifuMesh\\FxR5LifuMd019371Mesh\\FxR5LifuMd019371M11046.FBX\nA    Res\\Assets\\Product\\Effect\\Mesh\\FxR5LifuMesh\\FxR5LifuMd019371Mesh\\FxR5LifuMd019371M11046.FBX.meta\nA    Res\\Assets\\Product\\Effect\\Mesh\\FxR5LifuMesh\\FxR5LifuMd019371Mesh\\FxR5LifuMd019371M11047.FBX\nA    Res\\Assets\\Product\\Effect\\Mesh\\FxR5LifuMesh\\FxR5LifuMd019371Mesh\\FxR",
       "execution_history": [
+        {
+          "time": "2026-03-06T11:29:49.156064",
+          "status": "success",
+          "duration": 162.03914546966553,
+          "message": "[2026-03-06 11:27:07] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-03-06T11:27:07.116919",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
+        {
+          "time": "2026-03-06T09:12:11.224380",
+          "status": "success",
+          "duration": 730.5743744373322,
+          "message": "[2026-03-06 09:00:00] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-03-06T09:00:00.650006",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
         {
           "status": "success",
           "duration": 167.0143518447876,
@@ -28,7 +52,7 @@
           "message": "任务开始执行"
         }
       ],
-      "total_runs": 1
+      "total_runs": 3
     }
   ],
   "templates": []
