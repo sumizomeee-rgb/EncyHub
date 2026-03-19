@@ -3,12 +3,14 @@ ADB Master - FastAPI 入口
 """
 import os
 import asyncio
+import json
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -469,6 +471,119 @@ async def add_path_history(req: PathHistoryRequest):
         raise HTTPException(400, "category 必须为 push 或 pull")
     config_mgr.add_path_history(req.path, req.category)
     return {"message": "已添加"}
+
+
+# ============================================================================
+# APK 提取 API
+# ============================================================================
+
+# 取消信号映射: hw_id -> asyncio.Event
+_extract_cancel_events: dict[str, asyncio.Event] = {}
+
+
+class ExtractApksRequest(BaseModel):
+    packages: list[str]
+    local_dir: str
+
+
+@app.get("/devices/{hw_id}/packages")
+async def list_packages(hw_id: str, third_party_only: bool = True):
+    """获取设备已安装应用列表"""
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(404, "设备不存在或离线")
+
+    packages = await adb_mgr.list_packages(dev.active_serial, third_party_only)
+    return {"packages": packages}
+
+
+@app.post("/devices/{hw_id}/extract-apks")
+async def extract_apks(hw_id: str, req: ExtractApksRequest):
+    """
+    批量提取 APK，通过 SSE 流式返回进度。
+    每完成一个包发送一条 JSON 事件。
+    """
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(404, "设备不存在或离线")
+
+    serial = dev.active_serial
+
+    if not req.packages:
+        raise HTTPException(400, "packages 不能为空")
+
+    # 验证/创建本地保存目录
+    local_dir = req.local_dir.strip()
+    if not local_dir:
+        local_dir = os.path.join(DATA_DIR, "extracted_apks")
+    os.makedirs(local_dir, exist_ok=True)
+
+    # 预先获取所有包的 APK 路径信息
+    all_packages = await adb_mgr.list_packages(serial, third_party_only=False)
+    pkg_map = {p["package"]: p for p in all_packages}
+
+    # 设置取消信号
+    cancel_event = asyncio.Event()
+    _extract_cancel_events[hw_id] = cancel_event
+
+    async def generate():
+        total = len(req.packages)
+        success_count = 0
+        fail_count = 0
+
+        for i, pkg_name in enumerate(req.packages):
+            if cancel_event.is_set():
+                yield f"data: {json.dumps({'type': 'cancelled', 'current': i, 'total': total}, ensure_ascii=False)}\n\n"
+                break
+
+            pkg_info = pkg_map.get(pkg_name)
+            if not pkg_info or not pkg_info["apk_path"]:
+                fail_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'package': pkg_name, 'status': 'failed', 'error': '找不到 APK 路径', 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+                continue
+
+            # 发送开始事件
+            yield f"data: {json.dumps({'type': 'start', 'package': pkg_name, 'expected_size': pkg_info['size_bytes'], 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+
+            local_path = os.path.join(local_dir, f"{pkg_name}.apk")
+            start_time = time.time()
+
+            result = await adb_mgr.extract_apk(
+                serial, pkg_info["apk_path"], local_path, cancel_event
+            )
+
+            elapsed = time.time() - start_time
+            speed = result["size_bytes"] / elapsed if elapsed > 0 else 0
+
+            if result["success"]:
+                success_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'package': pkg_name, 'status': 'done', 'size_bytes': result['size_bytes'], 'speed_bps': int(speed), 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+            elif result["error"] == "cancelled":
+                yield f"data: {json.dumps({'type': 'cancelled', 'current': i, 'total': total}, ensure_ascii=False)}\n\n"
+                break
+            else:
+                fail_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'package': pkg_name, 'status': 'failed', 'error': result['error'], 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+
+        # 完成事件
+        yield f"data: {json.dumps({'type': 'done', 'success_count': success_count, 'fail_count': fail_count, 'total': total, 'local_dir': local_dir}, ensure_ascii=False)}\n\n"
+
+        # 清理取消信号
+        _extract_cancel_events.pop(hw_id, None)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.delete("/devices/{hw_id}/extract-apks")
+async def cancel_extract(hw_id: str):
+    """取消正在进行的 APK 提取"""
+    cancel_event = _extract_cancel_events.get(hw_id)
+    if cancel_event:
+        cancel_event.set()
+        return {"message": "已发送取消信号"}
+    return {"message": "没有正在进行的提取任务"}
 
 
 # ============================================================================

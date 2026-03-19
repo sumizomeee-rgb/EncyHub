@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, RefreshCw, Smartphone, Wifi, Usb, FileText, Upload, Download,
   X, Package, RotateCcw, WifiOff, ChevronDown, ChevronRight, FolderOpen,
-  Play, Square, Zap, Edit, Check, Monitor
+  Play, Square, Zap, Edit, Check, Monitor, Archive, Search
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
@@ -23,6 +23,17 @@ function AdbMaster() {
   const [expandLogcat, setExpandLogcat] = useState(false)
   const [expandTransfer, setExpandTransfer] = useState(false)
   const [expandScrcpy, setExpandScrcpy] = useState(false)
+  const [expandExtract, setExpandExtract] = useState(false)
+
+  // 应用提取 State
+  const [packages, setPackages] = useState([])
+  const [selectedPkgs, setSelectedPkgs] = useState(new Set())
+  const [pkgFilter, setPkgFilter] = useState('third_party')
+  const [pkgSearch, setPkgSearch] = useState('')
+  const [extractDir, setExtractDir] = useState(() => localStorage.getItem('adb_extractDir') || 'D:\\apk_backup')
+  const [extracting, setExtracting] = useState(false)
+  const [extractProgress, setExtractProgress] = useState(null)
+  const [packagesLoading, setPackagesLoading] = useState(false)
 
   // 投屏控制 State (Phase 2 - Web 嵌入)
   const [scrcpyStatus, setScrcpyStatus] = useState({ running: false })
@@ -667,6 +678,152 @@ function AdbMaster() {
     } catch (err) {
       toast.error('断开失败: ' + err.message)
     }
+  }
+
+  // ======== 应用提取 ========
+  const formatSize = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(1024))
+    return (bytes / Math.pow(1024, Math.min(i, 3))).toFixed(i > 0 ? 1 : 0) + ' ' + units[Math.min(i, 3)]
+  }
+
+  const fetchPackages = async () => {
+    if (!selectedDevice) return
+    setPackagesLoading(true)
+    setPackages([])
+    setSelectedPkgs(new Set())
+    try {
+      const thirdParty = pkgFilter === 'third_party'
+      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/packages?third_party_only=${thirdParty}`)
+      if (res.ok) {
+        const data = await res.json()
+        setPackages(data.packages || [])
+      } else {
+        const data = await res.json()
+        toast.error(data.detail || '获取应用列表失败')
+      }
+    } catch (err) {
+      toast.error('获取应用列表失败: ' + err.message)
+    } finally {
+      setPackagesLoading(false)
+    }
+  }
+
+  const filteredPackages = packages.filter(p =>
+    !pkgSearch || p.package.toLowerCase().includes(pkgSearch.toLowerCase())
+  )
+
+  const selectedTotalSize = [...selectedPkgs].reduce((sum, pkg) => {
+    const p = packages.find(x => x.package === pkg)
+    return sum + (p?.size_bytes || 0)
+  }, 0)
+
+  const togglePkg = (pkg) => {
+    setSelectedPkgs(prev => {
+      const next = new Set(prev)
+      if (next.has(pkg)) next.delete(pkg)
+      else next.add(pkg)
+      return next
+    })
+  }
+
+  const toggleAllPkgs = () => {
+    if (selectedPkgs.size === filteredPackages.length) {
+      setSelectedPkgs(new Set())
+    } else {
+      setSelectedPkgs(new Set(filteredPackages.map(p => p.package)))
+    }
+  }
+
+  const handleExtract = async () => {
+    if (!selectedDevice || selectedPkgs.size === 0) return
+    setExtracting(true)
+    setExtractProgress({ current: 0, total: selectedPkgs.size, currentPkg: '', percent: 0 })
+    localStorage.setItem('adb_extractDir', extractDir)
+
+    try {
+      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/extract-apks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packages: [...selectedPkgs], local_dir: extractDir }),
+      })
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const evt = JSON.parse(line.slice(6))
+            if (evt.type === 'start') {
+              setExtractProgress(prev => ({
+                ...prev,
+                current: evt.current,
+                total: evt.total,
+                currentPkg: evt.package,
+                percent: Math.round(((evt.current - 1) / evt.total) * 100),
+              }))
+            } else if (evt.type === 'item') {
+              setExtractProgress(prev => ({
+                ...prev,
+                current: evt.current,
+                total: evt.total,
+                currentPkg: evt.package,
+                percent: Math.round((evt.current / evt.total) * 100),
+                lastStatus: evt.status,
+                lastSpeed: evt.speed_bps ? formatSize(evt.speed_bps) + '/s' : null,
+              }))
+            } else if (evt.type === 'done') {
+              setExtractProgress({
+                done: true,
+                success_count: evt.success_count,
+                fail_count: evt.fail_count,
+                total: evt.total,
+                local_dir: evt.local_dir,
+                percent: 100,
+              })
+            } else if (evt.type === 'cancelled') {
+              toast.warning('提取已取消')
+              setExtractProgress(null)
+              setExtracting(false)
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      toast.error('提取失败: ' + err.message)
+      setExtractProgress(null)
+    } finally {
+      setExtracting(false)
+    }
+  }
+
+  const handleCancelExtract = async () => {
+    if (!selectedDevice) return
+    try {
+      await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/extract-apks`, { method: 'DELETE' })
+    } catch {}
+  }
+
+  const handleOpenExtractDir = async () => {
+    const dir = extractProgress?.local_dir || extractDir
+    try {
+      await fetch('/api/adb_master/open-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: dir }),
+      })
+    } catch {}
   }
 
   // ======== 设备切换处理 ========
@@ -1391,6 +1548,215 @@ function AdbMaster() {
                               <button onClick={() => sendScrcpyKey(26)} title="电源"
                                 className="px-2 py-1.5 rounded-lg text-xs bg-[var(--cream-warm)] hover:bg-[var(--glass-border)] transition-colors">
                                 ⏻
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 应用提取面板 */}
+                  <div className="mt-4">
+                    <button
+                      className="w-full flex items-center justify-between p-3 rounded-lg bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)] transition-colors"
+                      onClick={() => setExpandExtract(!expandExtract)}
+                    >
+                      <div className="flex items-center gap-2">
+                        {expandExtract ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                        <Archive size={18} className="text-[var(--caramel)]" />
+                        <span className="font-medium">应用提取</span>
+                        {extracting && (
+                          <span className="ml-2 flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--sky)]/15 text-[var(--sky)] font-medium">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[var(--sky)] animate-pulse" />
+                            提取中
+                          </span>
+                        )}
+                      </div>
+                      {packages.length > 0 && !extracting && (
+                        <span className="text-xs text-[var(--coffee-muted)]">
+                          {packages.length} 个应用
+                        </span>
+                      )}
+                    </button>
+                    {expandExtract && (
+                      <div className="mt-2 p-4 bg-[var(--cream-warm)]/30 rounded-xl space-y-3">
+                        {/* 工具栏 */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            className="btn-secondary flex items-center gap-1.5 text-sm py-1.5 px-3"
+                            onClick={fetchPackages}
+                            disabled={packagesLoading}
+                          >
+                            <RefreshCw size={14} className={packagesLoading ? 'animate-spin' : ''} />
+                            {packagesLoading ? '扫描中...' : '刷新应用列表'}
+                          </button>
+                          <div className="flex items-center rounded-lg border border-[var(--glass-border)] overflow-hidden text-sm">
+                            <button
+                              className={`px-3 py-1.5 transition-colors ${pkgFilter === 'third_party' ? 'bg-[var(--caramel)] text-white' : 'bg-white hover:bg-[var(--cream-warm)]'}`}
+                              onClick={() => { setPkgFilter('third_party'); if (packages.length > 0) setTimeout(fetchPackages, 0) }}
+                            >
+                              第三方
+                            </button>
+                            <button
+                              className={`px-3 py-1.5 transition-colors ${pkgFilter === 'all' ? 'bg-[var(--caramel)] text-white' : 'bg-white hover:bg-[var(--cream-warm)]'}`}
+                              onClick={() => { setPkgFilter('all'); if (packages.length > 0) setTimeout(fetchPackages, 0) }}
+                            >
+                              全部
+                            </button>
+                          </div>
+                          {packages.length > 0 && (
+                            <div className="flex-1 min-w-[160px] relative">
+                              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)]" />
+                              <input
+                                type="text"
+                                value={pkgSearch}
+                                onChange={e => setPkgSearch(e.target.value)}
+                                placeholder="搜索包名..."
+                                className="w-full text-sm pl-8 pr-3 py-1.5 rounded-lg border border-[var(--glass-border)]"
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 应用列表 */}
+                        {packages.length > 0 && !extracting && (
+                          <>
+                            <div className="flex items-center justify-between px-1">
+                              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPkgs.size === filteredPackages.length && filteredPackages.length > 0}
+                                  onChange={toggleAllPkgs}
+                                  className="rounded"
+                                />
+                                全选
+                              </label>
+                              <span className="text-xs text-[var(--coffee-muted)]">
+                                已选 {selectedPkgs.size}/{filteredPackages.length}
+                                {selectedPkgs.size > 0 && ` (${formatSize(selectedTotalSize)})`}
+                              </span>
+                            </div>
+                            <div className="max-h-[280px] overflow-y-auto rounded-lg border border-[var(--glass-border)] bg-white/50">
+                              {filteredPackages.map(pkg => (
+                                <label
+                                  key={pkg.package}
+                                  className="flex items-center gap-3 px-3 py-2 hover:bg-[var(--cream-warm)]/50 cursor-pointer border-b border-[var(--glass-border)] last:border-b-0 transition-colors"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedPkgs.has(pkg.package)}
+                                    onChange={() => togglePkg(pkg.package)}
+                                    className="rounded shrink-0"
+                                  />
+                                  <span className="font-mono text-sm text-[var(--coffee-deep)] truncate flex-1" title={pkg.package}>
+                                    {pkg.package}
+                                  </span>
+                                  <span className="text-xs text-[var(--coffee-muted)] shrink-0 tabular-nums">
+                                    {formatSize(pkg.size_bytes)}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        {packages.length === 0 && !packagesLoading && !extracting && (
+                          <div className="text-center py-6 text-sm text-[var(--coffee-muted)]">
+                            点击「刷新应用列表」扫描设备上的应用
+                          </div>
+                        )}
+
+                        {/* 提取配置 + 操作按钮 */}
+                        {packages.length > 0 && !extracting && !extractProgress?.done && (
+                          <div className="pt-2 border-t border-[var(--glass-border)] space-y-2">
+                            <div>
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">保存到本地目录</label>
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  value={extractDir}
+                                  onChange={e => setExtractDir(e.target.value)}
+                                  placeholder="D:\apk_backup"
+                                  className="font-mono text-sm flex-1"
+                                />
+                                <button
+                                  className="btn-secondary p-2 shrink-0"
+                                  onClick={handleOpenExtractDir}
+                                  title="打开目录"
+                                >
+                                  <FolderOpen size={16} />
+                                </button>
+                              </div>
+                            </div>
+                            <button
+                              className="btn-primary flex items-center gap-2"
+                              onClick={handleExtract}
+                              disabled={selectedPkgs.size === 0}
+                            >
+                              <Archive size={14} />
+                              开始提取 ({selectedPkgs.size} 个, ~{formatSize(selectedTotalSize)})
+                            </button>
+                          </div>
+                        )}
+
+                        {/* 提取进度 */}
+                        {extracting && extractProgress && !extractProgress.done && (
+                          <div className="pt-2 border-t border-[var(--glass-border)] space-y-2">
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-[var(--coffee-deep)]">
+                                提取进度: {extractProgress.current}/{extractProgress.total}
+                              </span>
+                              {extractProgress.lastSpeed && (
+                                <span className="text-xs text-[var(--coffee-muted)]">{extractProgress.lastSpeed}</span>
+                              )}
+                            </div>
+                            <div className="w-full h-2 bg-[var(--cream-warm)] rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-[var(--caramel)] rounded-full transition-all duration-300"
+                                style={{ width: `${extractProgress.percent || 0}%` }}
+                              />
+                            </div>
+                            {extractProgress.currentPkg && (
+                              <div className="text-xs text-[var(--coffee-muted)] font-mono truncate">
+                                {extractProgress.currentPkg}
+                              </div>
+                            )}
+                            <button
+                              className="px-4 py-1.5 rounded-xl text-sm font-medium bg-[var(--terracotta)] text-white hover:brightness-110 transition-all flex items-center gap-2"
+                              onClick={handleCancelExtract}
+                            >
+                              <X size={14} />
+                              取消提取
+                            </button>
+                          </div>
+                        )}
+
+                        {/* 提取完成 */}
+                        {extractProgress?.done && (
+                          <div className="pt-2 border-t border-[var(--glass-border)] space-y-2">
+                            <div className="flex items-center gap-2 text-sm">
+                              <span className="w-2 h-2 rounded-full bg-[var(--sage)]" />
+                              <span className="text-[var(--coffee-deep)]">
+                                提取完成: {extractProgress.success_count}/{extractProgress.total} 成功
+                                {extractProgress.fail_count > 0 && (
+                                  <span className="text-[var(--terracotta)]">，{extractProgress.fail_count} 失败</span>
+                                )}
+                              </span>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                className="btn-primary flex items-center gap-2"
+                                onClick={handleOpenExtractDir}
+                              >
+                                <FolderOpen size={14} />
+                                打开输出目录
+                              </button>
+                              <button
+                                className="btn-secondary flex items-center gap-2"
+                                onClick={() => setExtractProgress(null)}
+                              >
+                                继续提取
                               </button>
                             </div>
                           </div>

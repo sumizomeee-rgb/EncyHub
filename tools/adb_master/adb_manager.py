@@ -4,6 +4,7 @@ Provides async ADB command execution and device management.
 """
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass
 from typing import Optional, Callable, List
@@ -746,6 +747,190 @@ class AdbManager:
         success = returncode == 0 and 'Success' in output
 
         return success, output
+
+    # ========================================================================
+    # APK 提取
+    # ========================================================================
+
+    async def list_packages(self, serial: str, third_party_only: bool = True) -> list[dict]:
+        """
+        获取设备已安装应用列表，含 APK 路径和大小。
+
+        Args:
+            serial: Device serial
+            third_party_only: If True, only list third-party apps
+
+        Returns:
+            List of dicts: [{"package": str, "apk_path": str, "size_bytes": int}, ...]
+        """
+        # 1. 获取包名列表
+        flag = '-3' if third_party_only else ''
+        cmd_parts = ['-s', serial, 'shell', 'pm', 'list', 'packages']
+        if flag:
+            cmd_parts.append(flag)
+
+        returncode, stdout, stderr = await self._run_command(*cmd_parts, timeout=15.0)
+        if returncode != 0:
+            return []
+
+        packages = []
+        for line in stdout.strip().split('\n'):
+            line = line.strip().replace('\r', '')
+            if line.startswith('package:'):
+                packages.append(line[8:])
+
+        if not packages:
+            return []
+
+        # 2. 批量获取 APK 路径（单次 shell 会话）
+        # 构建一个 shell 命令一次性获取所有包的路径
+        path_cmds = ' && '.join(
+            f'echo "PKG:{pkg}:$(pm path {pkg} 2>/dev/null | head -1 | sed s/package://)"'
+            for pkg in packages
+        )
+        returncode, stdout, stderr = await self._run_command(
+            '-s', serial, 'shell', path_cmds,
+            timeout=30.0
+        )
+
+        pkg_paths = {}
+        if returncode == 0:
+            for line in stdout.strip().split('\n'):
+                line = line.strip().replace('\r', '')
+                if line.startswith('PKG:'):
+                    parts = line[4:].split(':', 1)
+                    if len(parts) == 2 and parts[1]:
+                        pkg_paths[parts[0]] = parts[1]
+
+        # 3. 批量获取文件大小（单次 shell 会话）
+        paths_to_stat = {pkg: path for pkg, path in pkg_paths.items() if path}
+        pkg_sizes = {}
+        if paths_to_stat:
+            stat_cmds = ' && '.join(
+                f'echo "SIZE:{pkg}:$(stat -c %s \\"{path}\\" 2>/dev/null || echo 0)"'
+                for pkg, path in paths_to_stat.items()
+            )
+            returncode, stdout, stderr = await self._run_command(
+                '-s', serial, 'shell', stat_cmds,
+                timeout=30.0
+            )
+            if returncode == 0:
+                for line in stdout.strip().split('\n'):
+                    line = line.strip().replace('\r', '')
+                    if line.startswith('SIZE:'):
+                        parts = line[5:].split(':', 1)
+                        if len(parts) == 2:
+                            try:
+                                pkg_sizes[parts[0]] = int(parts[1])
+                            except ValueError:
+                                pkg_sizes[parts[0]] = 0
+
+        # 4. 组装结果
+        result = []
+        for pkg in sorted(packages):
+            apk_path = pkg_paths.get(pkg, '')
+            if not apk_path:
+                continue
+            result.append({
+                "package": pkg,
+                "apk_path": apk_path,
+                "size_bytes": pkg_sizes.get(pkg, 0),
+            })
+
+        return result
+
+    async def extract_apk(
+        self,
+        serial: str,
+        apk_path: str,
+        local_path: str,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> dict:
+        """
+        从设备提取单个 APK 到本地（流式传输）。
+        使用 adb exec-out cat 避免 Git Bash 路径转换问题。
+
+        Args:
+            serial: Device serial
+            apk_path: 设备上的 APK 路径 (如 /data/app/.../base.apk)
+            local_path: 本地保存路径
+            cancel_event: 可选的取消信号
+
+        Returns:
+            {"success": bool, "size_bytes": int, "error": str|None}
+        """
+        import time
+
+        os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
+
+        cmd = [self.adb_path, '-s', serial, 'exec-out', 'cat', apk_path]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+        except Exception as e:
+            return {"success": False, "size_bytes": 0, "error": str(e)}
+
+        total_bytes = 0
+        chunk_size = 65536  # 64KB
+        start_time = time.time()
+
+        try:
+            with open(local_path, 'wb') as f:
+                while True:
+                    # 检查取消信号
+                    if cancel_event and cancel_event.is_set():
+                        process.kill()
+                        await process.wait()
+                        # 清理不完整的文件
+                        try:
+                            os.remove(local_path)
+                        except OSError:
+                            pass
+                        return {"success": False, "size_bytes": total_bytes, "error": "cancelled"}
+
+                    try:
+                        chunk = await asyncio.wait_for(
+                            process.stdout.read(chunk_size),
+                            timeout=60.0
+                        )
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        await process.wait()
+                        return {"success": False, "size_bytes": total_bytes, "error": "传输超时"}
+
+                    if not chunk:
+                        break
+
+                    f.write(chunk)
+                    total_bytes += len(chunk)
+
+            await process.wait()
+
+            if process.returncode != 0:
+                stderr_out = await process.stderr.read()
+                error_msg = stderr_out.decode('utf-8', errors='replace').strip()
+                return {"success": False, "size_bytes": total_bytes, "error": error_msg or "adb 命令失败"}
+
+            if total_bytes == 0:
+                try:
+                    os.remove(local_path)
+                except OSError:
+                    pass
+                return {"success": False, "size_bytes": 0, "error": "提取的文件为空"}
+
+            return {"success": True, "size_bytes": total_bytes, "error": None}
+
+        except Exception as e:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            return {"success": False, "size_bytes": total_bytes, "error": str(e)}
 
 
 # Global instance
