@@ -63,6 +63,10 @@ class ServerMgr:
         self.on_update: Optional[Callable] = None
         self.on_log: Optional[Callable[[Log], None]] = None
         self.on_client_data_update: Optional[Callable[[str], None]] = None
+        self._animator_list_cache = {}      # client_id -> animator list
+        self.on_animator_data = None        # Callback for ANIM_DATA
+        self.on_animator_list = None        # Callback for ANIM_LIST_RESP
+        self.on_animator_removed = None     # Callback for ANIM_REMOVED
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -235,6 +239,16 @@ class ServerMgr:
                 self.on_client_data_update(cid)
             else:
                 print(f"[ServerMgr] ⚠ on_client_data_update 未设置!")
+        elif t == "ANIM_LIST_RESP":
+            self._animator_list_cache[cid] = pkt.get("animators", [])
+            if self.on_animator_list:
+                self.on_animator_list(cid, self._animator_list_cache[cid])
+        elif t == "ANIM_DATA":
+            if self.on_animator_data:
+                self.on_animator_data(cid, pkt)
+        elif t == "ANIM_REMOVED":
+            if self.on_animator_removed:
+                self.on_animator_removed(cid, pkt.get("animatorId"))
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -415,6 +429,61 @@ class ServerMgr:
     def get_logs(self, limit: int = 100) -> list:
         """获取日志"""
         return [log.to_dict() for log in self.logs[-limit:]]
+
+    async def send_anim_list_request(self, client_id: str):
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        msg = json.dumps({"type": "ANIM_LIST"}) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send ANIM_LIST failed: {e}", client_id)
+
+    async def send_anim_subscribe(self, client_id: str, animator_id: int):
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        msg = json.dumps({"type": "ANIM_SUBSCRIBE", "animatorId": animator_id}) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send ANIM_SUBSCRIBE failed: {e}", client_id)
+
+    async def send_anim_unsubscribe(self, client_id: str):
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        msg = json.dumps({"type": "ANIM_UNSUBSCRIBE"}) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send ANIM_UNSUBSCRIBE failed: {e}", client_id)
+
+    async def send_anim_set_param(self, client_id: str, animator_id: int, param_name: str, param_type: str, float_val: float = 0, int_val: int = 0, bool_val: bool = False):
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        msg = json.dumps({
+            "type": "ANIM_SET_PARAM",
+            "animatorId": animator_id,
+            "paramName": param_name,
+            "paramType": param_type,
+            "floatValue": float_val,
+            "intValue": int_val,
+            "boolValue": bool_val
+        }) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send ANIM_SET_PARAM failed: {e}", client_id)
+
+    def get_cached_animator_list(self, client_id: str):
+        return self._animator_list_cache.get(client_id, [])
 
     async def shutdown(self):
         """关闭所有连接并清理端口"""

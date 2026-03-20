@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
-  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw
+  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
+import AnimatorViewer from './AnimatorViewer'
 
 function GmConsole() {
   const navigate = useNavigate()
@@ -662,6 +663,19 @@ function GmConsole() {
                         自定义
                       </span>
                     </button>
+                    <button
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
+                        activeTab === 'animator'
+                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
+                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
+                      }`}
+                      onClick={() => setActiveTab('animator')}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Activity size={14} />
+                        Animator
+                      </span>
+                    </button>
                   </div>
                   {activeTab === 'lua_gm' && (
                     <button
@@ -921,6 +935,14 @@ function GmConsole() {
                       </div>
                     )}
                   </div>
+                )}
+
+                {activeTab === 'animator' && (
+                  <AnimatorViewer
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    broadcastMode={broadcastMode}
+                  />
                 )}
               </div>
             </div>

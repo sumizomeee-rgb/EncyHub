@@ -6,7 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -80,6 +80,32 @@ async def lifespan(app: FastAPI):
         }))
 
     server_mgr.on_client_data_update = on_client_data_update
+
+    def on_animator_data(client_id, pkt):
+        asyncio.create_task(broadcast_animator_event({
+            "type": "animator_data",
+            "client_id": client_id,
+            "snapshot": pkt.get("snapshot"),
+            "stateChanges": pkt.get("stateChanges")
+        }))
+
+    def on_animator_list(client_id, animators):
+        asyncio.create_task(broadcast_animator_event({
+            "type": "animator_list",
+            "client_id": client_id,
+            "animators": animators
+        }))
+
+    def on_animator_removed(client_id, animator_id):
+        asyncio.create_task(broadcast_animator_event({
+            "type": "animator_removed",
+            "client_id": client_id,
+            "animatorId": animator_id
+        }))
+
+    server_mgr.on_animator_data = on_animator_data
+    server_mgr.on_animator_list = on_animator_list
+    server_mgr.on_animator_removed = on_animator_removed
 
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
@@ -255,6 +281,64 @@ async def delete_custom_gm(index: int):
     if not custom_gm_mgr.delete(index):
         raise HTTPException(404, "命令不存在")
     return {"message": "已删除"}
+
+
+# === Animator Viewer API ===
+
+animator_ws_connections: list = []
+
+async def broadcast_animator_event(data: dict):
+    dead = []
+    for ws in animator_ws_connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        animator_ws_connections.remove(ws)
+
+@app.get("/animators/{client_id}")
+async def get_animators(client_id: str):
+    await server_mgr.send_anim_list_request(client_id)
+    await asyncio.sleep(0.3)
+    animators = server_mgr.get_cached_animator_list(client_id)
+    return {"animators": animators}
+
+@app.post("/animators/{client_id}/subscribe/{animator_id}")
+async def subscribe_animator(client_id: str, animator_id: int):
+    await server_mgr.send_anim_subscribe(client_id, animator_id)
+    return {"status": "subscribed", "animatorId": animator_id}
+
+@app.post("/animators/{client_id}/unsubscribe")
+async def unsubscribe_animator(client_id: str):
+    await server_mgr.send_anim_unsubscribe(client_id)
+    return {"status": "unsubscribed"}
+
+@app.post("/animators/{client_id}/set-param/{animator_id}")
+async def set_animator_param(client_id: str, animator_id: int, request: Request):
+    body = await request.json()
+    await server_mgr.send_anim_set_param(
+        client_id, animator_id,
+        body.get("paramName", ""),
+        body.get("paramType", ""),
+        body.get("floatValue", 0),
+        body.get("intValue", 0),
+        body.get("boolValue", False)
+    )
+    return {"status": "sent"}
+
+@app.websocket("/ws/animator")
+async def websocket_animator(websocket: WebSocket):
+    await websocket.accept()
+    animator_ws_connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in animator_ws_connections:
+            animator_ws_connections.remove(websocket)
 
 
 # ============================================================================
