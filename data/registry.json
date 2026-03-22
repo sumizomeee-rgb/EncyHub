@@ -6,16 +6,16 @@
     "enabled": false,
     "port": null,
     "pid": null,
-    "last_started": "2026-03-06 03:40:26"
+    "last_started": "2026-03-21 11:06:24"
   },
   "flow_svn": {
     "tool_id": "flow_svn",
     "display_name": "FlowSVN",
     "description": "SVN 定时更新 + 触发器自动化",
-    "enabled": true,
-    "port": 7065,
-    "pid": 259808,
-    "last_started": "2026-03-06 11:34:07"
+    "enabled": false,
+    "port": null,
+    "pid": null,
+    "last_started": "2026-03-17 11:11:43"
   },
   "gm_console": {
     "tool_id": "gm_console",
@@ -24,6 +24,6 @@
     "enabled": false,
     "port": null,
     "pid": null,
-    "last_started": "2026-03-05 15:25:05"
+    "last_started": "2026-03-21 14:43:22"
   }
 }

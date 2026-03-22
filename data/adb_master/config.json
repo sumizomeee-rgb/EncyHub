@@ -8,17 +8,24 @@
       "last_wifi_ip": "10.101.0.171",
       "last_model": "23054RA19C",
       "original_hardware_id": "5HGUYXKRRK6XQ8CY"
+    },
+    "10AFA207PS002PH": {
+      "last_wifi_ip": "10.101.0.50",
+      "last_model": "V2509A",
+      "original_hardware_id": "10AFA207PS002PH"
     }
   },
   "path_history": {
     "pull": [
-      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/log",
-      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/log"
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/log",
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/log",
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/log"
     ],
     "push": [
-      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/",
-      "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/",
+      "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/Lua"
     ]
   }
