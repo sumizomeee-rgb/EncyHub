@@ -36,3 +36,4 @@ Thumbs.db
 logs/
 temp/
 tmp/
+data/adb_master/Devices/
