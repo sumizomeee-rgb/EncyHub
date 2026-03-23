@@ -11,10 +11,22 @@
       "template_id": "",
       "schedule_time": "09:00",
       "enabled": true,
-      "last_run": "2026-03-22T09:06:39.692619",
+      "last_run": "2026-03-23T09:04:50.443721",
       "last_status": "success",
-      "last_log": "[2026-03-22 09:00:01] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nU    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Animations\\SG_Gen_JH_Prop04a\\Drama_2006_04_Zhi_05_Loop.anim\nU    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Animations\\SG_Gen_JH_Prop04a\\Drama_2006_04_Zhi_06.anim\nU    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Animations\\SG_Gen_JH_Prop04a\\Drama_2006_04_Zhi_07_Loop.anim\nU    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Animations\\SG_Gen_JH_Prop04a\\Drama_2006_04_Zhi_09_Loop.anim\nU    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Animations\\SG_Gen_JH_Prop04a\\Drama_2006_04_Zhi_14_Loop.anim\nU    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Animations\\SG_Gen_JH_Prop04a\\Drama_2006_04_Zhi_20_Loop.anim\nU    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Animations\\SG_Gen_JH_Prop04a\\Drama_2006_04_Zhi_25_Loop.anim\nA    Res\\Assets\\Product\\BigWorld\\SkyGarden\\Ani",
+      "last_log": "[2026-03-23 09:00:01] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nU    Dev\\Client\\Assets\\Editor\\XFight\\XDlc\\XDlcFightEnumToLuaExporter.cs\nU    Dev\\Client\\Assets\\Resources\\XBuildInfoConfig.asset\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionCN\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionEN\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionJP\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionKR\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionTW\nU    Dev\\Client\\BuildCache\\win\\[AUA]AllBigWorld2RefCueId(Full).tab\nU    Dev\\Client\\BuildCache\\win\\[AUA]Chapter2RefCueSheetId.tab\nU    Dev\\Client\\BuildCache\\win\\[AUA]Chapter2UniqueCueSheetId.tab\nU    Dev\\Client\\BuildCache\\win\\[AUA]ChapterStage2RefCueSheetId.tab\nU    Dev\\Client\\Packages\\com.haru.toolkit\\Editor\\XToolkit\\Data\\XToolEntryDatabase.asset\n",
       "execution_history": [
+        {
+          "time": "2026-03-23T09:04:50.443721",
+          "status": "success",
+          "duration": 288.5381257534027,
+          "message": "[2026-03-23 09:00:01] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-03-23T09:00:01.905596",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
         {
           "time": "2026-03-22T09:06:39.692619",
           "status": "success",
@@ -122,21 +134,9 @@
           "status": "running",
           "duration": 0,
           "message": "任务开始执行"
-        },
-        {
-          "time": "2026-03-13T09:13:06.432098",
-          "status": "success",
-          "duration": 784.606850862503,
-          "message": "[2026-03-13 09:00:01] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
-        },
-        {
-          "time": "2026-03-13T09:00:01.825247",
-          "status": "running",
-          "duration": 0,
-          "message": "任务开始执行"
         }
       ],
-      "total_runs": 19
+      "total_runs": 20
     }
   ],
   "templates": []
