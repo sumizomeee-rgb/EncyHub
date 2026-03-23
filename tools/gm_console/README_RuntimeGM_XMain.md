@@ -6,6 +6,7 @@
 
 - **GM Console**: 远程执行 Lua 代码、GM 按钮面板
 - **Animator Viewer**: 远程查看 Animator 状态机、参数、转场（真机可用）
+- **Lua UI Inspector**: 远程查看/编辑 Lua UI（XLuaUi）实例的 self 表数据（真机可用）
 - **Log 截获**: 远程查看 `print()` 输出
 
 ## 使用方法
@@ -27,7 +28,7 @@
 
 ```lua
 --===============
---==自定义代码 start （RuntimeGMClient + LuaAnimatorMonitor）
+--==自定义代码 start （RuntimeGMClient + LuaAnimatorMonitor + LuaUiInspector）
 -- RuntimeGMClient 核心逻辑 (内嵌版)
 local function StartRuntimeGM()
     local RuntimeGMClient = {}
@@ -640,6 +641,282 @@ local function StartRuntimeGM()
         end
     end
 
+    -- ========== LuaUiInspector: 运行时 Lua UI 数据查看 (真机兼容) ==========
+    local LuaUiInspector = {}
+    LuaUiInspector._OriginalValues = {}
+
+    local INSPECTOR_SKIP_KEYS = {
+        UiProxy = true, Ui = true, Transform = true,
+        GameObject = true, Parent = true,
+        UiAnimation = true, UiSceneInfo = true, UiModel = true, UiModelGo = true,
+        SignalData = true, ChildSignalDatas = true,
+    }
+    local INSPECTOR_MAX_ARRAY = 100
+
+    local function inspectorGetTypeName(v)
+        local t = type(v)
+        if t == "userdata" then
+            local ok, typeName = pcall(function() return tostring(v:GetType()) end)
+            if ok and typeName then return "userdata", typeName end
+            return "userdata", "userdata"
+        end
+        return t, nil
+    end
+
+    local function inspectorTableKeyCount(t)
+        local count = 0
+        for _ in pairs(t) do count = count + 1 end
+        return count
+    end
+
+    local function inspectorGetSortedKeys(t)
+        local numKeys, strKeys = {}, {}
+        for k in pairs(t) do
+            if type(k) == "number" then numKeys[#numKeys + 1] = k
+            elseif type(k) == "string" then strKeys[#strKeys + 1] = k end
+        end
+        table.sort(numKeys)
+        table.sort(strKeys)
+        local result = {}
+        for _, k in ipairs(numKeys) do result[#result + 1] = k end
+        for _, k in ipairs(strKeys) do result[#result + 1] = k end
+        return result
+    end
+
+    local function inspectorResolvePath(root, path)
+        if not path or path == "" then return root, nil, nil end
+        local current = root
+        local segments = {}
+        for seg in string.gmatch(path, "[^%.]+") do
+            segments[#segments + 1] = tonumber(seg) or seg
+        end
+        for i = 1, #segments - 1 do
+            local key = segments[i]
+            if type(current) ~= "table" then return nil, nil, nil end
+            current = current[key]
+        end
+        local lastKey = segments[#segments]
+        return current, lastKey, current and current[lastKey]
+    end
+
+    local function inspectorSerializeValue(value, depth, visited, key)
+        local t, displayName = inspectorGetTypeName(value)
+        if t == "nil" then return { type = "nil", value = "nil", editable = false }
+        elseif t == "number" then return { type = "number", value = value, editable = true }
+        elseif t == "string" then return { type = "string", value = value, editable = true }
+        elseif t == "boolean" then return { type = "boolean", value = value, editable = true }
+        elseif t == "function" then return { type = "function", value = "function", editable = false }
+        elseif t == "userdata" then return { type = "userdata", value = displayName or "userdata", editable = false }
+        elseif t == "table" then
+            if visited[value] then return { type = "ref", value = "[circular]", editable = false } end
+            local childCount = inspectorTableKeyCount(value)
+            if depth <= 0 or (key and INSPECTOR_SKIP_KEYS[key]) then
+                return { type = "table", childCount = childCount, expandable = true, editable = false }
+            end
+            visited[value] = true
+            local fields = {}
+            local keys = inspectorGetSortedKeys(value)
+            local shown, truncated = 0, false
+            for _, k in ipairs(keys) do
+                if shown >= INSPECTOR_MAX_ARRAY then truncated = true; break end
+                local v = value[k]
+                local childKey = type(k) == "number" and tostring(k) or k
+                local childDesc = inspectorSerializeValue(v, INSPECTOR_SKIP_KEYS[k] and 0 or (depth - 1), visited, k)
+                childDesc.key = childKey
+                fields[#fields + 1] = childDesc
+                shown = shown + 1
+            end
+            visited[value] = nil
+            local result = { type = "table", childCount = childCount, expandable = true, editable = false, fields = fields }
+            if truncated then result.truncated = true; result.total = childCount; result.shown = shown end
+            return result
+        else
+            return { type = t, value = tostring(value), editable = false }
+        end
+    end
+
+    origin_print("[RuntimeGM] LuaUiInspector module initialized")
+
+    function LuaUiInspector.GetOpenUiList()
+        local result = {}
+        local ok, allList = pcall(function() return CS.XUiManager.Instance:GetAllList() end)
+        if not ok or not allList then
+            return { error = "Failed to get UI list: " .. tostring(allList) }
+        end
+        local seen = {}
+        for i = 0, allList.Count - 1 do
+            local xok, info = pcall(function()
+                local xui = allList[i]
+                local uiName = xui.UiData.UiName
+                if seen[uiName] then return nil end
+                seen[uiName] = true
+                local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+                if not luaUi then return nil end
+                return { name = uiName, active = xui.IsEnable }
+            end)
+            if xok and info then result[#result + 1] = info end
+        end
+        table.sort(result, function(a, b) return a.name < b.name end)
+        local validNames = {}
+        for _, info in ipairs(result) do validNames[info.name] = true end
+        for uiName in pairs(LuaUiInspector._OriginalValues) do
+            if not validNames[uiName] then LuaUiInspector._OriginalValues[uiName] = nil end
+        end
+        return result
+    end
+
+    function LuaUiInspector.GetUiTree(uiName)
+        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+        if not luaUi then return { error = "UI not found: " .. tostring(uiName) } end
+        local function buildChildren(node, basePath)
+            local children = {}
+            if node._ChildNodes and #node._ChildNodes > 0 then
+                for i, child in ipairs(node._ChildNodes) do
+                    local childPath = basePath == "" and ("_ChildNodes." .. i) or (basePath .. "._ChildNodes." .. i)
+                    local goName = "Unknown"
+                    pcall(function() goName = child.GameObject and tostring(child.GameObject.name) or "Unknown" end)
+                    local cname = ""
+                    pcall(function() cname = child.__cname or "" end)
+                    local subChildren = buildChildren(child, childPath)
+                    children[#children + 1] = {
+                        type = "ChildNode", name = goName, cname = cname, path = childPath,
+                        hasChildren = #subChildren > 0,
+                        children = #subChildren > 0 and subChildren or nil,
+                    }
+                end
+            end
+            return children
+        end
+        return { name = uiName, children = buildChildren(luaUi, "") }
+    end
+
+    function LuaUiInspector.GetNodeData(uiName, path, depth)
+        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+        if not luaUi then return { error = "UI not found" } end
+        depth = depth or 3
+        local target = luaUi
+        if path and path ~= "" then
+            for seg in string.gmatch(path, "[^%.]+") do
+                local key = tonumber(seg) or seg
+                if type(target) ~= "table" then return { error = "Path invalid" } end
+                target = target[key]
+            end
+        end
+        if type(target) ~= "table" then
+            return { fields = { inspectorSerializeValue(target, 0, {}, nil) } }
+        end
+        local fields = {}
+        local visited = { [target] = true }
+        local originals = LuaUiInspector._OriginalValues[uiName] or {}
+        local instanceKeys = {}
+        for _, k in ipairs(inspectorGetSortedKeys(target)) do
+            local v = target[k]
+            local keyStr = tostring(k)
+            instanceKeys[keyStr] = true
+            local fieldPath = (not path or path == "") and keyStr or (path .. "." .. keyStr)
+            local desc = inspectorSerializeValue(v, INSPECTOR_SKIP_KEYS[k] and 0 or (depth - 1), visited, k)
+            desc.key = keyStr
+            desc.modified = originals[fieldPath] ~= nil
+            fields[#fields + 1] = desc
+        end
+        local mt = getmetatable(target)
+        if mt then
+            local idx = rawget(mt, "__index")
+            if type(idx) == "table" then
+                local classMethods = {}
+                for k, v in pairs(idx) do
+                    if type(k) == "string" and type(v) == "function" and not instanceKeys[k] then
+                        classMethods[#classMethods + 1] = k
+                    end
+                end
+                table.sort(classMethods)
+                for _, k in ipairs(classMethods) do
+                    fields[#fields + 1] = {
+                        key = k, type = "function", value = "function (class)",
+                        editable = false, modified = false,
+                    }
+                end
+            end
+        end
+        return { fields = fields }
+    end
+
+    function LuaUiInspector.SetValue(uiName, path, value, valueType)
+        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+        if not luaUi then return { success = false, error = "UI not found" } end
+        if not path or path == "" then return { success = false, error = "Path is empty" } end
+        local typedValue = value
+        if valueType == "number" then
+            typedValue = tonumber(value)
+            if not typedValue then return { success = false, error = "Invalid number" } end
+        elseif valueType == "boolean" then
+            typedValue = (type(value) == "string") and (value == "true") or (not not value)
+        elseif valueType == "string" then
+            typedValue = tostring(value)
+        else
+            return { success = false, error = "Unsupported type: " .. tostring(valueType) }
+        end
+        local parent, lastKey, oldValue = inspectorResolvePath(luaUi, path)
+        if not parent or not lastKey then return { success = false, error = "Path not found" } end
+        LuaUiInspector._OriginalValues[uiName] = LuaUiInspector._OriginalValues[uiName] or {}
+        if LuaUiInspector._OriginalValues[uiName][path] == nil then
+            LuaUiInspector._OriginalValues[uiName][path] = oldValue
+        end
+        parent[lastKey] = typedValue
+        return { success = true, path = path, oldValue = oldValue, newValue = typedValue }
+    end
+
+    function LuaUiInspector.RevertValue(uiName, path)
+        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+        if not luaUi then return { success = false, error = "UI not found" } end
+        local originals = LuaUiInspector._OriginalValues[uiName]
+        if not originals or originals[path] == nil then
+            return { success = false, error = "No original value for: " .. path }
+        end
+        local parent, lastKey = inspectorResolvePath(luaUi, path)
+        if not parent or not lastKey then return { success = false, error = "Path not found" } end
+        local originalValue = originals[path]
+        parent[lastKey] = originalValue
+        originals[path] = nil
+        if next(originals) == nil then LuaUiInspector._OriginalValues[uiName] = nil end
+        return { success = true, path = path, revertedTo = originalValue }
+    end
+
+    function LuaUiInspector.RevertAll(uiName)
+        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+        if not luaUi then return { success = false, error = "UI not found" } end
+        local originals = LuaUiInspector._OriginalValues[uiName]
+        if not originals then return { success = true, count = 0 } end
+        local count = 0
+        for path, originalValue in pairs(originals) do
+            local parent, lastKey = inspectorResolvePath(luaUi, path)
+            if parent and lastKey then parent[lastKey] = originalValue; count = count + 1 end
+        end
+        LuaUiInspector._OriginalValues[uiName] = nil
+        return { success = true, count = count }
+    end
+
+    function LuaUiInspector.HandleCommand(packet)
+        local action = packet.action
+        local result
+        if action == "ui_list" then
+            result = LuaUiInspector.GetOpenUiList()
+        elseif action == "ui_tree" then
+            result = LuaUiInspector.GetUiTree(packet.uiName)
+        elseif action == "node_data" then
+            result = LuaUiInspector.GetNodeData(packet.uiName, packet.path, packet.depth)
+        elseif action == "set_value" then
+            result = LuaUiInspector.SetValue(packet.uiName, packet.path, packet.value, packet.valueType)
+        elseif action == "revert" then
+            result = LuaUiInspector.RevertValue(packet.uiName, packet.path)
+        elseif action == "revert_all" then
+            result = LuaUiInspector.RevertAll(packet.uiName)
+        else
+            result = { error = "Unknown action: " .. tostring(action) }
+        end
+        RuntimeGMClient.Send({ type = "UI_INSPECTOR_RESP", action = action, data = result })
+    end
+
     function RuntimeGMClient.Update()
         if not RuntimeGMClient.IsRunning then return end
         if not RuntimeGMClient.Socket then
@@ -714,6 +991,11 @@ local function StartRuntimeGM()
             else RuntimeGMClient.SendLog("info", "Success", id) end
         elseif type == "EXEC_GM" then
             RuntimeGMClient.ExecuteGM(tonumber(packet.id), packet.value)
+        elseif type == "UI_INSPECTOR" then
+            local ok, err = pcall(LuaUiInspector.HandleCommand, packet)
+            if not ok then
+                origin_print("[RuntimeGM] UI_INSPECTOR command error: " .. tostring(err))
+            end
         elseif type and type:sub(1, 5) == "ANIM_" then
             local ok, err = pcall(LuaAnimatorMonitor.HandleCommand, packet)
             if not ok then
