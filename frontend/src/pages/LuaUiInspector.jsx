@@ -222,7 +222,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
                             value={leftFilter}
                             onChange={e => setLeftFilter(e.target.value)}
                             placeholder="搜索 UI..."
-                            className="w-full pl-7 pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+                            className="w-full pl-8 pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
                         />
                     </div>
                 </div>
@@ -287,7 +287,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
                                 value={rightFilter}
                                 onChange={e => setRightFilter(e.target.value)}
                                 placeholder="过滤字段..."
-                                className="w-full pl-7 pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+                                className="w-full pl-8 pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
                             />
                         </div>
                         <label className="flex items-center gap-1 text-xs text-[var(--coffee-muted)]">
