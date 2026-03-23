@@ -121,6 +121,7 @@ function GmConsole() {
       ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
+      let pingTimer = null
       ws.onopen = () => {
         setLoading(false)
         setWsStatus('connected')
@@ -129,6 +130,10 @@ function GmConsole() {
           clearInterval(fallbackInterval)
           fallbackInterval = null
         }
+        // WS 心跳保活
+        pingTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send('ping')
+        }, 25000)
       }
 
       ws.onmessage = (e) => {
@@ -158,6 +163,7 @@ function GmConsole() {
       }
 
       ws.onclose = () => {
+        if (pingTimer) clearInterval(pingTimer)
         wsRef.current = null
         setWsStatus('disconnected')
         // 降级到 HTTP 轮询

@@ -342,7 +342,9 @@ async def websocket_animator(websocket: WebSocket):
     animator_ws_connections.append(websocket)
     try:
         while True:
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
     except WebSocketDisconnect:
         pass
     finally:

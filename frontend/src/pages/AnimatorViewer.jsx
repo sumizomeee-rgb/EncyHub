@@ -68,7 +68,13 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode 
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
-      ws.onopen = () => setWsStatus('connected')
+      let pingTimer = null
+      ws.onopen = () => {
+        setWsStatus('connected')
+        pingTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send('ping')
+        }, 25000)
+      }
 
       ws.onmessage = (event) => {
         try {
@@ -94,6 +100,7 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode 
       }
 
       ws.onclose = () => {
+        if (pingTimer) clearInterval(pingTimer)
         setWsStatus('disconnected')
         setTimeout(connect, 3000)
       }

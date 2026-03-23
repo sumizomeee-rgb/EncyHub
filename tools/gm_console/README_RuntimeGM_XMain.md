@@ -7,7 +7,11 @@
 - **GM Console**: 远程执行 Lua 代码、GM 按钮面板
 - **Animator Viewer**: 远程查看 Animator 状态机、参数、转场（真机可用）
 - **Lua UI Inspector**: 远程查看/编辑 Lua UI（XLuaUi）实例的 self 表数据（真机可用）
+  - `INSPECTOR_MAX_FIELDS = 200` — 限制根级字段数量，防止大型 UI 返回过大响应
+  - `CallMethod` — 可从 Web Inspector 调用 Lua 方法（实例方法 + 元表 class 方法）
+  - `GetNodeData` 返回 `truncated`/`totalKeys`/`shownKeys` 字段截断信息
 - **Log 截获**: 远程查看 `print()` 输出
+- **TCP 心跳保活**: 每 15 秒发送 PING，防止 NAT/防火墙超时断开连接
 
 ## 使用方法
 
@@ -19,7 +23,7 @@
 ## 注意事项
 
 - IP 地址 `10.101.0.8` 需改为你自己运行 EncyHub 的电脑 IP
-- 端口 `12582` 对应 EncyHub GM Console 的 TCP 端口（默认 `main.py --port 9524` 启动后 TCP 端口为 `port + 3058 = 12582`）
+- 端口 `12581` 对应 EncyHub GM Console 的 TCP 端口（`main.py` 中 `DEFAULT_TCP_PORT = 12581`）
 - 代码使用 `rawget`/`rawset` 绕过 `LuaLockG()`，兼容任意分支
 - 代码使用 `pcall` 保护所有外部调用，不会影响游戏正常运行
 - 如果 `socket.core` 不可用（部分裁剪包），RuntimeGM 会静默跳过
@@ -27,23 +31,25 @@
 ## 代码
 
 ```lua
---===============
---==自定义代码 start （RuntimeGMClient + LuaAnimatorMonitor + LuaUiInspector）
--- RuntimeGMClient 核心逻辑 (内嵌版)
+-- 2. RuntimeGMClient 核心逻辑 (内嵌版)
+-- 将 RuntimeGMClient 的内容封装在这里，避免污染全局，但最后会 rawset 到 _G 以供调用
 local function StartRuntimeGM()
     local RuntimeGMClient = {}
     RuntimeGMClient.Socket = nil
     RuntimeGMClient.Host = "localhost"
-    RuntimeGMClient.Port = 12582
+    RuntimeGMClient.Port = 12581
     RuntimeGMClient.IsRunning = false
     RuntimeGMClient.ReconnectTimer = 0
     RuntimeGMClient.SocketLibrary = nil
+    RuntimeGMClient.HeartbeatTimer = 0
+    RuntimeGMClient.HeartbeatInterval = 15  -- 每15秒发送一次心跳
 
     -- 安全加载 socket 库
     local function loadSocketLibrary()
         local success, socket_or_err = pcall(function()
             return require("socket.core")
         end)
+
         if success and socket_or_err then
             RuntimeGMClient.SocketLibrary = socket_or_err
             return true
@@ -55,12 +61,18 @@ local function StartRuntimeGM()
 
     -- 获取设备信息
     local function getDeviceInfo()
-        local info = { platform = "Unknown", device = "Unknown", pid = 0 }
+        local info = {
+            platform = "Unknown",
+            device = "Unknown",
+            pid = 0
+        }
+
         pcall(function()
             info.platform = CS.UnityEngine.Application.platform:ToString()
             info.device = CS.UnityEngine.SystemInfo.deviceModel
             info.pid = CS.System.Diagnostics.Process.GetCurrentProcess().Id
         end)
+
         return info
     end
 
@@ -76,7 +88,10 @@ local function StartRuntimeGM()
         for i, v in ipairs(args) do
             msg = msg .. tostring(v) .. "\t"
         end
+        -- 调用原始 print 确保控制台也能看到
         origin_print(...)
+
+        -- 发送到 GM 工具
         if RuntimeGMClient.Socket then
             RuntimeGMClient.SendLog("print", msg)
         end
@@ -97,6 +112,7 @@ local function StartRuntimeGM()
             elseif t == "table" then
                 local parts = {}
                 local isArray = #val > 0
+                -- 空表统一序列化为 [] 而非 {}，避免前端 .map() 崩溃
                 if not isArray and next(val) == nil then
                     return "[]"
                 end
@@ -124,6 +140,7 @@ local function StartRuntimeGM()
             local ok, result = pcall(json.decode, str)
             if ok then return result end
         end
+
         local result = {}
         for k, v in str:gmatch('"([^"]+)"%s*:%s*"?([^,}]+)"?') do
             if v == "true" then v = true
@@ -144,35 +161,49 @@ local function StartRuntimeGM()
             return
         end
         local ok, err = pcall(function()
+            -- 给send一个短暂的超时窗口，避免被Update的settimeout(0)影响
             RuntimeGMClient.Socket:settimeout(0.05)
             RuntimeGMClient.Socket:send(packet .. "\n")
         end)
         if not ok then
             local errStr = tostring(err)
             if errStr:find("closed") or errStr:find("refused") or errStr:find("reset") then
+                -- 连接已断开，执行关闭
                 origin_print("[RuntimeGM] Send Fatal: " .. errStr)
                 RuntimeGMClient.Close()
             end
+            -- timeout/buffer full: 丢弃这条消息，保持连接
         end
     end
 
     function RuntimeGMClient.SendLog(level, msg, refId)
-        RuntimeGMClient.Send({ type = "LOG", level = level, msg = msg, ref_id = refId })
+        RuntimeGMClient.Send({
+            type = "LOG",
+            level = level,
+            msg = msg,
+            ref_id = refId
+        })
     end
 
     function RuntimeGMClient.Connect()
         if RuntimeGMClient.Socket then return end
         if not RuntimeGMClient.SocketLibrary then return end
+
         local socket = RuntimeGMClient.SocketLibrary
+        -- 打印正在连接的目标，方便确认 IP 对不对
         origin_print("[RuntimeGM] 正在连接到: " .. RuntimeGMClient.Host .. ":" .. RuntimeGMClient.Port)
+
         local success, tcp_or_err = pcall(function() return socket.tcp() end)
         if not success or not tcp_or_err then
             origin_print("[RuntimeGM] 创建 TCP 失败: " .. tostring(tcp_or_err))
             return
         end
+
         local tcp = tcp_or_err
-        tcp:settimeout(0.5)
+        tcp:settimeout(0.5) --稍微增加一点超时时间
+
         local res, err = tcp:connect(RuntimeGMClient.Host, RuntimeGMClient.Port)
+
         if res then
             origin_print("[RuntimeGM] 连接成功！")
             tcp:settimeout(0)
@@ -184,7 +215,8 @@ local function StartRuntimeGM()
                 platform = RuntimeGMClient.DeviceInfo.platform
             })
         else
-            origin_print("[RuntimeGM] 连接失败: " .. tostring(err))
+            -- 这里会打印具体的错误原因，比如 "connection refused" 或 "timeout"
+            origin_print("[RuntimeGM] 连接失败，错误原因: " .. tostring(err))
             tcp:close()
         end
     end
@@ -210,7 +242,10 @@ local function StartRuntimeGM()
 
     local function MockPanel(name, parent)
         return {
-            name = name, parent = parent, children = {}, isLeaf = false,
+            name = name,
+            parent = parent,
+            children = {},
+            isLeaf = false,
             AddChild = function(self, item) table.insert(self.children, item) end
         }
     end
@@ -226,7 +261,7 @@ local function StartRuntimeGM()
         end
         function context:AddButton(name, cb) self:AddChild("Btn", name, cb) end
         function context:AddToggle(name, cb)
-            self:AddChild("Toggle", name, cb, false)
+            local item = self:AddChild("Toggle", name, cb, false)
             return { isOn = false, onValueChanged = { AddListener = function() end } }
         end
         function context:AddInput(name, cb) self:AddChild("Input", name, cb); return { text = "" } end
@@ -297,6 +332,7 @@ local function StartRuntimeGM()
     function RuntimeGMClient.ExecuteGM(id, value)
         local cb = RuntimeGMClient.GMCallbacks[id]
         if cb then
+            -- origin_print("[RuntimeGM] Executing GM ID: " .. tostring(id))
             local status, err = pcall(cb, value)
             if not status then RuntimeGMClient.SendLog("error", "GM Exec Error: " .. tostring(err))
             else RuntimeGMClient.SendLog("info", "GM Executed") end
@@ -304,20 +340,24 @@ local function StartRuntimeGM()
     end
 
     -- ========== LuaAnimatorMonitor: Animator 数据采集 (纯 Lua, 真机兼容) ==========
+    -- 替代 C# Editor 侧的 AnimatorTcpBridge / AnimatorDataService / AnimatorTracker
+    -- 使真机包也能通过 EncyHub Web 查看 Animator 状态
     local LuaAnimatorMonitor = {}
-    LuaAnimatorMonitor._trackers = {}
-    LuaAnimatorMonitor._subscribedId = nil
+    LuaAnimatorMonitor._trackers = {}           -- instanceId → tracker table
+    LuaAnimatorMonitor._subscribedId = nil      -- 当前订阅的 animator id (nil=未订阅)
     LuaAnimatorMonitor._lastScanTime = 0
     LuaAnimatorMonitor._lastPushTime = 0
-    LuaAnimatorMonitor._scanInterval = 2.0
-    LuaAnimatorMonitor._pushInterval = 0.1
+    LuaAnimatorMonitor._scanInterval = 2.0      -- 扫描间隔(秒)
+    LuaAnimatorMonitor._pushInterval = 0.1      -- 推送间隔(秒)
 
     origin_print("[RuntimeGM] LuaAnimatorMonitor module initialized")
 
+    -- 解析状态名称
     local function _resolveStateName(tracker, hash)
         return tracker.stateNameCache[hash] or ("Unknown_" .. hash)
     end
 
+    -- 扫描场景所有 Animator
     function LuaAnimatorMonitor.ScanAnimators()
         local scanOk, allAnimators = pcall(function()
             return CS.UnityEngine.Object.FindObjectsOfType(typeof(CS.UnityEngine.Animator))
@@ -326,6 +366,8 @@ local function StartRuntimeGM()
             origin_print("[RuntimeGM] ScanAnimators failed: " .. tostring(allAnimators))
             return
         end
+
+        -- 清理无效 tracker
         local toRemove = {}
         for id, tracker in pairs(LuaAnimatorMonitor._trackers) do
             local validOk, valid = pcall(function()
@@ -338,6 +380,8 @@ local function StartRuntimeGM()
         for _, id in ipairs(toRemove) do
             LuaAnimatorMonitor._trackers[id] = nil
         end
+
+        -- 添加新发现的 Animator
         for i = 0, allAnimators.Length - 1 do
             local animator = allAnimators[i]
             if animator and animator.runtimeAnimatorController then
@@ -349,28 +393,37 @@ local function StartRuntimeGM()
         end
     end
 
+    -- 为单个 Animator 创建跟踪器
     function LuaAnimatorMonitor.CreateTracker(animator)
         local tracker = {
             animator = animator,
             instanceId = animator:GetInstanceID(),
-            stateNameCache = {},
-            lastStateHashes = {},
+            stateNameCache = {},   -- hash → name
+            lastStateHashes = {},  -- layerIndex → lastHash
         }
+
+        -- 初始化各层最后状态 hash
         for i = 0, animator.layerCount - 1 do
             local stateInfo = animator:GetCurrentAnimatorStateInfo(i)
             tracker.lastStateHashes[i] = stateInfo.shortNameHash
         end
+
+        -- 发现所有状态名称
         LuaAnimatorMonitor.DiscoverStates(tracker)
+
         return tracker
     end
 
+    -- 利用 animationClips + HasState 发现所有可探测的状态
     function LuaAnimatorMonitor.DiscoverStates(tracker)
         local animator = tracker.animator
         if not animator.runtimeAnimatorController then return end
+
         local ok, clips = pcall(function()
             return animator.runtimeAnimatorController.animationClips
         end)
         if not ok or not clips then return end
+
         local candidateNames = {}
         for i = 0, clips.Length - 1 do
             local clip = clips[i]
@@ -378,6 +431,7 @@ local function StartRuntimeGM()
                 candidateNames[clip.name] = true
             end
         end
+
         for layer = 0, animator.layerCount - 1 do
             for name, _ in pairs(candidateNames) do
                 local hash = CS.UnityEngine.Animator.StringToHash(name)
@@ -387,8 +441,11 @@ local function StartRuntimeGM()
                     end
                 end
             end
+
+            -- 记录当前播放的状态
             local stateInfo = animator:GetCurrentAnimatorStateInfo(layer)
             if stateInfo.shortNameHash ~= 0 then
+                -- 用 clip 名称补充
                 local clipOk, clipInfos = pcall(function()
                     return animator:GetCurrentAnimatorClipInfo(layer)
                 end)
@@ -404,10 +461,13 @@ local function StartRuntimeGM()
         end
     end
 
+    -- 采集单层快照
     local function _takeLayerSnapshot(tracker, animator, layerIndex)
         local stateInfo = animator:GetCurrentAnimatorStateInfo(layerIndex)
         local transInfo = animator:GetAnimatorTransitionInfo(layerIndex)
         local clipInfos = animator:GetCurrentAnimatorClipInfo(layerIndex)
+
+        -- 用 clip 名称补充 stateNameCache（AB 加载时 hash map 可能为空）
         if clipInfos.Length > 0 then
             local clipName = clipInfos[0].clip.name
             local curHash = stateInfo.shortNameHash
@@ -418,6 +478,7 @@ local function StartRuntimeGM()
                 end
             end
         end
+
         local layer = {
             index = layerIndex,
             name = animator:GetLayerName(layerIndex),
@@ -437,8 +498,12 @@ local function StartRuntimeGM()
             },
             currentClips = {}
         }
+
+        -- 采集 nextState（如果正在转场）— 双重检测修复
         if animator:IsInTransition(layerIndex) then
             local nextInfo = animator:GetNextAnimatorStateInfo(layerIndex)
+
+            -- 用 next clip 名称补充缓存
             local nextOk, nextClipInfos = pcall(function()
                 return animator:GetNextAnimatorClipInfo(layerIndex)
             end)
@@ -451,6 +516,7 @@ local function StartRuntimeGM()
                     end
                 end
             end
+
             layer.nextState = {
                 nameHash = nextInfo.shortNameHash,
                 name = _resolveStateName(tracker, nextInfo.shortNameHash),
@@ -462,6 +528,8 @@ local function StartRuntimeGM()
             layer.transition.sourceName = layer.currentState.name
             layer.transition.targetName = layer.nextState.name
         end
+
+        -- 采集当前 clips
         for i = 0, clipInfos.Length - 1 do
             layer.currentClips[#layer.currentClips + 1] = {
                 clipName = clipInfos[i].clip.name,
@@ -469,9 +537,11 @@ local function StartRuntimeGM()
                 clipWeight = clipInfos[i].weight
             }
         end
+
         return layer
     end
 
+    -- 采集完整快照
     function LuaAnimatorMonitor.TakeSnapshot(tracker)
         local animator = tracker.animator
         local goName = animator.gameObject.name:gsub("%(Clone%)", ""):match("^%s*(.-)%s*$")
@@ -479,6 +549,7 @@ local function StartRuntimeGM()
         if animator.runtimeAnimatorController then
             ctrlName = animator.runtimeAnimatorController.name
         end
+
         local snapshot = {
             animatorId = tracker.instanceId,
             gameObjectName = goName,
@@ -487,13 +558,18 @@ local function StartRuntimeGM()
             layers = {},
             parameters = {}
         }
+
+        -- 采集各层数据
         for i = 0, animator.layerCount - 1 do
             snapshot.layers[#snapshot.layers + 1] = _takeLayerSnapshot(tracker, animator, i)
         end
+
+        -- 采集参数
         local paramOk, params = pcall(function() return animator.parameters end)
         if paramOk and params then
             for i = 0, params.Length - 1 do
                 local param = params[i]
+                -- IL2CPP 下 enum:ToString() 可能不可用，用 tostring 兜底
                 local pTypeOk, pTypeStr = pcall(function() return param.type:ToString() end)
                 if not pTypeOk then
                     local pTypeInt = tonumber(tostring(param.type)) or -1
@@ -501,9 +577,13 @@ local function StartRuntimeGM()
                     pTypeStr = typeMap[pTypeInt] or "Unknown"
                 end
                 local paramSnap = {
-                    name = param.name, type = pTypeStr,
-                    floatValue = 0, intValue = 0, boolValue = false
+                    name = param.name,
+                    type = pTypeStr,
+                    floatValue = 0,
+                    intValue = 0,
+                    boolValue = false
                 }
+
                 if pTypeStr == "Float" then
                     paramSnap.floatValue = animator:GetFloat(param.name)
                 elseif pTypeStr == "Int" then
@@ -513,19 +593,25 @@ local function StartRuntimeGM()
                 elseif pTypeStr == "Trigger" then
                     paramSnap.boolValue = animator:GetBool(param.name)
                 end
+
                 snapshot.parameters[#snapshot.parameters + 1] = paramSnap
             end
         end
+
         return snapshot
     end
 
+    -- 检测状态变化（双重检测：hash 比较 + IsInTransition）
     function LuaAnimatorMonitor.DetectStateChanges(tracker)
         local animator = tracker.animator
         local changes = {}
+
         for i = 0, animator.layerCount - 1 do
             local stateInfo = animator:GetCurrentAnimatorStateInfo(i)
             local currentHash = stateInfo.shortNameHash
             local lastHash = tracker.lastStateHashes[i] or 0
+
+            -- 方式1: 帧间 hash 比较（捕获已完成的状态切换）
             if lastHash ~= 0 and lastHash ~= currentHash then
                 changes[#changes + 1] = {
                     layerName = animator:GetLayerName(i),
@@ -534,9 +620,12 @@ local function StartRuntimeGM()
                     timestamp = CS.UnityEngine.Time.time
                 }
             end
+
+            -- 方式2: IsInTransition 检测（捕获进行中的状态切换）
             if animator:IsInTransition(i) then
                 local nextInfo = animator:GetNextAnimatorStateInfo(i)
                 if nextInfo.shortNameHash ~= 0 and nextInfo.shortNameHash ~= currentHash then
+                    -- 避免与方式1重复
                     local fromName = _resolveStateName(tracker, currentHash)
                     local toName = _resolveStateName(tracker, nextInfo.shortNameHash)
                     local isDuplicate = false
@@ -556,14 +645,18 @@ local function StartRuntimeGM()
                     end
                 end
             end
+
             tracker.lastStateHashes[i] = currentHash
         end
+
         return #changes > 0 and changes or nil
     end
 
+    -- 处理来自 EncyHub 的 ANIM 命令
     function LuaAnimatorMonitor.HandleCommand(packet)
         local cmdType = packet.type
         origin_print("[RuntimeGM] ANIM command received: " .. tostring(cmdType))
+
         if cmdType == "ANIM_LIST" then
             LuaAnimatorMonitor.ScanAnimators()
             local animators = {}
@@ -583,14 +676,18 @@ local function StartRuntimeGM()
             end
             origin_print("[RuntimeGM] ANIM_LIST_RESP: found " .. #animators .. " animators")
             RuntimeGMClient.Send({ type = "ANIM_LIST_RESP", animators = animators })
+
         elseif cmdType == "ANIM_SUBSCRIBE" then
             origin_print("[RuntimeGM] ANIM_SUBSCRIBE id=" .. tostring(packet.animatorId))
             LuaAnimatorMonitor._subscribedId = packet.animatorId
             LuaAnimatorMonitor._lastPushTime = 0
             LuaAnimatorMonitor._lastScanTime = 0
+            -- 立即扫描确保 tracker 存在
             LuaAnimatorMonitor.ScanAnimators()
+
         elseif cmdType == "ANIM_UNSUBSCRIBE" then
             LuaAnimatorMonitor._subscribedId = nil
+
         elseif cmdType == "ANIM_SET_PARAM" then
             local tracker = LuaAnimatorMonitor._trackers[packet.animatorId]
             if tracker and tracker.animator then
@@ -610,22 +707,32 @@ local function StartRuntimeGM()
         end
     end
 
+    -- 每帧更新：扫描 + 采集 + 推送（仅在有订阅时工作）
     function LuaAnimatorMonitor.Update()
         if not LuaAnimatorMonitor._subscribedId then return end
+
         local now = CS.UnityEngine.Time.realtimeSinceStartup
+
+        -- 扫描节流
         if now - LuaAnimatorMonitor._lastScanTime >= LuaAnimatorMonitor._scanInterval then
             LuaAnimatorMonitor._lastScanTime = now
             LuaAnimatorMonitor.ScanAnimators()
         end
+
+        -- 推送节流
         if now - LuaAnimatorMonitor._lastPushTime < LuaAnimatorMonitor._pushInterval then
             return
         end
         LuaAnimatorMonitor._lastPushTime = now
+
         local tracker = LuaAnimatorMonitor._trackers[LuaAnimatorMonitor._subscribedId]
         if not tracker then return end
+
+        -- 检查 Animator 有效性（处理 Unity Object 销毁的情况）
         local validOk, valid = pcall(function()
             return tracker.animator.gameObject.activeInHierarchy
         end)
+
         if validOk and valid then
             local snapshot = LuaAnimatorMonitor.TakeSnapshot(tracker)
             local changes = LuaAnimatorMonitor.DetectStateChanges(tracker)
@@ -635,6 +742,7 @@ local function StartRuntimeGM()
                 RuntimeGMClient.Send(msg)
             end
         else
+            -- Animator 已销毁或不可用
             RuntimeGMClient.Send({ type = "ANIM_REMOVED", animatorId = LuaAnimatorMonitor._subscribedId })
             LuaAnimatorMonitor._trackers[LuaAnimatorMonitor._subscribedId] = nil
             LuaAnimatorMonitor._subscribedId = nil
@@ -643,7 +751,7 @@ local function StartRuntimeGM()
 
     -- ========== LuaUiInspector: 运行时 Lua UI 数据查看 (真机兼容) ==========
     local LuaUiInspector = {}
-    LuaUiInspector._OriginalValues = {}
+    LuaUiInspector._OriginalValues = {}  -- { [uiName] = { [path] = originalValue } }
 
     local INSPECTOR_SKIP_KEYS = {
         UiProxy = true, Ui = true, Transform = true,
@@ -652,6 +760,7 @@ local function StartRuntimeGM()
         SignalData = true, ChildSignalDatas = true,
     }
     local INSPECTOR_MAX_ARRAY = 100
+    local INSPECTOR_MAX_FIELDS = 200  -- GetNodeData 根级最大字段数
 
     local function inspectorGetTypeName(v)
         local t = type(v)
@@ -757,6 +866,7 @@ local function StartRuntimeGM()
             if xok and info then result[#result + 1] = info end
         end
         table.sort(result, function(a, b) return a.name < b.name end)
+        -- 清理已关闭 UI 的 _OriginalValues
         local validNames = {}
         for _, info in ipairs(result) do validNames[info.name] = true end
         for uiName in pairs(LuaUiInspector._OriginalValues) do
@@ -768,6 +878,7 @@ local function StartRuntimeGM()
     function LuaUiInspector.GetUiTree(uiName)
         local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
         if not luaUi then return { error = "UI not found: " .. tostring(uiName) } end
+
         local function buildChildren(node, basePath)
             local children = {}
             if node._ChildNodes and #node._ChildNodes > 0 then
@@ -787,6 +898,7 @@ local function StartRuntimeGM()
             end
             return children
         end
+
         return { name = uiName, children = buildChildren(luaUi, "") }
     end
 
@@ -809,7 +921,11 @@ local function StartRuntimeGM()
         local visited = { [target] = true }
         local originals = LuaUiInspector._OriginalValues[uiName] or {}
         local instanceKeys = {}
-        for _, k in ipairs(inspectorGetSortedKeys(target)) do
+        local allKeys = inspectorGetSortedKeys(target)
+        local totalKeys = #allKeys
+        local fieldTruncated = false
+        for i, k in ipairs(allKeys) do
+            if #fields >= INSPECTOR_MAX_FIELDS then fieldTruncated = true; break end
             local v = target[k]
             local keyStr = tostring(k)
             instanceKeys[keyStr] = true
@@ -819,26 +935,36 @@ local function StartRuntimeGM()
             desc.modified = originals[fieldPath] ~= nil
             fields[#fields + 1] = desc
         end
-        local mt = getmetatable(target)
-        if mt then
-            local idx = rawget(mt, "__index")
-            if type(idx) == "table" then
-                local classMethods = {}
-                for k, v in pairs(idx) do
-                    if type(k) == "string" and type(v) == "function" and not instanceKeys[k] then
-                        classMethods[#classMethods + 1] = k
+        -- 收集元表（class）方法：通过 __index 链获取类定义的方法
+        if not fieldTruncated then
+            local mt = getmetatable(target)
+            if mt then
+                local idx = rawget(mt, "__index")
+                if type(idx) == "table" then
+                    local classMethods = {}
+                    for k, v in pairs(idx) do
+                        if type(k) == "string" and type(v) == "function" and not instanceKeys[k] then
+                            classMethods[#classMethods + 1] = k
+                        end
                     end
-                end
-                table.sort(classMethods)
-                for _, k in ipairs(classMethods) do
-                    fields[#fields + 1] = {
-                        key = k, type = "function", value = "function (class)",
-                        editable = false, modified = false,
-                    }
+                    table.sort(classMethods)
+                    for _, k in ipairs(classMethods) do
+                        if #fields >= INSPECTOR_MAX_FIELDS then fieldTruncated = true; break end
+                        fields[#fields + 1] = {
+                            key = k, type = "function", value = "function (class)",
+                            editable = false, modified = false,
+                        }
+                    end
                 end
             end
         end
-        return { fields = fields }
+        local result = { fields = fields }
+        if fieldTruncated then
+            result.truncated = true
+            result.totalKeys = totalKeys
+            result.shownKeys = #fields
+        end
+        return result
     end
 
     function LuaUiInspector.SetValue(uiName, path, value, valueType)
@@ -896,6 +1022,47 @@ local function StartRuntimeGM()
         return { success = true, count = count }
     end
 
+    function LuaUiInspector.CallMethod(uiName, path, methodName)
+        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+        if not luaUi then return { error = "UI not found" } end
+        -- 定位到目标节点
+        local target = luaUi
+        if path and path ~= "" then
+            for seg in string.gmatch(path, "[^%.]+") do
+                local key = tonumber(seg) or seg
+                if type(target) ~= "table" then return { error = "Path invalid" } end
+                target = target[key]
+            end
+        end
+        if type(target) ~= "table" then return { error = "Target is not a table" } end
+        -- 查找方法：先查实例，再查元表
+        local fn = target[methodName]
+        if not fn then
+            local mt = getmetatable(target)
+            if mt then
+                local idx = rawget(mt, "__index")
+                if type(idx) == "table" then fn = idx[methodName] end
+            end
+        end
+        if type(fn) ~= "function" then return { error = "Method not found: " .. tostring(methodName) } end
+        -- 调用方法（以 target 作为 self）
+        local ok, ret = pcall(fn, target)
+        if not ok then return { error = "Call failed: " .. tostring(ret) } end
+        -- 序列化返回值
+        local retType = type(ret)
+        if retType == "nil" then
+            return { result = "nil", resultType = "nil" }
+        elseif retType == "number" or retType == "string" or retType == "boolean" then
+            return { result = ret, resultType = retType }
+        elseif retType == "table" then
+            local count = 0
+            for _ in pairs(ret) do count = count + 1 end
+            return { result = "table (" .. count .. " items)", resultType = "table" }
+        else
+            return { result = tostring(ret), resultType = retType }
+        end
+    end
+
     function LuaUiInspector.HandleCommand(packet)
         local action = packet.action
         local result
@@ -911,6 +1078,8 @@ local function StartRuntimeGM()
             result = LuaUiInspector.RevertValue(packet.uiName, packet.path)
         elseif action == "revert_all" then
             result = LuaUiInspector.RevertAll(packet.uiName)
+        elseif action == "call_method" then
+            result = LuaUiInspector.CallMethod(packet.uiName, packet.path, packet.methodName)
         else
             result = { error = "Unknown action: " .. tostring(action) }
         end
@@ -935,6 +1104,13 @@ local function StartRuntimeGM()
                 if rawget(_G, "XLoginManager") and rawget(_G, "XUiManager") and rawget(_G, "XFunctionManager") then RuntimeGMClient.ReloadGM() end
             end
         end
+        -- TCP 心跳保活
+        local now = 0
+        pcall(function() now = CS.UnityEngine.Time.realtimeSinceStartup end)
+        if now - RuntimeGMClient.HeartbeatTimer > RuntimeGMClient.HeartbeatInterval then
+            RuntimeGMClient.HeartbeatTimer = now
+            RuntimeGMClient.Send({ type = "PING" })
+        end
         local maxLoops = 5
         local loops = 0
         while loops < maxLoops do
@@ -949,6 +1125,7 @@ local function StartRuntimeGM()
                 if errStr:find("closed") or errStr:find("refused") or errStr:find("reset") then
                     RuntimeGMClient.Close()
                 end
+                -- 其他pcall错误(如socket临时不可用)不断连，跳出循环等下帧重试
                 return
             end
             local line = result.line
@@ -963,6 +1140,8 @@ local function StartRuntimeGM()
                 RuntimeGMClient.ProcessPacket(line)
             end
         end
+
+        -- Lua 侧 Animator 数据采集 & 推送（真机兼容，不依赖 C# Editor 代码）
         local animOk, animErr = pcall(LuaAnimatorMonitor.Update)
         if not animOk then
             origin_print("[RuntimeGM] LuaAnimatorMonitor error: " .. tostring(animErr))
@@ -970,6 +1149,7 @@ local function StartRuntimeGM()
     end
 
     function RuntimeGMClient.ProcessPacket(line)
+        -- origin_print("[RuntimeGM] Received: " .. tostring(line))
         local json = nil
         local ok1, jsonLib = pcall(require, "XCommon/Json")
         if ok1 and jsonLib and jsonLib.Decode then
@@ -978,11 +1158,13 @@ local function StartRuntimeGM()
         end
         if not json then json = jsonDecode(line) end
         if not json then return end
+
         local packet = json
         local type = packet.type
         if type == "EXEC" then
             local cmd = packet.cmd
             local id = packet.id
+            -- origin_print("[RuntimeGM] Executing: " .. tostring(cmd))
             local loader = rawget(_G, "loadstring") or load
             local execFunc, loadErr = loader(cmd)
             if not execFunc then RuntimeGMClient.SendLog("error", "Load Error: " .. tostring(loadErr), id) return end
@@ -994,9 +1176,10 @@ local function StartRuntimeGM()
         elseif type == "UI_INSPECTOR" then
             local ok, err = pcall(LuaUiInspector.HandleCommand, packet)
             if not ok then
-                origin_print("[RuntimeGM] UI_INSPECTOR command error: " .. tostring(err))
+                origin_print("[RuntimeGM] UI_INSPECTOR error: " .. tostring(err))
             end
         elseif type and type:sub(1, 5) == "ANIM_" then
+            -- Lua 侧处理 Animator 命令（真机兼容，不依赖 C# Editor 代码）
             local ok, err = pcall(LuaAnimatorMonitor.HandleCommand, packet)
             if not ok then
                 origin_print("[RuntimeGM] ANIM command error: " .. tostring(err))
@@ -1026,16 +1209,18 @@ local function StartRuntimeGM()
         origin_print("[RuntimeGM] Client Started (Embed in XMain).")
     end
 
+    -- 暴露给全局，使用 rawset 绕过 XMain 的 LockG
     rawset(_G, "RuntimeGMClient", RuntimeGMClient)
+
     return RuntimeGMClient
 end
 
--- 初始化并启动 RuntimeGM（★★★ 修改下面的 IP 为你的开发机 IP ★★★）
+-- 初始化并启动 RuntimeGM
 local ok, gmClient = pcall(StartRuntimeGM)
 if ok and gmClient then
-    gmClient.Start("10.101.0.8", 12582)
+    -- 如果同事是在真机/其他电脑运行，这里的 localhost 可能需要改成你的 IP
+    gmClient.Start("10.101.0.8", 12581)
 else
-    print("RuntimeGM Init Failed: " .. tostring(gmClient))
+    print("RuntimeGM Init Failed")
 end
---==自定义代码 end
 ```

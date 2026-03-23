@@ -135,7 +135,8 @@ class ServerMgr:
                 lambda r, w: self._handle_client(r, w, port),
                 "0.0.0.0",
                 port,
-                reuse_address=True
+                reuse_address=True,
+                limit=4 * 1024 * 1024,  # 4MB，默认64KB不够大型UI数据
             )
             self.listeners[port] = srv
             print(f"[ServerMgr] 监听端口 {port} 成功")
@@ -193,26 +194,33 @@ class ServerMgr:
         if self.on_update:
             self.on_update()
 
+        disconnect_reason = "unknown"
         try:
             while True:
                 line = await reader.readline()
                 if not line:
-                    print(f"[ServerMgr] 客户端 {cid} 主动断开连接")
+                    disconnect_reason = "远端关闭连接"
                     break
                 try:
                     pkt = json.loads(line.decode().strip())
                     self._process_packet(cid, pkt)
                 except json.JSONDecodeError as e:
-                    print(f"[ServerMgr] JSON 解析失败: {e}, data={line.decode().strip()}")
+                    print(f"[ServerMgr] JSON 解析失败: {e}, data={line.decode().strip()[:200]}")
                 except Exception as e:
                     print(f"[ServerMgr] 处理数据包失败: {e}")
+        except ConnectionResetError:
+            disconnect_reason = "连接被重置 (ConnectionReset)"
+        except ConnectionAbortedError:
+            disconnect_reason = "连接被中止 (ConnectionAborted)"
+        except asyncio.IncompleteReadError:
+            disconnect_reason = "不完整读取 (IncompleteRead)"
         except Exception as e:
-            print(f"[ServerMgr] 客户端 {cid} 连接异常: {e}")
+            disconnect_reason = f"异常: {type(e).__name__}: {e}"
         finally:
             if cid in self.clients:
                 del self.clients[cid]
-            self._add_log("info", f"客户端断开: {cid}", cid)
-            print(f"[ServerMgr] TCP 客户端断开: {cid}, 剩余客户端数={len(self.clients)}")
+            self._add_log("info", f"客户端断开: {cid} ({disconnect_reason})", cid)
+            print(f"[ServerMgr] TCP 客户端断开: {cid}, 原因={disconnect_reason}, 剩余={len(self.clients)}")
             if self.on_update:
                 self.on_update()
 
@@ -225,7 +233,10 @@ class ServerMgr:
 
         print(f"[ServerMgr] 收到数据包: cid={cid}, type={t}")
 
-        if t == "HELLO":
+        if t == "PING":
+            # 心跳保活 — 静默处理，不打印日志
+            return
+        elif t == "HELLO":
             c.device = pkt.get("device", "Unknown")
             c.platform = pkt.get("platform", "Unknown")
             print(f"[ServerMgr] HELLO: device={c.device}, platform={c.platform}")

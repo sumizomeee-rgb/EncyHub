@@ -1,5 +1,17 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye, PlayCircle, Loader2 } from 'lucide-react'
+
+// localStorage 持久化分类展开状态
+const CATEGORY_STORAGE_KEY = 'inspector_expanded_categories'
+function loadExpandedCategories() {
+    try {
+        const saved = localStorage.getItem(CATEGORY_STORAGE_KEY)
+        return saved ? new Set(JSON.parse(saved)) : new Set()
+    } catch { return new Set() }
+}
+function saveExpandedCategories(set) {
+    try { localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify([...set])) } catch {}
+}
 
 // ============================================================================
 // WebSocket 通信 Hook
@@ -7,34 +19,83 @@ import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye } 
 function useInspectorWs(selectedClient) {
     const listenersRef = useRef({})
     const wsRef = useRef(null)
+    const [wsConnected, setWsConnected] = useState(false)
+    const reconnectTimer = useRef(null)
 
     useEffect(() => {
         if (!selectedClient) return
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const socket = new WebSocket(
-            `${protocol}//${window.location.host}/api/gm_console/ws/inspector`
-        )
-        socket.onmessage = (event) => {
-            const msg = JSON.parse(event.data)
-            if (msg.client_id !== selectedClient?.id) return
-            const cb = listenersRef.current[msg.type]
-            if (cb) cb(msg.data)
+        let closed = false
+
+        const connect = () => {
+            if (closed) return
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+            const socket = new WebSocket(
+                `${protocol}//${window.location.host}/api/gm_console/ws/inspector`
+            )
+            let pingTimer = null
+            socket.onopen = () => {
+                console.log('[Inspector WS] connected')
+                setWsConnected(true)
+                wsRef.current = socket
+                // WS 心跳保活，每25秒发一次ping
+                pingTimer = setInterval(() => {
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send('ping')
+                    }
+                }, 25000)
+            }
+            socket.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data)
+                    if (msg.client_id !== selectedClient?.id) return
+                    const cb = listenersRef.current[msg.type]
+                    if (cb) cb(msg.data)
+                } catch (e) {
+                    console.error('[Inspector WS] parse error:', e)
+                }
+            }
+            socket.onerror = (err) => {
+                console.error('[Inspector WS] error:', err)
+            }
+            socket.onclose = () => {
+                console.log('[Inspector WS] closed')
+                if (pingTimer) clearInterval(pingTimer)
+                setWsConnected(false)
+                wsRef.current = null
+                if (!closed) {
+                    reconnectTimer.current = setTimeout(connect, 2000)
+                }
+            }
         }
-        wsRef.current = socket
-        return () => { socket.close(); wsRef.current = null }
+
+        connect()
+        return () => {
+            closed = true
+            if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
+            if (wsRef.current) { wsRef.current.close(); wsRef.current = null }
+            setWsConnected(false)
+        }
     }, [selectedClient?.id])
 
     const request = useCallback((action, params, onResponse) => {
         if (!selectedClient) return
         listenersRef.current[action] = onResponse
-        fetch(`/api/gm_console/inspector/${selectedClient.id}/command`, {
+        fetch(`/api/gm_console/inspector/${encodeURIComponent(selectedClient.id)}/command`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action, ...params })
-        }).catch(err => console.error('[Inspector] request failed:', err))
+        }).then(resp => {
+            if (!resp.ok) {
+                console.error(`[Inspector] HTTP ${resp.status} for ${action}`)
+                onResponse({ error: `HTTP ${resp.status}` })
+            }
+        }).catch(err => {
+            console.error('[Inspector] request failed:', err)
+            onResponse({ error: String(err) })
+        })
     }, [selectedClient?.id])
 
-    return { request, wsRef }
+    return { request, wsRef, wsConnected }
 }
 
 // ============================================================================
@@ -55,10 +116,19 @@ const TYPE_COLORS = {
 // 主组件
 // ============================================================================
 export default function LuaUiInspector({ clients, selectedClient, broadcastMode }) {
+    // --- 左栏宽度（可拖拽） ---
+    const [leftWidth, setLeftWidth] = useState(208)
+    const isDragging = useRef(false)
+
+    // --- Loading 状态 ---
+    const [loadingList, setLoadingList] = useState(false)
+    const [loadingNode, setLoadingNode] = useState(false)
+
     // --- 数据状态 ---
     const [uiList, setUiList] = useState([])
     const [uiTree, setUiTree] = useState(null)
     const [nodeData, setNodeData] = useState(null)
+    const [lastError, setLastError] = useState(null)
 
     // --- 选中状态 ---
     const [selectedUi, setSelectedUi] = useState(null)
@@ -78,16 +148,19 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
     // --- 字段展开状态 ---
     const [expandedFields, setExpandedFields] = useState(new Set())
 
-    // --- 分类折叠状态 ---
-    const [collapsedCategories, setCollapsedCategories] = useState(new Set())
+    // --- 分类展开状态（默认全部折叠，localStorage 记忆） ---
+    const [expandedCategories, setExpandedCategories] = useState(() => loadExpandedCategories())
 
     // --- 通信 ---
-    const { request } = useInspectorWs(selectedClient)
+    const { request, wsConnected } = useInspectorWs(selectedClient)
 
     // --- 请求 UI 列表 ---
     const refreshUiList = useCallback(() => {
+        setLastError(null)
+        setLoadingList(true)
         request('ui_list', {}, (data) => {
-            if (data.error) { console.error(data.error); return }
+            setLoadingList(false)
+            if (data.error) { setLastError('ui_list: ' + data.error); return }
             setUiList(data)
         })
     }, [request])
@@ -98,15 +171,22 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
         setSelectedPath('')
         setBreadcrumb([{ name: uiName, path: '' }])
         setNodeData(null)
+        setLastError(null)
         setExpandedNodes(new Set())
         setExpandedFields(new Set())
+        setLoadingNode(true)
+        let pending = 2
+        const done = () => { if (--pending <= 0) setLoadingNode(false) }
         request('ui_tree', { uiName }, (data) => {
-            if (data.error) { setUiTree(null); return }
+            done()
+            if (data.error) { setUiTree(null); setLastError('ui_tree: ' + data.error); return }
             setUiTree(data)
         })
         // 同时请求根节点数据
         request('node_data', { uiName, path: '', depth }, (data) => {
-            if (!data.error) setNodeData(data)
+            done()
+            if (data.error) { setLastError('node_data: ' + data.error); return }
+            setNodeData(data)
         })
     }, [request, depth])
 
@@ -114,6 +194,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
     const loadNodeData = useCallback((uiName, path, nodeName) => {
         setSelectedPath(path)
         setExpandedFields(new Set())
+        setLastError(null)
         // 更新面包屑
         if (path === '') {
             setBreadcrumb([{ name: uiName, path: '' }])
@@ -127,10 +208,13 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
             }
             setBreadcrumb(crumbs)
         }
+        setLoadingNode(true)
         request('node_data', { uiName, path, depth }, (data) => {
+            setLoadingNode(false)
             if (data.error) {
                 setNodeData(null)
-                if (data.error.includes('not found')) {
+                setLastError('node_data: ' + data.error)
+                if (String(data.error).includes('not found')) {
                     setLiveMode(false)
                 }
                 return
@@ -185,6 +269,14 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
         })
     }, [request, selectedUi, selectedPath, depth])
 
+    // --- 调用方法 ---
+    const callMethod = useCallback((methodName, onResult) => {
+        if (!selectedUi) return
+        request('call_method', { uiName: selectedUi, path: selectedPath, methodName }, (data) => {
+            if (onResult) onResult(data)
+        })
+    }, [request, selectedUi, selectedPath])
+
     // --- 无客户端时提示 ---
     if (!selectedClient) {
         return (
@@ -200,36 +292,56 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
         : uiList
 
     return (
-        <div className="flex h-full" style={{ minHeight: '500px' }}>
+        <div
+            className="flex h-full"
+            style={{ minHeight: '500px' }}
+            onMouseMove={e => {
+                if (!isDragging.current) return
+                const container = e.currentTarget.getBoundingClientRect()
+                const newWidth = Math.min(Math.max(e.clientX - container.left, 120), 400)
+                setLeftWidth(newWidth)
+            }}
+            onMouseUp={() => { isDragging.current = false }}
+            onMouseLeave={() => { isDragging.current = false }}
+        >
             {/* ===== 左栏 ===== */}
-            <div className="w-72 flex-shrink-0 border-r border-[var(--glass-border)] flex flex-col">
+            <div className="flex-shrink-0 border-r border-[var(--glass-border)] flex flex-col" style={{ width: leftWidth }}>
                 {/* UI 列表头部 */}
                 <div className="p-3 border-b border-[var(--glass-border)]">
                     <div className="flex items-center justify-between mb-2">
-                        <span className="text-sm font-semibold text-[var(--coffee-deep)]">Open UIs</span>
+                        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--coffee-deep)]">
+                            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} title={wsConnected ? 'WS 已连接' : 'WS 未连接'} />
+                            Open UIs
+                        </span>
                         <button
                             onClick={refreshUiList}
-                            className="p-1 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] transition-colors"
+                            disabled={loadingList}
+                            className="p-1 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] transition-colors disabled:opacity-50"
                             title="刷新 UI 列表"
                         >
-                            <RotateCw size={14} />
+                            <RotateCw size={14} className={loadingList ? 'animate-spin' : ''} />
                         </button>
                     </div>
                     <div className="relative">
-                        <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)]" />
+                        {!leftFilter && <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)] pointer-events-none" />}
                         <input
                             type="text"
                             value={leftFilter}
                             onChange={e => setLeftFilter(e.target.value)}
-                            placeholder="搜索 UI..."
-                            className="w-full pl-8 pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+                            className={`w-full pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)] ${leftFilter ? 'pl-2' : 'pl-8'}`}
                         />
                     </div>
                 </div>
 
                 {/* UI 列表 + 树 */}
                 <div className="flex-1 overflow-y-auto p-2 text-xs">
-                    {filteredUiList.length === 0 && (
+                    {loadingList && (
+                        <div className="flex items-center justify-center gap-1.5 py-4 text-[var(--coffee-muted)]">
+                            <Loader2 size={14} className="animate-spin" />
+                            <span>加载中...</span>
+                        </div>
+                    )}
+                    {!loadingList && filteredUiList.length === 0 && (
                         <div className="text-center text-[var(--coffee-muted)] py-4">
                             {uiList.length === 0 ? '点击 Refresh 加载' : '无匹配'}
                         </div>
@@ -256,6 +368,12 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
                 </div>
             </div>
 
+            {/* ===== 拖拽条 ===== */}
+            <div
+                className="w-1 flex-shrink-0 cursor-col-resize hover:bg-[var(--caramel)]/40 active:bg-[var(--caramel)]/60 transition-colors"
+                onMouseDown={e => { e.preventDefault(); isDragging.current = true }}
+            />
+
             {/* ===== 右栏 ===== */}
             <div className="flex-1 flex flex-col min-w-0">
                 {/* 面包屑 + 控件 */}
@@ -281,13 +399,12 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
                     {/* 过滤 + Depth + Live */}
                     <div className="flex items-center gap-3">
                         <div className="relative flex-1">
-                            <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)]" />
+                            {!rightFilter && <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)] pointer-events-none" />}
                             <input
                                 type="text"
                                 value={rightFilter}
                                 onChange={e => setRightFilter(e.target.value)}
-                                placeholder="过滤字段..."
-                                className="w-full pl-8 pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+                                className={`w-full pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)] ${rightFilter ? 'pl-2' : 'pl-8'}`}
                             />
                         </div>
                         <label className="flex items-center gap-1 text-xs text-[var(--coffee-muted)]">
@@ -305,36 +422,56 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
 
                 {/* 属性面板 */}
                 <div className="flex-1 overflow-y-auto p-3">
-                    {!nodeData ? (
-                        <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
-                            {selectedUi ? '选择一个节点查看数据' : '选择一个 UI 开始'}
+                    {lastError && (
+                        <div className="mb-2 px-3 py-2 rounded-md bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs font-mono">
+                            {lastError}
                         </div>
-                    ) : nodeData.fields ? (
-                        <FieldList
-                            fields={nodeData.fields}
-                            filter={rightFilter}
-                            expandedFields={expandedFields}
-                            collapsedCategories={collapsedCategories}
-                            selectedUi={selectedUi}
-                            parentPath={selectedPath}
-                            onToggleField={(key) => {
-                                setExpandedFields(prev => {
-                                    const next = new Set(prev)
-                                    next.has(key) ? next.delete(key) : next.add(key)
-                                    return next
-                                })
-                            }}
-                            onToggleCategory={(cat) => {
-                                setCollapsedCategories(prev => {
-                                    const next = new Set(prev)
-                                    next.has(cat) ? next.delete(cat) : next.add(cat)
-                                    return next
-                                })
-                            }}
-                            onSetValue={setValue}
-                            onRevert={revertValue}
-                            onNavigate={(path, name) => loadNodeData(selectedUi, path, name)}
-                        />
+                    )}
+                    {loadingNode && (
+                        <div className="flex items-center justify-center gap-2 py-6 text-[var(--coffee-muted)] text-sm">
+                            <Loader2 size={16} className="animate-spin" />
+                            <span>加载中...</span>
+                        </div>
+                    )}
+                    {!loadingNode && !nodeData ? (
+                        <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
+                            {selectedUi ? (wsConnected ? '选择一个节点查看数据' : 'WebSocket 连接中...') : '选择一个 UI 开始'}
+                        </div>
+                    ) : !loadingNode && nodeData?.fields ? (
+                        <>
+                            <FieldList
+                                fields={nodeData.fields}
+                                filter={rightFilter}
+                                expandedFields={expandedFields}
+                                expandedCategories={expandedCategories}
+                                selectedUi={selectedUi}
+                                parentPath={selectedPath}
+                                onToggleField={(key) => {
+                                    setExpandedFields(prev => {
+                                        const next = new Set(prev)
+                                        next.has(key) ? next.delete(key) : next.add(key)
+                                        return next
+                                    })
+                                }}
+                                onToggleCategory={(cat) => {
+                                    setExpandedCategories(prev => {
+                                        const next = new Set(prev)
+                                        next.has(cat) ? next.delete(cat) : next.add(cat)
+                                        saveExpandedCategories(next)
+                                        return next
+                                    })
+                                }}
+                                onSetValue={setValue}
+                                onRevert={revertValue}
+                                onNavigate={(path, name) => loadNodeData(selectedUi, path, name)}
+                                onCallMethod={callMethod}
+                            />
+                            {nodeData.truncated && (
+                                <div className="mt-2 px-3 py-2 rounded-md bg-[var(--caramel)]/10 text-[var(--coffee-muted)] text-xs">
+                                    已截断：显示 {nodeData.shownKeys}/{nodeData.totalKeys} 个字段
+                                </div>
+                            )}
+                        </>
                     ) : null}
                 </div>
 
@@ -453,7 +590,7 @@ function TreeNode({ node, selectedPath, expandedNodes, onSelect, onToggle, inden
 // ============================================================================
 // 右侧属性列表
 // ============================================================================
-function FieldList({ fields, filter, expandedFields, collapsedCategories, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate }) {
+function FieldList({ fields, filter, expandedFields, expandedCategories, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod }) {
     if (!fields || fields.length === 0) return <div className="text-center text-[var(--coffee-muted)] text-xs py-4">无字段</div>
 
     // 按类型分组
@@ -479,7 +616,7 @@ function FieldList({ fields, filter, expandedFields, collapsedCategories, select
         <div className="space-y-2">
             {Object.entries(categories).map(([catKey, cat]) => {
                 if (cat.items.length === 0) return null
-                const isCollapsed = collapsedCategories.has(catKey)
+                const isCollapsed = !expandedCategories.has(catKey)
                 return (
                     <div key={catKey}>
                         <button
@@ -504,6 +641,7 @@ function FieldList({ fields, filter, expandedFields, collapsedCategories, select
                                         onSetValue={onSetValue}
                                         onRevert={onRevert}
                                         onNavigate={onNavigate}
+                                        onCallMethod={onCallMethod}
                                     />
                                 ))}
                             </div>
@@ -518,9 +656,10 @@ function FieldList({ fields, filter, expandedFields, collapsedCategories, select
 // ============================================================================
 // 单行字段
 // ============================================================================
-function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate }) {
+function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod }) {
     const [editValue, setEditValue] = useState(String(field.value ?? ''))
     const [isEditing, setIsEditing] = useState(false)
+    const [callResult, setCallResult] = useState(null)
     const f = field
     const fieldPath = parentPath ? `${parentPath}.${f.key}` : f.key
 
@@ -529,23 +668,39 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
         if (!isEditing) setEditValue(String(f.value ?? ''))
     }, [f.value, isEditing])
 
-    // 值编辑提交
+    // 值编辑提交（仅在值真正改变时才提交）
     const submitEdit = () => {
         if (!isEditing) return
         setIsEditing(false)
-        onSetValue(fieldPath, editValue, f.type)
+        if (editValue !== String(f.value ?? '')) {
+            onSetValue(fieldPath, editValue, f.type)
+        }
+    }
+
+    // 调用方法
+    const handleCall = () => {
+        if (onCallMethod) {
+            onCallMethod(f.key, (result) => {
+                setCallResult(result)
+                setTimeout(() => setCallResult(null), 5000)
+            })
+        }
     }
 
     return (
         <div>
             <div
-                className={`flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors hover:bg-[var(--cream-warm)]/30 ${
+                className={`grid items-center px-2 rounded text-xs transition-colors hover:bg-[var(--cream-warm)]/30 ${
                     f.modified ? 'border-l-2' : ''
                 }`}
-                style={f.modified ? { borderLeftColor: '#E8A317' } : {}}
+                style={{
+                    gridTemplateColumns: 'minmax(80px, 35%) 44px 1fr 24px',
+                    minHeight: '28px',
+                    ...(f.modified ? { borderLeftColor: '#E8A317' } : {}),
+                }}
             >
                 {/* Key */}
-                <span className="w-32 flex-shrink-0 font-mono truncate" style={{ color: catColor }} title={f.key}>
+                <span className="font-mono truncate pr-1" style={{ color: catColor }} title={f.key}>
                     {f.type === 'table' && canExpand && (
                         <button onClick={onToggle} className="inline mr-1">
                             {expanded ? <ChevronDown size={10} className="inline" /> : <ChevronRight size={10} className="inline" />}
@@ -554,16 +709,25 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                     {f.key}
                 </span>
 
+                {/* Type */}
+                <span className="text-center text-[10px] rounded bg-black/5 text-[var(--coffee-muted)] leading-4 self-center mx-0.5">
+                    {f.type}
+                </span>
+
                 {/* Value */}
-                <div className="flex-1 min-w-0">
+                <div className="min-w-0 flex items-center h-7 pl-1">
                     {f.editable ? (
                         f.type === 'boolean' ? (
-                            <input
-                                type="checkbox"
-                                checked={!!f.value}
-                                onChange={e => onSetValue(fieldPath, e.target.checked ? 'true' : 'false', 'boolean')}
-                                className="accent-[var(--sage)]"
-                            />
+                            <button
+                                onClick={() => onSetValue(fieldPath, f.value ? 'false' : 'true', 'boolean')}
+                                className={`relative inline-flex items-center h-5 w-9 flex-shrink-0 rounded-full transition-colors ${
+                                    f.value ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/30'
+                                }`}
+                            >
+                                <span className={`inline-block w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                                    f.value ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                                }`} />
+                            </button>
                         ) : (
                             <input
                                 type={f.type === 'number' ? 'number' : 'text'}
@@ -572,16 +736,29 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                                 onChange={e => setEditValue(e.target.value)}
                                 onBlur={submitEdit}
                                 onKeyDown={e => { if (e.key === 'Enter') { submitEdit(); e.target.blur() } }}
-                                className="w-full px-1.5 py-0.5 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-xs focus:outline-none focus:border-[var(--caramel)]"
+                                className="w-full h-6 px-1.5 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-xs focus:outline-none focus:border-[var(--caramel)]"
                             />
                         )
                     ) : f.type === 'table' ? (
                         <button
                             onClick={() => onNavigate(fieldPath, f.key)}
-                            className="text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:underline"
+                            className="text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:underline truncate"
                         >
                             {'{' + (f.childCount || '?') + ' fields}'}
                         </button>
+                    ) : f.type === 'function' ? (
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-[var(--coffee-muted)] font-mono truncate flex-1 min-w-0">{String(f.value)}</span>
+                            {onCallMethod && (
+                                <button
+                                    onClick={handleCall}
+                                    className="p-0.5 rounded hover:bg-[var(--sage)]/20 text-[var(--sage)] flex-shrink-0"
+                                    title={`调用 ${f.key}()`}
+                                >
+                                    <PlayCircle size={14} />
+                                </button>
+                            )}
+                        </div>
                     ) : (
                         <span className="text-[var(--coffee-muted)] font-mono truncate block">
                             {String(f.value)}
@@ -589,17 +766,29 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                     )}
                 </div>
 
-                {/* Revert 按钮 */}
-                {f.modified && (
-                    <button
-                        onClick={() => onRevert(fieldPath)}
-                        className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--amber)]"
-                        title="还原"
-                    >
-                        <Undo2 size={12} />
-                    </button>
-                )}
+                {/* Action */}
+                <div className="flex items-center justify-center w-6">
+                    {f.modified && (
+                        <button
+                            onClick={() => onRevert(fieldPath)}
+                            className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--amber)]"
+                            title="还原"
+                        >
+                            <Undo2 size={12} />
+                        </button>
+                    )}
+                </div>
             </div>
+            {/* 方法调用结果 */}
+            {callResult && (
+                <div className="ml-[140px] pl-2 py-1 text-xs font-mono text-[var(--coffee-muted)] bg-black/3 rounded mx-2 mb-0.5">
+                    {callResult.error ? (
+                        <span className="text-[var(--terracotta)]">{callResult.error}</span>
+                    ) : (
+                        <span>→ {String(callResult.result ?? 'nil')}</span>
+                    )}
+                </div>
+            )}
 
             {/* 展开的子表 */}
             {expanded && f.type === 'table' && f.fields && (
