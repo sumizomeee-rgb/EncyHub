@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
+import LuaUiInspector from './LuaUiInspector'
 
 function GmConsole() {
   const navigate = useNavigate()
@@ -676,6 +677,19 @@ function GmConsole() {
                         Animator
                       </span>
                     </button>
+                    <button
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
+                        activeTab === 'lua_inspector'
+                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
+                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
+                      }`}
+                      onClick={() => setActiveTab('lua_inspector')}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <ZoomIn size={14} />
+                        Lua UI
+                      </span>
+                    </button>
                   </div>
                   {activeTab === 'lua_gm' && (
                     <button
@@ -939,6 +953,14 @@ function GmConsole() {
 
                 {activeTab === 'animator' && (
                   <AnimatorViewer
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    broadcastMode={broadcastMode}
+                  />
+                )}
+
+                {activeTab === 'lua_inspector' && (
+                  <LuaUiInspector
                     clients={clients}
                     selectedClient={selectedClient}
                     broadcastMode={broadcastMode}
