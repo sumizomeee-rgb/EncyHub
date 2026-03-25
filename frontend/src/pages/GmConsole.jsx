@@ -79,7 +79,13 @@ function GmConsole() {
       }
       if (clientsRes.ok) {
         const data = await clientsRes.json()
-        setClients(data.clients || [])
+        const newClients = data.clients || []
+        setClients(newClients)
+        setSelectedClient(prev => {
+          if (!prev) return null
+          const updated = newClients.find(c => c.id === prev.id)
+          return updated || null
+        })
       }
       if (logsRes.ok) {
         const data = await logsRes.json()
@@ -141,7 +147,15 @@ function GmConsole() {
           const event = JSON.parse(e.data)
           if (event.type === 'init' || event.type === 'update') {
             if (event.listeners) setListeners(event.listeners)
-            if (event.clients) setClients(event.clients)
+            if (event.clients) {
+              setClients(event.clients)
+              // 客户端重连后自动同步 selectedClient 数据（ID 不变但 gm_tree 等可能更新）
+              setSelectedClient(prev => {
+                if (!prev) return null
+                const updated = event.clients.find(c => c.id === prev.id)
+                return updated || null
+              })
+            }
             if (event.logs) {
               const serverLogs = event.logs.map(log => ({
                 type: log.level === 'info' ? 'info' : 'error',

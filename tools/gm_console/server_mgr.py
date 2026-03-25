@@ -176,7 +176,8 @@ class ServerMgr:
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
         """处理客户端连接"""
         addr = writer.get_extra_info("peername")
-        cid = f"{addr[0]}:{addr[1]}"
+        # 使用 IP:服务器监听端口 作为稳定 ID，避免客户端重连后临时端口变化导致 ID 失效
+        cid = f"{addr[0]}:{port}"
 
         # 断开同端口的旧连接
         for ocid in [k for k, v in self.clients.items() if v.port == port]:
@@ -188,9 +189,10 @@ class ServerMgr:
             except Exception as e:
                 print(f"[ServerMgr] 断开旧连接失败 {ocid}: {e}")
 
-        self.clients[cid] = Client(id=cid, port=port, writer=writer)
+        client_obj = Client(id=cid, port=port, writer=writer)
+        self.clients[cid] = client_obj
         self._add_log("info", f"客户端连接: {cid}", cid)
-        print(f"[ServerMgr] TCP 客户端连接: {cid} (port={port}), 当前客户端数={len(self.clients)}")
+        print(f"[ServerMgr] TCP 客户端连接: {cid} (remote={addr[0]}:{addr[1]}, port={port}), 当前客户端数={len(self.clients)}")
         if self.on_update:
             self.on_update()
 
@@ -217,7 +219,8 @@ class ServerMgr:
         except Exception as e:
             disconnect_reason = f"异常: {type(e).__name__}: {e}"
         finally:
-            if cid in self.clients:
+            # 仅当 dict 中仍是本次连接的对象时才删除，避免误删重连后的新客户端
+            if self.clients.get(cid) is client_obj:
                 del self.clients[cid]
             self._add_log("info", f"客户端断开: {cid} ({disconnect_reason})", cid)
             print(f"[ServerMgr] TCP 客户端断开: {cid}, 原因={disconnect_reason}, 剩余={len(self.clients)}")
