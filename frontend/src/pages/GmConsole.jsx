@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
-  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity
+  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity,
+  PanelLeftClose, PanelLeftOpen
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
@@ -39,11 +40,17 @@ function GmConsole() {
     return saved ? parseInt(saved) : 64
   })
 
+  // 侧栏折叠状态
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return localStorage.getItem('gm_sidebarCollapsed') === 'true'
+  })
+
   useEffect(() => { document.title = 'GM Console - EncyHub' }, [])
 
   // 持久化滑块值
   useEffect(() => { localStorage.setItem('gm_btnMinWidth', String(btnMinWidth)) }, [btnMinWidth])
   useEffect(() => { localStorage.setItem('gm_btnHeight', String(btnHeight)) }, [btnHeight])
+  useEffect(() => { localStorage.setItem('gm_sidebarCollapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
 
   // 面包屑导航
   const [breadcrumb, setBreadcrumb] = useState([])
@@ -515,7 +522,7 @@ function GmConsole() {
     <div className="min-h-screen">
       {/* Top Bar */}
       <header className="sticky top-0 z-50 bg-[var(--glass-bg)] backdrop-blur-xl border-b border-[var(--glass-border)] px-6 py-3">
-        <div className="max-w-[1600px] mx-auto flex items-center gap-4">
+        <div className="max-w-[1920px] mx-auto flex items-center gap-4">
           <button className="btn-secondary p-2.5" onClick={() => navigate('/')}>
             <ArrowLeft size={18} />
           </button>
@@ -547,15 +554,72 @@ function GmConsole() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto p-6">
+      <main className="max-w-[1920px] mx-auto p-6">
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="spinner" />
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5" style={{ minHeight: 'calc(100vh - 120px)' }}>
-            {/* Left Panel - Listeners & Clients */}
-            <div className="lg:col-span-3 space-y-4">
+          <div className="flex flex-col lg:flex-row gap-5" style={{ minHeight: 'calc(100vh - 120px)' }}>
+            {/* Left Sidebar - Collapsible */}
+            <div className={`shrink-0 transition-all duration-300 ease-in-out overflow-hidden ${sidebarCollapsed ? 'lg:w-[52px]' : 'lg:w-[260px]'}`}>
+              {/* Toggle button - desktop only */}
+              <button
+                className="hidden lg:flex w-full items-center justify-center p-1.5 mb-2 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                onClick={() => setSidebarCollapsed(prev => !prev)}
+                title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+              >
+                {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+              </button>
+
+              {/* Collapsed view - desktop only when collapsed */}
+              <div className={`${sidebarCollapsed ? 'lg:flex' : 'lg:hidden'} hidden flex-col items-center gap-3`}>
+                <div className="glass-card p-2 w-full flex justify-center">
+                  <div className="relative" title={`${listeners.length} 个监听端口`}>
+                    <Radio size={18} className="text-[var(--sage)]" />
+                    {listeners.length > 0 && (
+                      <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 bg-[var(--sage)] text-white text-[8px] rounded-full flex items-center justify-center font-bold leading-none">
+                        {listeners.length}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="glass-card p-2.5 w-full">
+                  <div className="flex flex-col items-center gap-1.5">
+                    <div
+                      className={`p-1.5 rounded-lg cursor-pointer transition-all ${broadcastMode ? 'bg-[var(--amber-soft)]/30' : 'hover:bg-[var(--cream-warm)]'}`}
+                      onClick={handleSelectBroadcast}
+                      title={`全部广播 (${clients.length})`}
+                    >
+                      <Globe size={16} className={broadcastMode ? 'text-[var(--amber)]' : 'text-[var(--coffee-muted)]'} />
+                    </div>
+                    {clients.map(client => (
+                      <div
+                        key={client.id}
+                        className={`p-1.5 rounded-lg cursor-pointer transition-all ${
+                          selectedClient?.id === client.id && !broadcastMode
+                            ? 'bg-[var(--caramel-light)]/20'
+                            : 'hover:bg-[var(--cream-warm)]'
+                        }`}
+                        onClick={() => handleSelectClient(client)}
+                        title={`${client.device || 'Unknown'}\n${client.platform || ''} · ${client.ip || ''}:${client.port || ''}`}
+                      >
+                        <Smartphone size={14} className={
+                          selectedClient?.id === client.id && !broadcastMode
+                            ? 'text-[var(--caramel)]'
+                            : 'text-[var(--coffee-muted)]'
+                        } />
+                      </div>
+                    ))}
+                    {clients.length === 0 && (
+                      <span className="text-[var(--coffee-muted)] text-[9px]">无连接</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Expanded view - always on mobile, conditional on desktop */}
+              <div className={`space-y-4 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
               {/* Listeners */}
               <div className="glass-card p-5 animate-fade-in">
                 <div className="flex items-center gap-2 mb-3">
@@ -609,7 +673,7 @@ function GmConsole() {
                 <div
                   className={`flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all mb-2 ${
                     broadcastMode
-                      ? 'bg-gradient-to-r from-[var(--amber-soft)]/20 to-transparent border-l-3 border-[var(--amber)]'
+                      ? 'bg-gradient-to-r from-[var(--amber-soft)]/20 to-transparent border-l-[3px] border-[var(--amber)]'
                       : 'bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)]'
                   }`}
                   onClick={handleSelectBroadcast}
@@ -629,7 +693,7 @@ function GmConsole() {
                         key={client.id}
                         className={`flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${
                           selectedClient?.id === client.id && !broadcastMode
-                            ? 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-l-3 border-[var(--caramel)]'
+                            ? 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-l-[3px] border-[var(--caramel)]'
                             : 'bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)]'
                         }`}
                         onClick={() => handleSelectClient(client)}
@@ -650,10 +714,11 @@ function GmConsole() {
                   </div>
                 )}
               </div>
+              </div>
             </div>
 
             {/* Center Panel - GM Commands (Tabs + Grid) */}
-            <div className="lg:col-span-5">
+            <div className="flex-[3] min-w-0">
               <div className="glass-card p-5 h-full animate-fade-in" style={{ animationDelay: '0.15s' }}>
                 {/* Tab Bar */}
                 <div className="flex items-center justify-between mb-2">
@@ -990,7 +1055,7 @@ function GmConsole() {
             </div>
 
             {/* Right Panel - Lua Input & Logs */}
-            <div className="lg:col-span-4 space-y-4">
+            <div className="flex-[2] min-w-0 space-y-4">
               {/* Lua Input */}
               <div className="glass-card p-5 animate-fade-in" style={{ animationDelay: '0.2s' }}>
                 <div className="flex items-center gap-2 mb-3">
