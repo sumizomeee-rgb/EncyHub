@@ -759,6 +759,25 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                                 </button>
                             )}
                         </div>
+                    ) : f.type === 'userdata' ? (
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            {f.goActive != null && (
+                                <span
+                                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                        f.goActive ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'
+                                    }`}
+                                    title={`activeSelf: ${f.goSelf}\nactiveInHierarchy: ${f.goActive}`}
+                                />
+                            )}
+                            <span className="text-[var(--coffee-muted)] font-mono truncate">
+                                {String(f.value).replace(/^UnityEngine\.(UI\.)?/, '')}
+                            </span>
+                            {f.goName && (
+                                <span className="text-[var(--coffee-muted)] opacity-50 text-[10px] truncate ml-0.5">
+                                    {f.goName}
+                                </span>
+                            )}
+                        </div>
                     ) : (
                         <span className="text-[var(--coffee-muted)] font-mono truncate block">
                             {String(f.value)}

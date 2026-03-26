@@ -815,7 +815,27 @@ local function StartRuntimeGM()
         elseif t == "string" then return { type = "string", value = value, editable = true }
         elseif t == "boolean" then return { type = "boolean", value = value, editable = true }
         elseif t == "function" then return { type = "function", value = "function", editable = false }
-        elseif t == "userdata" then return { type = "userdata", value = displayName or "userdata", editable = false }
+        elseif t == "userdata" then
+            local result = { type = "userdata", value = displayName or "userdata", editable = false }
+            -- 尝试读取关联 GameObject 的激活状态和名称
+            pcall(function()
+                local go
+                -- Component 类型 → 通过 .gameObject 获取
+                local ok2, goObj = pcall(function() return value.gameObject end)
+                if ok2 and goObj then
+                    go = goObj
+                else
+                    -- 可能是 GameObject 自身 → 直接检查 activeInHierarchy
+                    local ok3, ah = pcall(function() return value.activeInHierarchy end)
+                    if ok3 and type(ah) == "boolean" then go = value end
+                end
+                if go then
+                    result.goName = tostring(go.name)
+                    result.goActive = go.activeInHierarchy
+                    result.goSelf = go.activeSelf
+                end
+            end)
+            return result
         elseif t == "table" then
             if visited[value] then return { type = "ref", value = "[circular]", editable = false } end
             local childCount = inspectorTableKeyCount(value)
