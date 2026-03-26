@@ -54,5 +54,29 @@
   {
     "name": "战斗胜利(单机版)",
     "cmd": "local fight = CS.XFightClient.FightInstance\nif fight then\n    fight:Settle(true)\n    fight:Finish()\n    print(\"[GM] 已触发战斗胜利\")\nelse\n    print(\"[GM] 当前不在战斗中\")\nend"
+  },
+  {
+    "name": "关闭所有弹窗(切换)",
+    "cmd": "local current = XDataCenter.FunctionEventManager.CheckFuncDisable()\nXDataCenter.FunctionEventManager.ChangeFuncDisable(not current)\nif not current then\n    print(\"[GM] 已关闭所有弹窗\")\nelse\n    print(\"[GM] 已恢复所有弹窗\")\nend"
+  },
+  {
+    "name": "关闭主干引导(切换)",
+    "cmd": "local state = 2\nlocal current = XDataCenter.GuideManager.CheckFuncDisableWithState(state)\nif not current then\n    XDataCenter.GuideManager.AddFuncDisableFlag(state)\n    print(\"[GM] 已关闭主干引导\")\nelse\n    XDataCenter.GuideManager.SubFuncDisableFlag(state)\n    print(\"[GM] 已恢复主干引导\")\nend"
+  },
+  {
+    "name": "关闭大世界引导(切换)",
+    "cmd": "local state = 4\nlocal current = XDataCenter.GuideManager.CheckFuncDisableWithState(state)\nif not current then\n    XDataCenter.GuideManager.AddFuncDisableFlag(state)\n    print(\"[GM] 已关闭大世界引导\")\nelse\n    XDataCenter.GuideManager.SubFuncDisableFlag(state)\n    print(\"[GM] 已恢复大世界引导\")\nend"
+  },
+  {
+    "name": "跳过所有剧情(切换)",
+    "cmd": "local current = XDataCenter.MovieManager.CheckFuncDisable()\nXDataCenter.MovieManager.ChangeFuncDisable(not current)\nif not current then\n    print(\"[GM] 已开启跳过所有剧情(含纯剧情关)\")\nelse\n    print(\"[GM] 已恢复剧情播放\")\nend"
+  },
+  {
+    "name": "关闭通讯弹窗(切换)",
+    "cmd": "local current = XDataCenter.CommunicationManager.CheckFuncDisable()\nXDataCenter.CommunicationManager.ChangeFuncDisable(not current)\nif not current then\n    print(\"[GM] 已关闭通讯弹窗\")\nelse\n    print(\"[GM] 已恢复通讯弹窗\")\nend"
+  },
+  {
+    "name": "DLC提前结算",
+    "cmd": "XFightNetwork.Call(\"DlcCheatRequest\", { Content = \"advance_settlement\" }, function(res)\n    if res.Code ~= XCode.Success then\n        print(\"[GM] DLC结算失败, Code: \" .. tostring(res.Code))\n    else\n        print(\"[GM] DLC提前结算已发送\")\n    end\nend)"
   }
 ]
