@@ -1556,6 +1556,182 @@ local function StartRuntimeGM()
         return { success = true }
     end
 
+    -- 获取 GO 上所有组件名称列表（Level 1，无反射，极快）
+    function LuaUiInspector.GetComponents(uiName, path)
+        local _, go = inspectorGetGoFromPath(uiName, path)
+        if not go then return { error = "GameObject not found" } end
+        local comps = {}
+        local ok, err = pcall(function()
+            local all = go:GetComponents(typeof(CS.UnityEngine.Component))
+            for i = 0, all.Length - 1 do
+                local c = all[i]
+                if c then
+                    local name = ""
+                    pcall(function() name = tostring(c:GetType().Name) end)
+                    comps[#comps + 1] = { index = i, typeName = name }
+                end
+            end
+        end)
+        if not ok then return { error = tostring(err) } end
+        return { components = comps, gameObjectName = go.name }
+    end
+
+    -- 序列化单个属性值为 JSON 安全的 Lua 表
+    local function inspectorSerializePropValue(val, typeName)
+        if val == nil then return nil, "nil" end
+        local tn = typeName or ""
+        -- 基本类型
+        if tn == "Boolean" then return val, "bool"
+        elseif tn == "Int32" or tn == "Int64" or tn == "Byte" or tn == "Int16" then return val, "int"
+        elseif tn == "Single" or tn == "Double" then return val, "float"
+        elseif tn == "String" then return val ~= nil and tostring(val) or "", "string"
+        end
+        -- Unity 向量/颜色
+        local ok, r = pcall(function()
+            if tn == "Vector2" then return {val.x, val.y}, "vector2"
+            elseif tn == "Vector3" then return {val.x, val.y, val.z}, "vector3"
+            elseif tn == "Vector4" then return {val.x, val.y, val.z, val.w}, "vector4"
+            elseif tn == "Color" then return {val.r, val.g, val.b, val.a}, "color"
+            elseif tn == "Rect" then return {val.x, val.y, val.width, val.height}, "rect"
+            elseif tn == "Quaternion" then
+                local e = val.eulerAngles
+                return {e.x, e.y, e.z}, "euler"
+            end
+            return nil, nil
+        end)
+        if ok and r then return r end
+        -- 枚举
+        local eOk, eVal = pcall(function()
+            if val:GetType().IsEnum then return tostring(val), "enum" end
+            return nil, nil
+        end)
+        if eOk and eVal then return eVal end
+        -- 其他：只读显示
+        local sOk, sVal = pcall(function() return tostring(val) end)
+        return sOk and sVal or "(unknown)", "readonly"
+    end
+
+    -- 获取单个组件的属性 + 方法（Level 2，单组件反射）
+    function LuaUiInspector.GetComponentDetail(uiName, path, compIndex)
+        local _, go = inspectorGetGoFromPath(uiName, path)
+        if not go then return { error = "GameObject not found" } end
+        local result = { properties = {}, methods = {} }
+        local ok, err = pcall(function()
+            local all = go:GetComponents(typeof(CS.UnityEngine.Component))
+            if compIndex < 0 or compIndex >= all.Length then error("index out of range") end
+            local comp = all[compIndex]
+            if not comp then error("component is null") end
+            result.typeName = tostring(comp:GetType().Name)
+
+            -- 属性
+            local props
+            pcall(function() props = comp:GetType():GetProperties() end)
+            if not props then props = {} end
+            for i = 0, (props.Length or #props) - 1 do
+                local prop = props[i]
+                pcall(function()
+                    if prop.IsSpecialName then return end
+                    local idxParams = prop:GetIndexParameters()
+                    if idxParams and idxParams.Length > 0 then return end
+                    if not prop.CanRead then return end
+                    local propTypeName = tostring(prop.PropertyType.Name)
+                    -- 黑名单：访问会有副作用的属性
+                    local pName = prop.Name
+                    if pName == "mesh" or pName == "material" or pName == "materials" or pName == "sharedMesh" then return end
+                    local valOk, val = pcall(function() return prop:GetValue(comp, nil) end)
+                    if not valOk then return end
+                    local serialized, valueType = inspectorSerializePropValue(val, propTypeName)
+                    result.properties[#result.properties + 1] = {
+                        name = pName,
+                        typeName = propTypeName,
+                        valueType = valueType,
+                        value = serialized,
+                        editable = prop.CanWrite and valueType ~= "readonly",
+                    }
+                end)
+            end
+
+            -- 方法（仅 DeclaredOnly，过滤 getter/setter/Unity 生命周期）
+            local skipMethods = { Awake=1, Start=1, Update=1, LateUpdate=1, FixedUpdate=1, OnDestroy=1, OnEnable=1, OnDisable=1, ToString=1, GetHashCode=1, Equals=1, GetType=1 }
+            -- BindingFlags: Public=16, Instance=4, DeclaredOnly=2 → 用数值避免 xlua 枚举兼容问题
+            local methods
+            local mOk, _ = pcall(function()
+                methods = comp:GetType():GetMethods(22) -- 16+4+2
+            end)
+            if not mOk then pcall(function() methods = comp:GetType():GetMethods() end) end
+            if not methods then methods = {} end
+            local methodCount = 0
+            pcall(function() methodCount = methods.Length end)
+            if methodCount == 0 then methodCount = #methods end
+            for i = 0, methodCount - 1 do
+                local m = methods[i]
+                pcall(function()
+                    if m.IsSpecialName then return end
+                    if skipMethods[m.Name] then return end
+                    local params = m:GetParameters()
+                    local paramList = {}
+                    for j = 0, params.Length - 1 do
+                        paramList[#paramList + 1] = {
+                            name = params[j].Name,
+                            typeName = tostring(params[j].ParameterType.Name),
+                        }
+                    end
+                    result.methods[#result.methods + 1] = {
+                        name = m.Name,
+                        paramCount = params.Length,
+                        params = paramList,
+                    }
+                end)
+            end
+        end)
+        if not ok then return { error = tostring(err) } end
+        return result
+    end
+
+    -- 设置组件属性
+    function LuaUiInspector.SetComponentProp(uiName, path, compIndex, propName, value, valueType)
+        local _, go = inspectorGetGoFromPath(uiName, path)
+        if not go then return { error = "GO not found" } end
+        local ok, err = pcall(function()
+            local all = go:GetComponents(typeof(CS.UnityEngine.Component))
+            local comp = all[compIndex]
+            local prop = comp:GetType():GetProperty(propName)
+            if not prop or not prop.CanWrite then error("property not writable") end
+            local converted = value
+            if valueType == "bool" then converted = (value == true or value == "true")
+            elseif valueType == "int" then converted = math.floor(tonumber(value) or 0)
+            elseif valueType == "float" then converted = tonumber(value) or 0
+            elseif valueType == "string" then converted = tostring(value or "")
+            elseif valueType == "vector2" then converted = CS.UnityEngine.Vector2(value[1] or 0, value[2] or 0)
+            elseif valueType == "vector3" then converted = CS.UnityEngine.Vector3(value[1] or 0, value[2] or 0, value[3] or 0)
+            elseif valueType == "vector4" then converted = CS.UnityEngine.Vector4(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 0)
+            elseif valueType == "color" then converted = CS.UnityEngine.Color(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 1)
+            elseif valueType == "euler" then converted = CS.UnityEngine.Quaternion.Euler(value[1] or 0, value[2] or 0, value[3] or 0)
+            end
+            prop:SetValue(comp, converted, nil)
+        end)
+        if not ok then return { error = tostring(err) } end
+        return { success = true }
+    end
+
+    -- 调用组件方法
+    function LuaUiInspector.CallComponentMethod(uiName, path, compIndex, methodName)
+        local _, go = inspectorGetGoFromPath(uiName, path)
+        if not go then return { error = "GO not found" } end
+        local ok, err = pcall(function()
+            local all = go:GetComponents(typeof(CS.UnityEngine.Component))
+            local comp = all[compIndex]
+            local m = comp:GetType():GetMethod(methodName)
+            if not m then error("method not found: " .. tostring(methodName)) end
+            local params = m:GetParameters()
+            if params.Length > 0 then error("method has parameters, not supported yet") end
+            local ret = m:Invoke(comp, nil)
+            return ret
+        end)
+        if not ok then return { error = tostring(err) } end
+        return { success = true, result = tostring(err or "void") }
+    end
+
     function LuaUiInspector.HandleCommand(packet)
         local action = packet.action
         local result
@@ -1579,6 +1755,14 @@ local function StartRuntimeGM()
             result = LuaUiInspector.SetGoText(packet.uiName, packet.path, packet.value)
         elseif action == "destroy_go" then
             result = LuaUiInspector.DestroyGo(packet.uiName, packet.path)
+        elseif action == "get_components" then
+            result = LuaUiInspector.GetComponents(packet.uiName, packet.path)
+        elseif action == "get_component_detail" then
+            result = LuaUiInspector.GetComponentDetail(packet.uiName, packet.path, packet.compIndex)
+        elseif action == "set_component_prop" then
+            result = LuaUiInspector.SetComponentProp(packet.uiName, packet.path, packet.compIndex, packet.propName, packet.value, packet.valueType)
+        elseif action == "call_component_method" then
+            result = LuaUiInspector.CallComponentMethod(packet.uiName, packet.path, packet.compIndex, packet.methodName)
         else
             result = { error = "Unknown action: " .. tostring(action) }
         end
