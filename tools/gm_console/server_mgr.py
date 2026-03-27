@@ -68,6 +68,7 @@ class ServerMgr:
         self.on_animator_list = None        # Callback for ANIM_LIST_RESP
         self.on_animator_removed = None     # Callback for ANIM_REMOVED
         self.on_inspector_data = None       # Callback for UI_INSPECTOR_RESP
+        self.on_timeline_data = None        # Callback for TIMELINE_RESP
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -267,6 +268,9 @@ class ServerMgr:
         elif t == "UI_INSPECTOR_RESP":
             if self.on_inspector_data:
                 self.on_inspector_data(cid, pkt)
+        elif t == "TIMELINE_RESP":
+            if self.on_timeline_data:
+                self.on_timeline_data(cid, pkt)
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -516,6 +520,20 @@ class ServerMgr:
             await c.writer.drain()
         except Exception as e:
             self._add_log("error", f"Send UI_INSPECTOR failed: {e}", client_id)
+
+    async def send_timeline_request(self, client_id: str, action: str, params: dict):
+        """发送 Timeline 命令到客户端"""
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        pkt = {"type": "TIMELINE", "action": action}
+        pkt.update(params)
+        msg = json.dumps(pkt) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send TIMELINE failed: {e}", client_id)
 
     async def shutdown(self):
         """关闭所有连接并清理端口"""

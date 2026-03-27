@@ -116,6 +116,15 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_inspector_data = on_inspector_data
 
+    def on_timeline_data(client_id, pkt):
+        asyncio.create_task(broadcast_timeline_event({
+            "type": pkt.get("action", "unknown"),
+            "client_id": client_id,
+            "data": pkt.get("data", {})
+        }))
+
+    server_mgr.on_timeline_data = on_timeline_data
+
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
     if success:
@@ -374,6 +383,45 @@ async def inspector_command(client_id: str, request: Request):
         raise HTTPException(400, "Missing action")
     await server_mgr.send_inspector_request(client_id, action, body)
     return {"status": "requested"}
+
+# === Timeline Monitor API ===
+
+timeline_ws_connections: list = []
+
+async def broadcast_timeline_event(data: dict):
+    dead = []
+    for ws in timeline_ws_connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        timeline_ws_connections.remove(ws)
+
+@app.post("/timeline/{client_id}/command")
+async def timeline_command(client_id: str, request: Request):
+    body = await request.json()
+    action = body.pop("action", "")
+    if not action:
+        raise HTTPException(400, "Missing action")
+    await server_mgr.send_timeline_request(client_id, action, body)
+    return {"status": "requested"}
+
+@app.websocket("/ws/timeline")
+async def websocket_timeline(websocket: WebSocket):
+    await websocket.accept()
+    timeline_ws_connections.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in timeline_ws_connections:
+            timeline_ws_connections.remove(websocket)
+
 
 @app.websocket("/ws/inspector")
 async def websocket_inspector(websocket: WebSocket):

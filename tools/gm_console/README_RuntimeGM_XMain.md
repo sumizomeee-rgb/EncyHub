@@ -749,6 +749,435 @@ local function StartRuntimeGM()
         end
     end
 
+    -- ========== LuaTimelineMonitor: Timeline 数据采集 (纯 Lua, 真机兼容) ==========
+    local LuaTimelineMonitor = {}
+    LuaTimelineMonitor._directors = {}         -- instanceId → PlayableDirector
+    LuaTimelineMonitor._monitored = {}         -- instanceId → true
+    LuaTimelineMonitor._monitoredCount = 0
+    LuaTimelineMonitor._lastScanTime = 0
+    LuaTimelineMonitor._lastPushTime = 0
+    LuaTimelineMonitor._scanInterval = 2.0     -- 扫描间隔
+    LuaTimelineMonitor._pushInterval = 0.1     -- 推送间隔（100ms）
+    LuaTimelineMonitor._eventCaches = {}       -- instanceId → { assetName, events }
+
+    origin_print("[RuntimeGM] LuaTimelineMonitor module initialized")
+
+    -- 缓存 PlayState 枚举，避免 tostring 比较的 xlua 兼容性问题
+    local _TL_PlayState_Playing = nil
+    pcall(function() _TL_PlayState_Playing = CS.UnityEngine.Playables.PlayState.Playing end)
+
+    local function tlIsPlaying(director)
+        if _TL_PlayState_Playing then
+            return director.state == _TL_PlayState_Playing
+        end
+        -- fallback: 尝试 tostring
+        local s = tostring(director.state)
+        return s == "Playing" or s == "1"
+    end
+
+    -- 迭代 C# IEnumerable → Lua table
+    local function tlIter(csEnum)
+        local t = {}
+        if not csEnum then return t end
+        pcall(function()
+            local it = csEnum:GetEnumerator()
+            while it:MoveNext() do t[#t + 1] = it.Current end
+        end)
+        return t
+    end
+
+    -- 安全数值（NaN / Infinity → 0）
+    local function tlSafeNum(v)
+        if v ~= v or v == math.huge or v == -math.huge then return 0 end
+        return v
+    end
+
+    -- 扫描场景所有 PlayableDirector
+    function LuaTimelineMonitor.ScanDirectors()
+        local ok, allDirs = pcall(function()
+            return CS.UnityEngine.Object.FindObjectsOfType(typeof(CS.UnityEngine.Playables.PlayableDirector))
+        end)
+        if not ok or not allDirs then return {} end
+
+        local newDirs = {}
+        local result = {}
+        for i = 0, allDirs.Length - 1 do
+            local ok2, info = pcall(function()
+                local d = allDirs[i]
+                if not d then return nil end
+                local id = d:GetInstanceID()
+                newDirs[id] = d
+                local goName = d.gameObject.name
+                local parentName = ""
+                pcall(function()
+                    local p = d.transform.parent
+                    if p then parentName = p.name end
+                end)
+                local t = d.transform
+                while t.parent do t = t.parent end
+                local rootName = t.name
+                return {
+                    instanceId = id,
+                    gameObjectName = goName,
+                    parentName = (parentName ~= rootName and parentName ~= goName) and parentName or nil,
+                    rootName = rootName,
+                    hasAsset = (d.playableAsset ~= nil),
+                    isPlaying = tlIsPlaying(d),
+                }
+            end)
+            if ok2 and info then result[#result + 1] = info end
+        end
+        LuaTimelineMonitor._directors = newDirs
+        return result
+    end
+
+    -- 构建完整快照
+    function LuaTimelineMonitor.TakeSnapshot(d)
+        local snap = {}
+        local ok, err = pcall(function()
+            snap.instanceId = d:GetInstanceID()
+            snap.gameObjectName = d.gameObject.name
+            snap.currentTime = tlSafeNum(d.time)
+            snap.duration = tlSafeNum(d.duration)
+            snap.playState = tlIsPlaying(d) and "Playing" or "Paused"
+            snap.wrapMode = tostring(d.extrapolationMode)
+            snap.speed = 1.0
+            pcall(function()
+                local g = d.playableGraph
+                if g:IsValid() and g:GetRootPlayableCount() > 0 then
+                    snap.speed = g:GetRootPlayable(0):GetSpeed()
+                end
+            end)
+            snap.assetName = ""
+            pcall(function() if d.playableAsset then snap.assetName = d.playableAsset.name end end)
+
+            snap.tracks = {}
+            if d.playableAsset then
+                local tracks = tlIter(d.playableAsset:GetOutputTracks())
+                for ti, track in ipairs(tracks) do
+                    local td = { trackName = "", trackType = "", muted = false, boundObjectName = "", clips = {} }
+                    pcall(function()
+                        td.trackName = track.name or ""
+                        td.trackType = tostring(track:GetType().Name)
+                        td.muted = track.muted
+                        pcall(function()
+                            local b = d:GetGenericBinding(track)
+                            if b then td.boundObjectName = tostring(b.name or b) end
+                        end)
+                        for _, clip in ipairs(tlIter(track:GetClips())) do
+                            pcall(function()
+                                local cs, cd = clip.start, clip.duration
+                                td.clips[#td.clips + 1] = {
+                                    name = clip.displayName,
+                                    start = tlSafeNum(cs),
+                                    duration = tlSafeNum(cd),
+                                    isActive = (d.time >= cs and d.time < cs + cd),
+                                }
+                            end)
+                        end
+                    end)
+                    snap.tracks[#snap.tracks + 1] = td
+                end
+            end
+            -- Events（静态数据，缓存避免每帧重复提取）
+            local id = d:GetInstanceID()
+            local cache = LuaTimelineMonitor._eventCaches[id]
+            if not cache or cache.assetName ~= snap.assetName then
+                cache = { assetName = snap.assetName, events = LuaTimelineMonitor.ExtractEvents(d) }
+                LuaTimelineMonitor._eventCaches[id] = cache
+            end
+            snap.events = cache.events
+        end)
+        if not ok then origin_print("[RuntimeGM] Timeline TakeSnapshot error: " .. tostring(err)); return nil end
+        return snap
+    end
+
+    -- 提取所有事件（3 种来源，与 Editor 版一致，结果缓存）
+    function LuaTimelineMonitor.ExtractEvents(d)
+        local events = {}
+        local ok, _ = pcall(function()
+            if not d.playableAsset then return end
+            local evtIdx = 0
+            local tracks = tlIter(d.playableAsset:GetOutputTracks())
+            for ti, track in ipairs(tracks) do
+                local trackTypeName = ""
+                pcall(function() trackTypeName = tostring(track:GetType().Name) end)
+
+                -- 1. InfiniteClip 帧事件（AnimationTrack 无离散 Clip 时）
+                if trackTypeName == "AnimationTrack" then
+                    pcall(function()
+                        local infClip = track.infiniteClip
+                        if infClip and infClip.events then
+                            for ei = 0, infClip.events.Length - 1 do
+                                local evt = infClip.events[ei]
+                                events[#events + 1] = {
+                                    time = tlSafeNum(evt.time),
+                                    methodName = evt.functionName or "",
+                                    sourceName = "[InfiniteClip] " .. (track.name or ""),
+                                    eventIndex = evtIdx, trackIndex = ti - 1,
+                                }
+                                evtIdx = evtIdx + 1
+                            end
+                        end
+                    end)
+                end
+
+                -- 2. 离散 Clip 内的 AnimationEvent
+                for _, clip in ipairs(tlIter(track:GetClips())) do
+                    pcall(function()
+                        local animClip = nil
+                        -- AnimationPlayableAsset.clip
+                        pcall(function() if clip.asset then animClip = clip.asset.clip end end)
+                        -- 备选：clip.animationClip
+                        if not animClip then pcall(function() animClip = clip.animationClip end) end
+                        if animClip and animClip.events then
+                            local clipIn = clip.clipIn or 0
+                            local clipStart = clip.start
+                            local clipDur = clip.duration
+                            for ei = 0, animClip.events.Length - 1 do
+                                local evt = animClip.events[ei]
+                                local localT = evt.time
+                                if localT >= clipIn and localT <= clipIn + clipDur then
+                                    local globalT = clipStart + (localT - clipIn)
+                                    events[#events + 1] = {
+                                        time = tlSafeNum(globalT),
+                                        methodName = evt.functionName or "",
+                                        sourceName = "[AnimEvent] " .. (clip.displayName or ""),
+                                        eventIndex = evtIdx, trackIndex = ti - 1,
+                                    }
+                                    evtIdx = evtIdx + 1
+                                end
+                            end
+                        end
+                    end)
+                end
+
+                -- 3. SignalEmitter 标记
+                pcall(function()
+                    for _, marker in ipairs(tlIter(track:GetMarkers())) do
+                        pcall(function()
+                            if tostring(marker:GetType().Name) == "SignalEmitter" then
+                                local sName = ""
+                                pcall(function() if marker.asset then sName = marker.asset.name end end)
+                                local mName = sName
+                                -- 在绑定对象或 Director 上查找 SignalReceiver
+                                pcall(function()
+                                    local recv = nil
+                                    pcall(function()
+                                        local b = d:GetGenericBinding(track)
+                                        local go = nil
+                                        if b then pcall(function() go = b.gameObject end) end
+                                        if not go then pcall(function() go = b end) end -- b 本身可能是 GO
+                                        if go then recv = go:GetComponent(typeof(CS.UnityEngine.Timeline.SignalReceiver)) end
+                                    end)
+                                    if not recv then recv = d.gameObject:GetComponent(typeof(CS.UnityEngine.Timeline.SignalReceiver)) end
+                                    if recv and marker.asset then
+                                        local reaction = recv:GetReaction(marker.asset)
+                                        if reaction and reaction:GetPersistentEventCount() > 0 then
+                                            mName = reaction:GetPersistentMethodName(0)
+                                        end
+                                    end
+                                end)
+                                events[#events + 1] = {
+                                    time = tlSafeNum(marker.time), methodName = mName,
+                                    sourceName = sName, eventIndex = evtIdx, trackIndex = ti - 1,
+                                }
+                                evtIdx = evtIdx + 1
+                            end
+                        end)
+                    end
+                end)
+            end
+
+            -- 4. 根级 markerTrack 上的 Signal（不在 GetOutputTracks 结果中）
+            pcall(function()
+                local mt = d.playableAsset.markerTrack
+                if mt then
+                    for _, marker in ipairs(tlIter(mt:GetMarkers())) do
+                        pcall(function()
+                            if tostring(marker:GetType().Name) == "SignalEmitter" then
+                                local sName = ""
+                                pcall(function() if marker.asset then sName = marker.asset.name end end)
+                                local mName = sName
+                                pcall(function()
+                                    local recv = d.gameObject:GetComponent(typeof(CS.UnityEngine.Timeline.SignalReceiver))
+                                    if recv and marker.asset then
+                                        local reaction = recv:GetReaction(marker.asset)
+                                        if reaction and reaction:GetPersistentEventCount() > 0 then
+                                            mName = reaction:GetPersistentMethodName(0)
+                                        end
+                                    end
+                                end)
+                                events[#events + 1] = {
+                                    time = tlSafeNum(marker.time), methodName = mName,
+                                    sourceName = sName, eventIndex = evtIdx, trackIndex = -1,
+                                }
+                                evtIdx = evtIdx + 1
+                            end
+                        end)
+                    end
+                end
+            end)
+
+            -- 按时间排序 + 重新编号
+            table.sort(events, function(a, b) return a.time < b.time end)
+            for i, e in ipairs(events) do e.eventIndex = i - 1 end
+        end)
+        return events
+    end
+
+    -- 处理命令
+    function LuaTimelineMonitor.HandleCommand(packet)
+        local action = packet.action
+        if action == "scan" then
+            RuntimeGMClient.Send({ type = "TIMELINE_RESP", action = "scan", data = LuaTimelineMonitor.ScanDirectors() })
+
+        elseif action == "subscribe" then
+            local id = packet.instanceId
+            if id and LuaTimelineMonitor._directors[id] then
+                if not LuaTimelineMonitor._monitored[id] then
+                    LuaTimelineMonitor._monitored[id] = true
+                    LuaTimelineMonitor._monitoredCount = LuaTimelineMonitor._monitoredCount + 1
+                end
+                local snap = LuaTimelineMonitor.TakeSnapshot(LuaTimelineMonitor._directors[id])
+                if snap then RuntimeGMClient.Send({ type = "TIMELINE_RESP", action = "snapshot", data = snap }) end
+            end
+
+        elseif action == "unsubscribe" then
+            local id = packet.instanceId
+            if id and LuaTimelineMonitor._monitored[id] then
+                LuaTimelineMonitor._monitored[id] = nil
+                LuaTimelineMonitor._monitoredCount = LuaTimelineMonitor._monitoredCount - 1
+            end
+
+        elseif action == "unsubscribe_all" then
+            LuaTimelineMonitor._monitored = {}
+            LuaTimelineMonitor._monitoredCount = 0
+
+        elseif action == "control" then
+            local d = LuaTimelineMonitor._directors[packet.instanceId]
+            if d then
+                pcall(function()
+                    local cmd = packet.cmd
+                    if cmd == "play" then
+                        -- 播完的 timeline 需要先 reset 才能重播
+                        if d.duration > 0 and d.time >= d.duration then d.time = 0 end
+                        d:Play()
+                    elseif cmd == "replay" then d.time = 0; d:Play()
+                    elseif cmd == "pause" then d:Pause()
+                    elseif cmd == "stop" then d:Stop(); d.time = 0; d:Evaluate()
+                    elseif cmd == "set_time" then d.time = packet.value or 0; d:Evaluate()
+                    elseif cmd == "set_speed" then
+                        local g = d.playableGraph
+                        if g:IsValid() and g:GetRootPlayableCount() > 0 then
+                            g:GetRootPlayable(0):SetSpeed(packet.value or 1.0)
+                        end
+                    end
+                end)
+            end
+
+        elseif action == "invoke_signal" then
+            local id = packet.instanceId
+            local d = LuaTimelineMonitor._directors[id]
+            if d then
+                local cache = LuaTimelineMonitor._eventCaches[id]
+                local evtIdx = packet.eventIndex
+                if cache and cache.events and cache.events[evtIdx + 1] then
+                    local evt = cache.events[evtIdx + 1]  -- Lua 1-indexed
+                    local src = evt.sourceName or ""
+                    pcall(function()
+                        if src:sub(1, 10) == "[AnimEvent" or src:sub(1, 14) == "[InfiniteClip]" then
+                            -- AnimationEvent → SendMessage 到 Track 绑定对象
+                            local tracks = tlIter(d.playableAsset:GetOutputTracks())
+                            local t = tracks[evt.trackIndex + 1]
+                            if t then
+                                local b = d:GetGenericBinding(t)
+                                local go = nil
+                                pcall(function() go = b.gameObject end)
+                                if not go then go = b end
+                                if go and evt.methodName ~= "" then
+                                    go:SendMessage(evt.methodName, CS.UnityEngine.SendMessageOptions.DontRequireReceiver)
+                                end
+                            end
+                        else
+                            -- SignalEmitter → 重新遍历 markers 匹配 time+name 触发
+                            local tracks = tlIter(d.playableAsset:GetOutputTracks())
+                            local allTracks = {}
+                            for _, tr in ipairs(tracks) do allTracks[#allTracks + 1] = tr end
+                            pcall(function() if d.playableAsset.markerTrack then allTracks[#allTracks + 1] = d.playableAsset.markerTrack end end)
+                            for _, tr in ipairs(allTracks) do
+                                for _, marker in ipairs(tlIter(tr:GetMarkers())) do
+                                    pcall(function()
+                                        if tostring(marker:GetType().Name) == "SignalEmitter"
+                                            and math.abs(marker.time - evt.time) < 0.001 then
+                                            local recv = nil
+                                            pcall(function()
+                                                local b = d:GetGenericBinding(tr)
+                                                local go = nil
+                                                pcall(function() go = b.gameObject end)
+                                                if not go then go = b end
+                                                if go then recv = go:GetComponent(typeof(CS.UnityEngine.Timeline.SignalReceiver)) end
+                                            end)
+                                            if not recv then recv = d.gameObject:GetComponent(typeof(CS.UnityEngine.Timeline.SignalReceiver)) end
+                                            if recv and marker.asset then
+                                                local reaction = recv:GetReaction(marker.asset)
+                                                if reaction then reaction:Invoke() end
+                                            end
+                                        end
+                                    end)
+                                end
+                            end
+                        end
+                    end)
+                end
+            end
+
+        elseif action == "mute_track" then
+            local d = LuaTimelineMonitor._directors[packet.instanceId]
+            if d and d.playableAsset then
+                pcall(function()
+                    local tracks = tlIter(d.playableAsset:GetOutputTracks())
+                    local t = tracks[packet.trackIndex + 1]
+                    if t then t.muted = not t.muted end
+                end)
+            end
+        end
+    end
+
+    -- 每帧推送（仅在有监控时）
+    function LuaTimelineMonitor.Update()
+        if LuaTimelineMonitor._monitoredCount <= 0 then return end
+        local now = CS.UnityEngine.Time.realtimeSinceStartup
+
+        if now - LuaTimelineMonitor._lastScanTime >= LuaTimelineMonitor._scanInterval then
+            LuaTimelineMonitor._lastScanTime = now
+            LuaTimelineMonitor.ScanDirectors()
+        end
+        if now - LuaTimelineMonitor._lastPushTime < LuaTimelineMonitor._pushInterval then return end
+        LuaTimelineMonitor._lastPushTime = now
+
+        local toRemove = {}
+        for id in pairs(LuaTimelineMonitor._monitored) do
+            local d = LuaTimelineMonitor._directors[id]
+            if d then
+                local vOk, v = pcall(function() return d.gameObject.activeInHierarchy end)
+                if vOk and v then
+                    local snap = LuaTimelineMonitor.TakeSnapshot(d)
+                    if snap then RuntimeGMClient.Send({ type = "TIMELINE_RESP", action = "snapshot", data = snap }) end
+                else
+                    toRemove[#toRemove + 1] = id
+                end
+            else
+                toRemove[#toRemove + 1] = id
+            end
+        end
+        for _, id in ipairs(toRemove) do
+            LuaTimelineMonitor._monitored[id] = nil
+            LuaTimelineMonitor._monitoredCount = LuaTimelineMonitor._monitoredCount - 1
+            RuntimeGMClient.Send({ type = "TIMELINE_RESP", action = "removed", data = { instanceId = id } })
+        end
+    end
+
     -- ========== LuaUiInspector: 运行时 Lua UI 数据查看 (真机兼容) ==========
     local LuaUiInspector = {}
     LuaUiInspector._OriginalValues = {}  -- { [uiName] = { [path] = originalValue } }
@@ -1166,6 +1595,12 @@ local function StartRuntimeGM()
         if not animOk then
             origin_print("[RuntimeGM] LuaAnimatorMonitor error: " .. tostring(animErr))
         end
+
+        -- Lua 侧 Timeline 数据采集 & 推送
+        local tlOk, tlErr = pcall(LuaTimelineMonitor.Update)
+        if not tlOk then
+            origin_print("[RuntimeGM] LuaTimelineMonitor error: " .. tostring(tlErr))
+        end
     end
 
     function RuntimeGMClient.ProcessPacket(line)
@@ -1203,6 +1638,11 @@ local function StartRuntimeGM()
             local ok, err = pcall(LuaAnimatorMonitor.HandleCommand, packet)
             if not ok then
                 origin_print("[RuntimeGM] ANIM command error: " .. tostring(err))
+            end
+        elseif type == "TIMELINE" then
+            local ok, err = pcall(LuaTimelineMonitor.HandleCommand, packet)
+            if not ok then
+                origin_print("[RuntimeGM] TIMELINE command error: " .. tostring(err))
             end
         end
     end

@@ -9,6 +9,7 @@ import {
 import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
+import TimelineMonitor from './TimelineMonitor'
 
 function GmConsole() {
   const navigate = useNavigate()
@@ -775,6 +776,19 @@ function GmConsole() {
                         Lua UI
                       </span>
                     </button>
+                    <button
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
+                        activeTab === 'timeline'
+                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
+                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
+                      }`}
+                      onClick={() => setActiveTab('timeline')}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Play size={14} />
+                        Timeline
+                      </span>
+                    </button>
                   </div>
                   {activeTab === 'lua_gm' && (
                     <button
@@ -1046,6 +1060,14 @@ function GmConsole() {
 
                 {activeTab === 'lua_inspector' && (
                   <LuaUiInspector
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    broadcastMode={broadcastMode}
+                  />
+                )}
+
+                {activeTab === 'timeline' && (
+                  <TimelineMonitor
                     clients={clients}
                     selectedClient={selectedClient}
                     broadcastMode={broadcastMode}
