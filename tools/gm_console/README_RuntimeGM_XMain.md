@@ -1263,6 +1263,10 @@ local function StartRuntimeGM()
                     result.goActive = go.activeInHierarchy
                     result.goSelf = go.activeSelf
                 end
+                -- Text / TMP 组件：携带 .text 内容
+                if displayName and (displayName:find("Text") or displayName:find("TMPro")) then
+                    pcall(function() result.goText = tostring(value.text) end)
+                end
             end)
             return result
         elseif t == "table" then
@@ -1512,6 +1516,46 @@ local function StartRuntimeGM()
         end
     end
 
+    -- 辅助：沿路径获取 userdata 值及其 GameObject
+    local function inspectorGetGoFromPath(uiName, path)
+        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+        if not luaUi then return nil, nil end
+        local _, _, value = inspectorResolvePath(luaUi, path)
+        if not value or type(value) ~= "userdata" then return nil, nil end
+        local go
+        local ok2, goObj = pcall(function() return value.gameObject end)
+        if ok2 and goObj then go = goObj
+        else
+            local ok3, ah = pcall(function() return value.activeInHierarchy end)
+            if ok3 and type(ah) == "boolean" then go = value end
+        end
+        return value, go
+    end
+
+    function LuaUiInspector.ToggleGoVisible(uiName, path)
+        local _, go = inspectorGetGoFromPath(uiName, path)
+        if not go then return { error = "GameObject not found" } end
+        local ok, err = pcall(function() go:SetActive(not go.activeSelf) end)
+        if not ok then return { error = tostring(err) } end
+        return { success = true, activeSelf = go.activeSelf }
+    end
+
+    function LuaUiInspector.SetGoText(uiName, path, text)
+        local value, _ = inspectorGetGoFromPath(uiName, path)
+        if not value then return { error = "Component not found" } end
+        local ok, err = pcall(function() value.text = text end)
+        if not ok then return { error = tostring(err) } end
+        return { success = true }
+    end
+
+    function LuaUiInspector.DestroyGo(uiName, path)
+        local _, go = inspectorGetGoFromPath(uiName, path)
+        if not go then return { error = "GameObject not found" } end
+        local ok, err = pcall(function() CS.UnityEngine.Object.Destroy(go) end)
+        if not ok then return { error = tostring(err) } end
+        return { success = true }
+    end
+
     function LuaUiInspector.HandleCommand(packet)
         local action = packet.action
         local result
@@ -1529,6 +1573,12 @@ local function StartRuntimeGM()
             result = LuaUiInspector.RevertAll(packet.uiName)
         elseif action == "call_method" then
             result = LuaUiInspector.CallMethod(packet.uiName, packet.path, packet.methodName)
+        elseif action == "toggle_go_visible" then
+            result = LuaUiInspector.ToggleGoVisible(packet.uiName, packet.path)
+        elseif action == "set_text" then
+            result = LuaUiInspector.SetGoText(packet.uiName, packet.path, packet.value)
+        elseif action == "destroy_go" then
+            result = LuaUiInspector.DestroyGo(packet.uiName, packet.path)
         else
             result = { error = "Unknown action: " .. tostring(action) }
         end

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye, PlayCircle, Loader2 } from 'lucide-react'
+import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye, EyeOff, PlayCircle, Loader2, Trash2, Pencil } from 'lucide-react'
 
 // localStorage 持久化分类展开状态
 const CATEGORY_STORAGE_KEY = 'inspector_expanded_categories'
@@ -465,6 +465,14 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
                                 onRevert={revertValue}
                                 onNavigate={(path, name) => loadNodeData(selectedUi, path, name)}
                                 onCallMethod={callMethod}
+                                onGoAction={(action, path, value) => {
+                                    request(action, { uiName: selectedUi, path, value }, (data) => {
+                                        // 刷新当前节点数据
+                                        request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (d) => {
+                                            if (!d.error) setNodeData(d)
+                                        })
+                                    })
+                                }}
                             />
                             {nodeData.truncated && (
                                 <div className="mt-2 px-3 py-2 rounded-md bg-[var(--caramel)]/10 text-[var(--coffee-muted)] text-xs">
@@ -590,7 +598,7 @@ function TreeNode({ node, selectedPath, expandedNodes, onSelect, onToggle, inden
 // ============================================================================
 // 右侧属性列表
 // ============================================================================
-function FieldList({ fields, filter, expandedFields, expandedCategories, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod }) {
+function FieldList({ fields, filter, expandedFields, expandedCategories, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction }) {
     if (!fields || fields.length === 0) return <div className="text-center text-[var(--coffee-muted)] text-xs py-4">无字段</div>
 
     // 按类型分组
@@ -642,6 +650,7 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, selecte
                                         onRevert={onRevert}
                                         onNavigate={onNavigate}
                                         onCallMethod={onCallMethod}
+                                        onGoAction={onGoAction}
                                     />
                                 ))}
                             </div>
@@ -656,10 +665,14 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, selecte
 // ============================================================================
 // 单行字段
 // ============================================================================
-function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod }) {
+function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction }) {
     const [editValue, setEditValue] = useState(String(field.value ?? ''))
     const [isEditing, setIsEditing] = useState(false)
     const [callResult, setCallResult] = useState(null)
+    const [hovered, setHovered] = useState(false)
+    const [destroyConfirm, setDestroyConfirm] = useState(false)
+    const [textPopover, setTextPopover] = useState(false)
+    const [textEditValue, setTextEditValue] = useState('')
     const f = field
     const fieldPath = parentPath ? `${parentPath}.${f.key}` : f.key
 
@@ -698,6 +711,8 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                     minHeight: '28px',
                     ...(f.modified ? { borderLeftColor: '#E8A317' } : {}),
                 }}
+                onMouseEnter={() => setHovered(true)}
+                onMouseLeave={() => setHovered(false)}
             >
                 {/* Key */}
                 <span className="font-mono truncate pr-1" style={{ color: catColor }} title={f.key}>
@@ -710,9 +725,11 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                 </span>
 
                 {/* Type */}
-                <span className="text-center text-[10px] rounded bg-black/5 text-[var(--coffee-muted)] leading-4 self-center mx-0.5">
-                    {f.type}
-                </span>
+                {f.type !== 'userdata' ? (
+                    <span className="text-center text-[10px] rounded bg-black/5 text-[var(--coffee-muted)] leading-4 self-center mx-0.5">
+                        {f.type}
+                    </span>
+                ) : <span />}
 
                 {/* Value */}
                 <div className="min-w-0 flex items-center h-7 pl-1">
@@ -760,22 +777,60 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                             )}
                         </div>
                     ) : f.type === 'userdata' ? (
-                        <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="flex items-center gap-0.5 min-w-0">
+                            {/* 👁 + 🗑 并排 */}
                             {f.goActive != null && (
-                                <span
-                                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                                        f.goActive ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'
-                                    }`}
-                                    title={`activeSelf: ${f.goSelf}\nactiveInHierarchy: ${f.goActive}`}
-                                />
+                                <>
+                                    <button
+                                        onClick={e => { e.stopPropagation(); onGoAction && onGoAction('toggle_go_visible', fieldPath) }}
+                                        className="flex-shrink-0 p-0.5 rounded hover:bg-black/5 transition-colors"
+                                        title={`切换显示 (activeSelf: ${f.goSelf}, hierarchy: ${f.goActive})`}
+                                    >
+                                        {f.goSelf ? (
+                                            <Eye size={13} className={f.goActive ? 'text-[var(--sage)]' : 'text-[var(--caramel)]'} />
+                                        ) : (
+                                            <EyeOff size={13} className="text-[var(--coffee-muted)] opacity-40" />
+                                        )}
+                                    </button>
+                                    <button
+                                        onClick={e => {
+                                            e.stopPropagation()
+                                            if (destroyConfirm) {
+                                                onGoAction && onGoAction('destroy_go', fieldPath)
+                                                setDestroyConfirm(false)
+                                            } else {
+                                                setDestroyConfirm(true)
+                                                setTimeout(() => setDestroyConfirm(false), 2000)
+                                            }
+                                        }}
+                                        className={`flex-shrink-0 p-0.5 rounded transition-colors ${
+                                            destroyConfirm ? 'bg-[var(--terracotta)]/15 text-[var(--terracotta)]' : 'hover:bg-[var(--terracotta)]/10 text-[var(--coffee-muted)] opacity-40 hover:opacity-100 hover:text-[var(--terracotta)]'
+                                        }`}
+                                        title={destroyConfirm ? '再次点击确认销毁' : '销毁 GameObject'}
+                                    >
+                                        <Trash2 size={11} />
+                                        {destroyConfirm && <span className="text-[9px] ml-0.5">?</span>}
+                                    </button>
+                                </>
                             )}
-                            <span className="text-[var(--coffee-muted)] font-mono truncate">
-                                {String(f.value).replace(/^UnityEngine\.(UI\.)?/, '')}
+                            {/* 类型名 + GO名 */}
+                            <span className={`font-mono truncate ml-1 ${!f.goSelf ? 'text-[var(--coffee-muted)] opacity-40 line-through' : 'text-[var(--coffee-muted)]'}`}>
+                                {String(f.value).replace(/^UnityEngine\.(UI\.)?/, '').replace(/^TMPro\./, '')}
                             </span>
                             {f.goName && (
-                                <span className="text-[var(--coffee-muted)] opacity-50 text-[10px] truncate ml-0.5">
+                                <span className={`opacity-50 text-[10px] truncate ml-0.5 ${!f.goSelf ? 'line-through' : ''} text-[var(--coffee-muted)]`}>
                                     {f.goName}
                                 </span>
+                            )}
+                            {/* ✏️ Text 编辑 — hover 时显示 */}
+                            {f.goText != null && hovered && (
+                                <button
+                                    onClick={e => { e.stopPropagation(); setTextEditValue(f.goText || ''); setTextPopover(!textPopover) }}
+                                    className="flex-shrink-0 p-0.5 rounded hover:bg-[var(--caramel)]/15 text-[var(--caramel)] ml-auto"
+                                    title={`编辑文本: "${(f.goText || '').slice(0, 50)}${(f.goText || '').length > 50 ? '...' : ''}"`}
+                                >
+                                    <Pencil size={11} />
+                                </button>
                             )}
                         </div>
                     ) : (
@@ -806,6 +861,38 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                     ) : (
                         <span>→ {String(callResult.result ?? 'nil')}</span>
                     )}
+                </div>
+            )}
+
+            {/* Text 编辑浮卡 */}
+            {textPopover && f.goText != null && (
+                <div className="ml-8 mr-2 mb-1 mt-0.5 p-2.5 rounded-lg border border-[var(--glass-border)] bg-white shadow-md text-xs">
+                    <div className="text-[var(--coffee-muted)] text-[10px] mb-1">当前内容</div>
+                    <div className="px-2 py-1.5 rounded bg-[var(--cream-warm)]/50 font-mono text-[var(--coffee-deep)] text-[11px] mb-2 whitespace-pre-wrap break-all max-h-20 overflow-y-auto select-text">
+                        {f.goText || '(空)'}
+                    </div>
+                    <div className="text-[var(--coffee-muted)] text-[10px] mb-1">修改为</div>
+                    <textarea
+                        value={textEditValue}
+                        onChange={e => setTextEditValue(e.target.value)}
+                        rows={2}
+                        className="w-full px-2 py-1.5 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[11px] focus:outline-none focus:border-[var(--caramel)] resize-y"
+                        autoFocus
+                        onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault()
+                                onGoAction && onGoAction('set_text', fieldPath, textEditValue)
+                                setTextPopover(false)
+                            }
+                            if (e.key === 'Escape') setTextPopover(false)
+                        }}
+                    />
+                    <div className="flex justify-end gap-1.5 mt-1.5">
+                        <button onClick={() => setTextPopover(false)}
+                            className="px-2 py-0.5 rounded text-[var(--coffee-muted)] hover:bg-[var(--cream-warm)]">取消</button>
+                        <button onClick={() => { onGoAction && onGoAction('set_text', fieldPath, textEditValue); setTextPopover(false) }}
+                            className="px-2 py-0.5 rounded bg-[var(--caramel)]/15 text-[var(--caramel)] hover:bg-[var(--caramel)]/25">确认</button>
+                    </div>
                 </div>
             )}
 

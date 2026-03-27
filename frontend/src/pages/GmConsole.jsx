@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
@@ -10,6 +10,31 @@ import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
+
+// Tab 配置
+const TAB_META = {
+  lua_gm:        { label: 'LuaGM',    icon: Code },
+  custom_gm:     { label: '自定义',    icon: Layers },
+  lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
+  timeline:      { label: 'Timeline',  icon: Play },
+  animator:      { label: 'Animator',  icon: Activity },
+}
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'animator']
+const TAB_ORDER_KEY = 'gm_console_tab_order'
+
+function loadTabOrder() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TAB_ORDER_KEY))
+    if (!Array.isArray(saved)) return DEFAULT_TAB_ORDER
+    // merge：保留已知顺序，新 tab 追加，已删除的过滤
+    const known = new Set(Object.keys(TAB_META))
+    const order = saved.filter(id => known.has(id))
+    for (const id of DEFAULT_TAB_ORDER) {
+      if (!order.includes(id)) order.push(id)
+    }
+    return order
+  } catch { return DEFAULT_TAB_ORDER }
+}
 
 function GmConsole() {
   const navigate = useNavigate()
@@ -28,6 +53,9 @@ function GmConsole() {
   // WS 连接状态: 'connecting' | 'connected' | 'disconnected'
   const [wsStatus, setWsStatus] = useState('connecting')
   const [activeTab, setActiveTab] = useState('lua_gm')
+  const [tabOrder, setTabOrder] = useState(loadTabOrder)
+  const dragTabRef = useRef(null)
+  const [dropTarget, setDropTarget] = useState(null) // { id, side: 'left'|'right' }
 
   // 按钮最小宽度 (px)
   const [btnMinWidth, setBtnMinWidth] = useState(() => {
@@ -724,71 +752,75 @@ function GmConsole() {
                 {/* Tab Bar */}
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-1 bg-[var(--cream-warm)] rounded-lg p-1">
-                    <button
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
-                        activeTab === 'lua_gm'
-                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
-                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
-                      }`}
-                      onClick={() => setActiveTab('lua_gm')}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <Code size={14} />
-                        LuaGM
-                      </span>
-                    </button>
-                    <button
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
-                        activeTab === 'custom_gm'
-                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
-                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
-                      }`}
-                      onClick={() => setActiveTab('custom_gm')}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <Layers size={14} />
-                        自定义
-                      </span>
-                    </button>
-                    <button
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
-                        activeTab === 'animator'
-                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
-                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
-                      }`}
-                      onClick={() => setActiveTab('animator')}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <Activity size={14} />
-                        Animator
-                      </span>
-                    </button>
-                    <button
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
-                        activeTab === 'lua_inspector'
-                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
-                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
-                      }`}
-                      onClick={() => setActiveTab('lua_inspector')}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <ZoomIn size={14} />
-                        Lua UI
-                      </span>
-                    </button>
-                    <button
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
-                        activeTab === 'timeline'
-                          ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
-                          : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
-                      }`}
-                      onClick={() => setActiveTab('timeline')}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <Play size={14} />
-                        Timeline
-                      </span>
-                    </button>
+                    {tabOrder.map(tabId => {
+                      const meta = TAB_META[tabId]
+                      if (!meta) return null
+                      const Icon = meta.icon
+                      const isActive = activeTab === tabId
+                      const isDragging = dragTabRef.current === tabId
+                      return (
+                        <button
+                          key={tabId}
+                          draggable
+                          onDragStart={e => {
+                            dragTabRef.current = tabId
+                            e.dataTransfer.effectAllowed = 'move'
+                            e.currentTarget.style.opacity = '0.5'
+                            e.currentTarget.style.transform = 'scale(1.05)'
+                            e.currentTarget.style.zIndex = '10'
+                          }}
+                          onDragEnd={e => {
+                            dragTabRef.current = null
+                            setDropTarget(null)
+                            e.currentTarget.style.opacity = ''
+                            e.currentTarget.style.transform = ''
+                            e.currentTarget.style.zIndex = ''
+                          }}
+                          onDragOver={e => {
+                            e.preventDefault()
+                            e.dataTransfer.dropEffect = 'move'
+                            if (dragTabRef.current && dragTabRef.current !== tabId) {
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              const side = (e.clientX - rect.left) < rect.width / 2 ? 'left' : 'right'
+                              setDropTarget({ id: tabId, side })
+                            }
+                          }}
+                          onDragLeave={() => {
+                            setDropTarget(prev => prev?.id === tabId ? null : prev)
+                          }}
+                          onDrop={e => {
+                            e.preventDefault()
+                            const fromId = dragTabRef.current
+                            if (!fromId || fromId === tabId) return
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            const side = (e.clientX - rect.left) < rect.width / 2 ? 'left' : 'right'
+                            setTabOrder(prev => {
+                              const next = prev.filter(id => id !== fromId)
+                              const targetIdx = next.indexOf(tabId)
+                              const insertIdx = side === 'left' ? targetIdx : targetIdx + 1
+                              next.splice(insertIdx, 0, fromId)
+                              localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(next))
+                              return next
+                            })
+                            setDropTarget(null)
+                          }}
+                          className={`relative px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap cursor-grab active:cursor-grabbing ${
+                            isActive
+                              ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
+                              : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
+                          }`}
+                          onClick={() => setActiveTab(tabId)}
+                        >
+                          {dropTarget?.id === tabId && (
+                            <span className={`absolute top-1 bottom-1 w-0.5 rounded-full bg-[var(--caramel)] ${dropTarget.side === 'left' ? '-left-0.5' : '-right-0.5'}`} />
+                          )}
+                          <span className="flex items-center gap-1.5">
+                            <Icon size={14} />
+                            {meta.label}
+                          </span>
+                        </button>
+                      )
+                    })}
                   </div>
                   {activeTab === 'lua_gm' && (
                     <button
