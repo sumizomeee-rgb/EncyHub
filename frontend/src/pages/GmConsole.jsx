@@ -53,6 +53,7 @@ function GmConsole() {
   // WS 连接状态: 'connecting' | 'connected' | 'disconnected'
   const [wsStatus, setWsStatus] = useState('connecting')
   const [activeTab, setActiveTab] = useState('lua_gm')
+  const [luaUiContext, setLuaUiContext] = useState(null) // null=普通模式, "UIName"=LuaUI上下文模式
   const [tabOrder, setTabOrder] = useState(loadTabOrder)
   const dragTabRef = useRef(null)
   const [dropTarget, setDropTarget] = useState(null) // { id, side: 'left'|'right' }
@@ -356,13 +357,29 @@ function GmConsole() {
       toast.warning('请先选择一个客户端或广播模式')
       return
     }
-    const cmd = luaInput
+    // LuaUI 上下文模式：包装代码注入 self + 重定向 print 到 web 日志
+    let cmd = luaInput
+    if (luaUiContext) {
+      const escaped = luaUiContext.replace(/"/g, '\\"')
+      cmd = `do
+local self = XLuaUiManager.GetTopLuaUi("${escaped}")
+if not self then RuntimeGMClient.SendLog("error", "UI not found: ${escaped}") return end
+local __op = rawget(_G, "print")
+rawset(_G, "print", function(...) local a={...}; for i,v in ipairs(a) do a[i]=tostring(v) end; if __op then pcall(__op, table.unpack(a)) end; RuntimeGMClient.SendLog("info", table.concat(a, "\\t")) end)
+local __ok, __ret = pcall(function()
+${luaInput}
+end)
+rawset(_G, "print", __op)
+if not __ok then RuntimeGMClient.SendLog("error", "Error: " .. tostring(__ret))
+elseif __ret ~= nil then RuntimeGMClient.SendLog("info", "→ " .. tostring(__ret)) end
+end`
+    }
     try {
       const url = broadcastMode
         ? '/api/gm_console/broadcast'
         : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
-      const logType = broadcastMode ? 'broadcast' : 'cmd'
-      const logText = broadcastMode ? `[广播] ${cmd}` : `> ${cmd}`
+      const logType = luaUiContext ? 'cmd' : (broadcastMode ? 'broadcast' : 'cmd')
+      const logText = luaUiContext ? `[self=${luaUiContext}] ${luaInput}` : (broadcastMode ? `[广播] ${luaInput}` : `> ${luaInput}`)
       setLogs(prev => [...prev, { type: logType, text: logText, local: true }])
       const res = await fetch(url, {
         method: 'POST',
@@ -1095,6 +1112,8 @@ function GmConsole() {
                     clients={clients}
                     selectedClient={selectedClient}
                     broadcastMode={broadcastMode}
+                    luaUiContext={luaUiContext}
+                    onBindConsole={(uiName) => setLuaUiContext(uiName)}
                   />
                 )}
 
@@ -1113,14 +1132,22 @@ function GmConsole() {
               {/* Lua Input */}
               <div className="glass-card p-5 animate-fade-in" style={{ animationDelay: '0.2s' }}>
                 <div className="flex items-center gap-2 mb-3">
-                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--amber)] to-[var(--honey)] flex items-center justify-center">
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${luaUiContext ? 'bg-gradient-to-br from-[var(--caramel)] to-[var(--amber)]' : 'bg-gradient-to-br from-[var(--amber)] to-[var(--honey)]'}`}>
                     <Terminal size={14} className="text-white" />
                   </div>
-                  <h2 className="font-display text-base font-semibold text-[var(--coffee-deep)]">Lua 命令</h2>
+                  <h2 className="font-display text-base font-semibold text-[var(--coffee-deep)]">
+                    {luaUiContext ? 'Lua 命令' : 'Lua 命令'}
+                  </h2>
+                  {luaUiContext && (
+                    <span className="flex items-center gap-1.5 ml-1 px-2 py-0.5 rounded-full bg-[var(--caramel)]/15 text-[var(--caramel)] text-xs font-mono">
+                      🔗 self = {luaUiContext}
+                      <button onClick={() => setLuaUiContext(null)} className="hover:text-[var(--terracotta)] ml-0.5" title="退出 LuaUI 模式">✕</button>
+                    </span>
+                  )}
                 </div>
                 <textarea
-                  className="w-full h-36 bg-[var(--coffee-deep)] text-[var(--sage)] rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[var(--caramel)] placeholder-[var(--coffee-muted)]"
-                  placeholder="输入 Lua 代码... (Ctrl+Enter 执行)"
+                  className={`w-full h-36 bg-[var(--coffee-deep)] text-[var(--sage)] rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:ring-2 placeholder-[var(--coffee-muted)] ${luaUiContext ? 'ring-2 ring-[var(--caramel)]/40 focus:ring-[var(--caramel)]' : 'focus:ring-[var(--caramel)]'}`}
+                  placeholder={luaUiContext ? `self 已绑定到 ${luaUiContext}，直接用 self.xxx / self:Method() / print(self.Name) ...` : '输入 Lua 代码... (Ctrl+Enter 执行)'}
                   value={luaInput}
                   onChange={e => setLuaInput(e.target.value)}
                   onKeyDown={e => {
@@ -1128,14 +1155,16 @@ function GmConsole() {
                   }}
                 />
                 <div className="flex gap-2 mt-3">
-                  <button className="btn-primary flex-1 flex items-center justify-center gap-2 py-2 text-sm" onClick={handleExec}>
+                  <button className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm ${luaUiContext ? 'btn-primary bg-[var(--caramel)] hover:bg-[var(--caramel)]/90' : 'btn-primary'}`} onClick={handleExec}>
                     <Send size={14} />
-                    执行
+                    {luaUiContext ? `执行 (self)` : '执行'}
                   </button>
-                  <button className="btn-secondary flex-1 flex items-center justify-center gap-2 py-2 text-sm" onClick={handleBroadcast}>
-                    <Megaphone size={14} />
-                    广播
-                  </button>
+                  {!luaUiContext && (
+                    <button className="btn-secondary flex-1 flex items-center justify-center gap-2 py-2 text-sm" onClick={handleBroadcast}>
+                      <Megaphone size={14} />
+                      广播
+                    </button>
+                  )}
                 </div>
               </div>
 

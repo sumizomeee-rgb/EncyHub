@@ -115,7 +115,7 @@ const TYPE_COLORS = {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function LuaUiInspector({ clients, selectedClient, broadcastMode }) {
+export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole }) {
     // --- 左栏宽度（可拖拽） ---
     const [leftWidth, setLeftWidth] = useState(208)
     const isDragging = useRef(false)
@@ -394,6 +394,19 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
                                 </button>
                             </span>
                         ))}
+                        {selectedUi && onBindConsole && (
+                            <button
+                                onClick={() => onBindConsole(luaUiContext === selectedUi ? null : selectedUi)}
+                                className={`ml-auto px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors flex items-center gap-1 ${
+                                    luaUiContext === selectedUi
+                                        ? 'bg-[var(--caramel)]/20 text-[var(--caramel)]'
+                                        : 'bg-black/5 text-[var(--coffee-muted)] hover:bg-[var(--caramel)]/10 hover:text-[var(--caramel)]'
+                                }`}
+                                title={luaUiContext === selectedUi ? '点击解除绑定' : `将右侧 Console 的 self 绑定到 ${selectedUi}`}
+                            >
+                                🔗 {luaUiContext === selectedUi ? `已绑定` : `绑定 Console`}
+                            </button>
+                        )}
                     </div>
 
                     {/* 过滤 + Depth + Live */}
