@@ -1623,11 +1623,15 @@ local function StartRuntimeGM()
             if not comp then error("component is null") end
             result.typeName = tostring(comp:GetType().Name)
 
-            -- 属性
+            -- 属性：GetProperties 需要传 BindingFlags 数值，无参版在 xlua 下可能返回空
+            -- Public=16, Instance=4 → 20; 加 DeclaredOnly=2 → 22
             local props
-            pcall(function() props = comp:GetType():GetProperties() end)
-            if not props then props = {} end
-            for i = 0, (props.Length or #props) - 1 do
+            pcall(function() props = comp:GetType():GetProperties(20) end)
+            if not props then pcall(function() props = comp:GetType():GetProperties() end) end
+            local propCount = 0
+            if props then pcall(function() propCount = props.Length end) end
+            result._debug = { propCount = propCount, tried = 0, failed = 0 }
+            for i = 0, propCount - 1 do
                 local prop = props[i]
                 pcall(function()
                     if prop.IsSpecialName then return end
@@ -1635,11 +1639,30 @@ local function StartRuntimeGM()
                     if idxParams and idxParams.Length > 0 then return end
                     if not prop.CanRead then return end
                     local propTypeName = tostring(prop.PropertyType.Name)
-                    -- 黑名单：访问会有副作用的属性
-                    local pName = prop.Name
-                    if pName == "mesh" or pName == "material" or pName == "materials" or pName == "sharedMesh" then return end
-                    local valOk, val = pcall(function() return prop:GetValue(comp, nil) end)
-                    if not valOk then return end
+                    local pName = tostring(prop.Name)
+                    -- 黑名单：副作用属性 + Component 上已废弃的快捷属性（全返回 null）
+                    local propBlacklist = { mesh=1, material=1, materials=1, sharedMesh=1, sharedMaterial=1, sharedMaterials=1,
+                        rigidbody=1, rigidbody2D=1, camera=1, light=1, animation=1, constantForce=1,
+                        renderer=1, audio=1, networkView=1, collider=1, collider2D=1, hingeJoint=1, particleSystem=1,
+                        destroyCancellationToken=1, useGUILayout=1, runInEditMode=1 }
+                    if propBlacklist[pName] then return end
+                    result._debug.tried = result._debug.tried + 1
+                    -- 尝试三种读取方式
+                    local val, valOk
+                    -- 方式1: xlua 直接索引
+                    valOk, val = pcall(function() return comp[pName] end)
+                    if not valOk then
+                        -- 方式2: 反射 GetValue 无参
+                        valOk, val = pcall(function() return prop:GetValue(comp) end)
+                    end
+                    if not valOk then
+                        -- 方式3: 反射 GetValue 带 nil
+                        valOk, val = pcall(function() return prop:GetValue(comp, nil) end)
+                    end
+                    if not valOk then
+                        result._debug.failed = result._debug.failed + 1
+                        return
+                    end
                     local serialized, valueType = inspectorSerializePropValue(val, propTypeName)
                     result.properties[#result.properties + 1] = {
                         name = pName,
@@ -1651,12 +1674,56 @@ local function StartRuntimeGM()
                 end)
             end
 
-            -- 方法（仅 DeclaredOnly，过滤 getter/setter/Unity 生命周期）
-            local skipMethods = { Awake=1, Start=1, Update=1, LateUpdate=1, FixedUpdate=1, OnDestroy=1, OnEnable=1, OnDisable=1, ToString=1, GetHashCode=1, Equals=1, GetType=1 }
+            -- 字段（public fields，区别于 properties — Unity Inspector 里看到的大多是字段）
+            local fields
+            pcall(function() fields = comp:GetType():GetFields(20) end) -- Public=16+Instance=4
+            local fieldCount = 0
+            if fields then pcall(function() fieldCount = fields.Length end) end
+            for i = 0, fieldCount - 1 do
+                local fld = fields[i]
+                pcall(function()
+                    if fld.IsSpecialName then return end
+                    local fName = tostring(fld.Name)
+                    local fTypeName = tostring(fld.FieldType.Name)
+                    local valOk, val = pcall(function() return comp[fName] end)
+                    if not valOk then
+                        valOk, val = pcall(function() return fld:GetValue(comp) end)
+                    end
+                    if not valOk then return end
+                    local serialized, valueType = inspectorSerializePropValue(val, fTypeName)
+                    result.properties[#result.properties + 1] = {
+                        name = fName,
+                        typeName = fTypeName,
+                        valueType = valueType,
+                        value = serialized,
+                        editable = (not fld.IsInitOnly) and valueType ~= "readonly",
+                        isField = true,
+                    }
+                end)
+            end
+
+            -- 方法
+            local skipMethods = {
+                -- Unity 生命周期
+                Awake=1, Start=1, Update=1, LateUpdate=1, FixedUpdate=1, OnDestroy=1, OnEnable=1, OnDisable=1,
+                OnApplicationFocus=1, OnApplicationPause=1, OnApplicationQuit=1, OnValidate=1, Reset=1,
+                OnBecameVisible=1, OnBecameInvisible=1, OnPreRender=1, OnPostRender=1, OnRenderObject=1,
+                OnWillRenderObject=1, OnRenderImage=1, OnDrawGizmos=1, OnDrawGizmosSelected=1, OnGUI=1,
+                OnCollisionEnter=1, OnCollisionExit=1, OnCollisionStay=1, OnTriggerEnter=1, OnTriggerExit=1, OnTriggerStay=1,
+                OnCollisionEnter2D=1, OnCollisionExit2D=1, OnTriggerEnter2D=1, OnTriggerExit2D=1,
+                OnMouseDown=1, OnMouseUp=1, OnMouseEnter=1, OnMouseExit=1, OnMouseDrag=1, OnMouseOver=1,
+                OnTransformParentChanged=1, OnTransformChildrenChanged=1, OnBeforeTransformParentChanged=1,
+                -- Object/Component 基础
+                ToString=1, GetHashCode=1, Equals=1, GetType=1, GetInstanceID=1, GetComponent=1, GetComponentInChildren=1,
+                GetComponentInParent=1, GetComponents=1, GetComponentsInChildren=1, GetComponentsInParent=1,
+                CompareTag=1, SendMessage=1, SendMessageUpwards=1, BroadcastMessage=1, TryGetComponent=1,
+                -- MonoBehaviour
+                StartCoroutine=1, StopCoroutine=1, StopAllCoroutines=1, Invoke=1, InvokeRepeating=1, CancelInvoke=1, IsInvoking=1,
+            }
             -- BindingFlags: Public=16, Instance=4, DeclaredOnly=2 → 用数值避免 xlua 枚举兼容问题
             local methods
             local mOk, _ = pcall(function()
-                methods = comp:GetType():GetMethods(22) -- 16+4+2
+                methods = comp:GetType():GetMethods(20) -- Public=16+Instance=4，包含继承方法
             end)
             if not mOk then pcall(function() methods = comp:GetType():GetMethods() end) end
             if not methods then methods = {} end
@@ -1695,8 +1762,6 @@ local function StartRuntimeGM()
         local ok, err = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
             local comp = all[compIndex]
-            local prop = comp:GetType():GetProperty(propName)
-            if not prop or not prop.CanWrite then error("property not writable") end
             local converted = value
             if valueType == "bool" then converted = (value == true or value == "true")
             elseif valueType == "int" then converted = math.floor(tonumber(value) or 0)
@@ -1708,7 +1773,7 @@ local function StartRuntimeGM()
             elseif valueType == "color" then converted = CS.UnityEngine.Color(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 1)
             elseif valueType == "euler" then converted = CS.UnityEngine.Quaternion.Euler(value[1] or 0, value[2] or 0, value[3] or 0)
             end
-            prop:SetValue(comp, converted, nil)
+            comp[propName] = converted
         end)
         if not ok then return { error = tostring(err) } end
         return { success = true }

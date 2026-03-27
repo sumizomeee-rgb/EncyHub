@@ -465,12 +465,16 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode 
                                 onRevert={revertValue}
                                 onNavigate={(path, name) => loadNodeData(selectedUi, path, name)}
                                 onCallMethod={callMethod}
-                                onGoAction={(action, path, value) => {
-                                    request(action, { uiName: selectedUi, path, value }, (data) => {
-                                        // 刷新当前节点数据
-                                        request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (d) => {
-                                            if (!d.error) setNodeData(d)
-                                        })
+                                onGoAction={(action, path, extraParams, callback) => {
+                                    const params = { uiName: selectedUi, path, ...extraParams }
+                                    request(action, params, (data) => {
+                                        if (callback) callback(data)
+                                        // 对修改操作自动刷新
+                                        if (['toggle_go_visible', 'set_text', 'destroy_go', 'set_component_prop'].includes(action)) {
+                                            request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (d) => {
+                                                if (!d.error) setNodeData(d)
+                                            })
+                                        }
                                     })
                                 }}
                             />
@@ -615,7 +619,7 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, selecte
         if (filter && !f.key.toLowerCase().includes(lowerFilter)) continue
         if (f.editable) categories.editable.items.push(f)
         else if (f.type === 'table') categories.table.items.push(f)
-        else if (f.type === 'userdata') categories.userdata.items.push(f)
+        else if (f.type === 'userdata' && f.goActive != null) categories.userdata.items.push(f)
         else if (f.type === 'function') categories.func.items.push(f)
         else categories.other.items.push(f)
     }
@@ -673,6 +677,14 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
     const [destroyConfirm, setDestroyConfirm] = useState(false)
     const [textPopover, setTextPopover] = useState(false)
     const [textEditValue, setTextEditValue] = useState('')
+    // 组件 Inspector 状态
+    const [compExpanded, setCompExpanded] = useState(false)
+    const [compList, setCompList] = useState(null)     // [{index, typeName}]
+    const [compLoading, setCompLoading] = useState(false)
+    const [selectedComp, setSelectedComp] = useState(null) // index
+    const [compDetail, setCompDetail] = useState(null)
+    const [compDetailLoading, setCompDetailLoading] = useState(false)
+    const [methodResult, setMethodResult] = useState(null)
     const f = field
     const fieldPath = parentPath ? `${parentPath}.${f.key}` : f.key
 
@@ -719,6 +731,22 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                     {f.type === 'table' && canExpand && (
                         <button onClick={onToggle} className="inline mr-1">
                             {expanded ? <ChevronDown size={10} className="inline" /> : <ChevronRight size={10} className="inline" />}
+                        </button>
+                    )}
+                    {f.type === 'userdata' && f.goActive != null && (
+                        <button onClick={() => {
+                            if (!compExpanded && !compList) {
+                                setCompLoading(true)
+                                onGoAction && onGoAction('get_components', fieldPath, null, (data) => {
+                                    setCompLoading(false)
+                                    if (data && data.components) setCompList(data.components)
+                                })
+                            }
+                            setCompExpanded(!compExpanded)
+                            setSelectedComp(null)
+                            setCompDetail(null)
+                        }} className="inline mr-1">
+                            {compLoading ? <Loader2 size={10} className="inline animate-spin" /> : compExpanded ? <ChevronDown size={10} className="inline" /> : <ChevronRight size={10} className="inline" />}
                         </button>
                     )}
                     {f.key}
@@ -782,7 +810,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                             {f.goActive != null && (
                                 <>
                                     <button
-                                        onClick={e => { e.stopPropagation(); onGoAction && onGoAction('toggle_go_visible', fieldPath) }}
+                                        onClick={e => { e.stopPropagation(); onGoAction && onGoAction('toggle_go_visible', fieldPath, {}) }}
                                         className="flex-shrink-0 p-0.5 rounded hover:bg-black/5 transition-colors"
                                         title={`切换显示 (activeSelf: ${f.goSelf}, hierarchy: ${f.goActive})`}
                                     >
@@ -796,7 +824,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                                         onClick={e => {
                                             e.stopPropagation()
                                             if (destroyConfirm) {
-                                                onGoAction && onGoAction('destroy_go', fieldPath)
+                                                onGoAction && onGoAction('destroy_go', fieldPath, {})
                                                 setDestroyConfirm(false)
                                             } else {
                                                 setDestroyConfirm(true)
@@ -881,7 +909,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                         onKeyDown={e => {
                             if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault()
-                                onGoAction && onGoAction('set_text', fieldPath, textEditValue)
+                                onGoAction && onGoAction('set_text', fieldPath, { value: textEditValue })
                                 setTextPopover(false)
                             }
                             if (e.key === 'Escape') setTextPopover(false)
@@ -890,9 +918,110 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                     <div className="flex justify-end gap-1.5 mt-1.5">
                         <button onClick={() => setTextPopover(false)}
                             className="px-2 py-0.5 rounded text-[var(--coffee-muted)] hover:bg-[var(--cream-warm)]">取消</button>
-                        <button onClick={() => { onGoAction && onGoAction('set_text', fieldPath, textEditValue); setTextPopover(false) }}
+                        <button onClick={() => { onGoAction && onGoAction('set_text', fieldPath, { value: textEditValue }); setTextPopover(false) }}
                             className="px-2 py-0.5 rounded bg-[var(--caramel)]/15 text-[var(--caramel)] hover:bg-[var(--caramel)]/25">确认</button>
                     </div>
+                </div>
+            )}
+
+            {/* 组件 Inspector（三级展开） */}
+            {compExpanded && f.type === 'userdata' && (
+                <div className="ml-4 mr-2 mb-1 mt-0.5 text-xs">
+                    {compLoading && <div className="flex items-center gap-1 py-2 text-[var(--coffee-muted)]"><Loader2 size={12} className="animate-spin" /> 加载组件...</div>}
+                    {compList && !compLoading && (
+                        <>
+                            {/* Level 1: 组件标签页 */}
+                            <div className="flex flex-wrap gap-0.5 mb-1">
+                                {compList.map(c => (
+                                    <button key={c.index}
+                                        onClick={() => {
+                                            if (selectedComp === c.index) { setSelectedComp(null); setCompDetail(null); return }
+                                            setSelectedComp(c.index)
+                                            setCompDetailLoading(true)
+                                            setCompDetail(null)
+                                            setMethodResult(null)
+                                            onGoAction && onGoAction('get_component_detail', fieldPath, { compIndex: c.index }, (data) => {
+                                                setCompDetailLoading(false)
+                                                if (data && !data.error) setCompDetail(data)
+                                                else setCompDetail({ error: data?.error || 'failed' })
+                                            })
+                                        }}
+                                        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                                            selectedComp === c.index
+                                                ? 'bg-[var(--caramel)]/20 text-[var(--caramel)] font-medium'
+                                                : 'bg-black/5 text-[var(--coffee-muted)] hover:bg-black/10'
+                                        }`}>
+                                        {c.typeName}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Level 2: 组件详情 */}
+                            {compDetailLoading && <div className="flex items-center gap-1 py-2 text-[var(--coffee-muted)]"><Loader2 size={12} className="animate-spin" /> 反射加载中...</div>}
+                            {compDetail && !compDetailLoading && (
+                                compDetail.error ? (
+                                    <div className="text-[var(--terracotta)] text-xs py-1">{compDetail.error}</div>
+                                ) : (
+                                    <div className="rounded border border-[var(--glass-border)] bg-white/50 overflow-hidden">
+                                        {/* 属性 */}
+                                        {(compDetail.properties?.length > 0 || compDetail._debug) && (
+                                            <div className="p-2">
+                                                <div className="text-[10px] text-[var(--coffee-muted)] font-semibold mb-1">
+                                                    属性 ({compDetail.properties?.length || 0})
+                                                    {compDetail._debug && <span className="font-normal opacity-50 ml-1">反射: {compDetail._debug.propCount} 个, 尝试: {compDetail._debug.tried}, 失败: {compDetail._debug.failed}</span>}
+                                                </div>
+                                                <div className="space-y-0.5">
+                                                    {compDetail.properties.map((p, pi) => (
+                                                        <CompPropRow key={pi} prop={p} onSet={(val) => {
+                                                            onGoAction && onGoAction('set_component_prop', fieldPath, {
+                                                                compIndex: selectedComp, propName: p.name, value: val, valueType: p.valueType,
+                                                            }, () => {
+                                                                // 刷新组件详情
+                                                                onGoAction && onGoAction('get_component_detail', fieldPath, { compIndex: selectedComp }, (data) => {
+                                                                    if (data && !data.error) setCompDetail(data)
+                                                                })
+                                                            })
+                                                        }} />
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        {/* 方法 */}
+                                        {compDetail.methods?.length > 0 && (
+                                            <div className="p-2 border-t border-[var(--glass-border)]">
+                                                <div className="text-[10px] text-[var(--coffee-muted)] font-semibold mb-1">方法</div>
+                                                <div className="space-y-0.5">
+                                                    {compDetail.methods.map((m, mi) => (
+                                                        <div key={mi} className="flex items-center gap-2 py-0.5">
+                                                            <span className="font-mono text-[var(--coffee-deep)]">{m.name}({m.params?.map(p => p.name).join(', ')})</span>
+                                                            {m.paramCount === 0 && (
+                                                                <button onClick={() => {
+                                                                    onGoAction && onGoAction('call_component_method', fieldPath, {
+                                                                        compIndex: selectedComp, methodName: m.name,
+                                                                    }, (data) => {
+                                                                        setMethodResult({ method: m.name, ...data })
+                                                                        setTimeout(() => setMethodResult(null), 5000)
+                                                                    })
+                                                                }}
+                                                                    className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--sage)]/10 text-[var(--sage)] hover:bg-[var(--sage)]/20">
+                                                                    ▶ Call
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                    {methodResult && (
+                                                        <div className="mt-1 px-2 py-1 rounded bg-black/3 font-mono text-[10px] text-[var(--coffee-muted)]">
+                                                            {methodResult.error ? <span className="text-[var(--terracotta)]">{methodResult.error}</span> : <span>→ {methodResult.method}: OK</span>}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )
+                            )}
+                        </>
+                    )}
                 </div>
             )}
 
@@ -921,6 +1050,96 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                     )}
                 </div>
             )}
+        </div>
+    )
+}
+
+// ============================================================================
+// 组件属性行
+// ============================================================================
+function CompPropRow({ prop, onSet }) {
+    const [editVal, setEditVal] = useState(null)
+    const p = prop
+    const isEditing = editVal !== null
+
+    const commit = (val) => { onSet(val); setEditVal(null) }
+
+    if (p.valueType === 'bool' && p.editable) {
+        return (
+            <div className="flex items-center gap-2 py-0.5">
+                <span className="font-mono text-[var(--coffee-muted)] w-32 truncate text-[10px]">{p.name}</span>
+                <button onClick={() => onSet(!p.value)}
+                    className={`relative inline-flex items-center h-4 w-7 flex-shrink-0 rounded-full transition-colors ${p.value ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/30'}`}>
+                    <span className={`inline-block w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${p.value ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                </button>
+            </div>
+        )
+    }
+
+    if ((p.valueType === 'int' || p.valueType === 'float') && p.editable) {
+        return (
+            <div className="flex items-center gap-2 py-0.5">
+                <span className="font-mono text-[var(--coffee-muted)] w-32 truncate text-[10px]">{p.name}</span>
+                <input type="number" step={p.valueType === 'float' ? 0.01 : 1}
+                    value={isEditing ? editVal : (p.value ?? 0)}
+                    onFocus={() => setEditVal(p.value ?? 0)}
+                    onChange={e => setEditVal(parseFloat(e.target.value) || 0)}
+                    onBlur={() => { if (isEditing) commit(editVal) }}
+                    onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
+                    className="w-20 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+                />
+            </div>
+        )
+    }
+
+    if (p.valueType === 'string' && p.editable) {
+        return (
+            <div className="flex items-center gap-2 py-0.5">
+                <span className="font-mono text-[var(--coffee-muted)] w-32 truncate text-[10px]">{p.name}</span>
+                <input type="text"
+                    value={isEditing ? editVal : (p.value ?? '')}
+                    onFocus={() => setEditVal(p.value ?? '')}
+                    onChange={e => setEditVal(e.target.value)}
+                    onBlur={() => { if (isEditing) commit(editVal) }}
+                    onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
+                    className="flex-1 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+                />
+            </div>
+        )
+    }
+
+    if ((p.valueType === 'vector2' || p.valueType === 'vector3' || p.valueType === 'vector4' || p.valueType === 'color' || p.valueType === 'euler' || p.valueType === 'rect') && p.editable) {
+        const arr = Array.isArray(p.value) ? p.value : [0, 0, 0, 0]
+        const labels = p.valueType === 'color' ? ['R', 'G', 'B', 'A'] : p.valueType === 'rect' ? ['X', 'Y', 'W', 'H'] : ['X', 'Y', 'Z', 'W']
+        const count = p.valueType === 'vector2' ? 2 : p.valueType === 'vector3' || p.valueType === 'euler' ? 3 : 4
+        const current = isEditing ? editVal : arr.slice(0, count)
+        return (
+            <div className="flex items-center gap-1 py-0.5 flex-wrap">
+                <span className="font-mono text-[var(--coffee-muted)] w-32 truncate text-[10px]">{p.name}</span>
+                {p.valueType === 'color' && <span className="w-3 h-3 rounded-sm border border-black/10 flex-shrink-0" style={{ background: `rgba(${(arr[0]*255)|0},${(arr[1]*255)|0},${(arr[2]*255)|0},${arr[3]??1})` }} />}
+                {Array.from({ length: count }).map((_, i) => (
+                    <div key={i} className="flex items-center gap-0.5">
+                        <span className="text-[9px] text-[var(--coffee-muted)] opacity-50">{labels[i]}</span>
+                        <input type="number" step={0.01}
+                            value={isEditing ? current[i] : (arr[i] ?? 0)}
+                            onFocus={() => { if (!isEditing) setEditVal([...arr.slice(0, count)]) }}
+                            onChange={e => { const n = [...(editVal || arr.slice(0, count))]; n[i] = parseFloat(e.target.value) || 0; setEditVal(n) }}
+                            onBlur={() => { if (isEditing) commit(editVal) }}
+                            onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
+                            className="w-14 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+                        />
+                    </div>
+                ))}
+            </div>
+        )
+    }
+
+    // 只读
+    return (
+        <div className="flex items-center gap-2 py-0.5">
+            <span className="font-mono text-[var(--coffee-muted)] w-32 truncate text-[10px]">{p.name}</span>
+            <span className="font-mono text-[var(--coffee-muted)] opacity-60 text-[10px] truncate">{String(p.value ?? 'null')}</span>
+            <span className="text-[9px] text-[var(--coffee-muted)] opacity-40">{p.typeName}</span>
         </div>
     )
 }
