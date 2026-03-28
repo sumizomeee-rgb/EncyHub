@@ -14,8 +14,8 @@ import CsComponentMonitor from './CsComponentMonitor'
 
 // Tab 配置
 const TAB_META = {
-  lua_gm:        { label: 'LuaGM',    icon: Code },
-  custom_gm:     { label: '自定义',    icon: Layers },
+  lua_gm:        { label: 'LuaGM',    icon: Code,     gridSlider: true },
+  custom_gm:     { label: '自定义',    icon: Layers,   gridSlider: true },
   lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
   timeline:      { label: 'Timeline',  icon: Play },
   cs_monitor:    { label: 'C# Monitor', icon: Activity },
@@ -872,17 +872,18 @@ end`
                   )}
                 </div>
 
-                {/* Slider Controls Row */}
-                <div className="flex items-center gap-2 mb-3 px-1">
-                  <ZoomOut size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.max(60, w - 4))} />
-                  <input type="range" min="60" max="300" step="4" value={btnMinWidth} onChange={e => setBtnMinWidth(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮最小宽度" />
-                  <ZoomIn size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.min(300, w + 4))} />
-                  <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnMinWidth}</span>
-                  <span className="w-px h-3 bg-[var(--glass-border)]" />
-                  <span className="text-[10px] text-[var(--coffee-muted)]">H</span>
-                  <input type="range" min="32" max="128" step="4" value={btnHeight} onChange={e => setBtnHeight(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮高度" />
-                  <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnHeight}</span>
-                </div>
+                {TAB_META[activeTab]?.gridSlider && (
+                  <div className="flex items-center gap-2 mb-3 px-1">
+                    <ZoomOut size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.max(60, w - 4))} />
+                    <input type="range" min="60" max="300" step="4" value={btnMinWidth} onChange={e => setBtnMinWidth(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮最小宽度" />
+                    <ZoomIn size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.min(300, w + 4))} />
+                    <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnMinWidth}</span>
+                    <span className="w-px h-3 bg-[var(--glass-border)]" />
+                    <span className="text-[10px] text-[var(--coffee-muted)]">H</span>
+                    <input type="range" min="32" max="128" step="4" value={btnHeight} onChange={e => setBtnHeight(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮高度" />
+                    <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnHeight}</span>
+                  </div>
+                )}
 
                 {/* LuaGM Tab Content */}
                 {activeTab === 'lua_gm' && (

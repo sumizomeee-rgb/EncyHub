@@ -153,11 +153,6 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
         setDirectors([])
     }, [selectedClient?.id])
 
-    // --- No client ---
-    if (!selectedClient) {
-        return <div className="flex items-center justify-center h-64 text-[var(--coffee-muted)]">请先在左侧选择一个客户端</div>
-    }
-
     const filteredDirs = filter
         ? directors.filter(d => {
             const f = filter.toLowerCase()
@@ -179,8 +174,8 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
                         <span className="text-sm font-semibold text-[var(--coffee-deep)]">Directors</span>
                         <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
-                            <button onClick={() => { scan(); manualRefresh() }} disabled={loading}
-                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 transition-colors" title="刷新">
+                            <button onClick={() => { scan(); manualRefresh() }} disabled={loading || !selectedClient}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新">
                                 <RotateCw size={13} className={loading ? 'animate-spin' : ''} />
                             </button>
                             <input type="text" inputMode="numeric" value={refreshInterval}

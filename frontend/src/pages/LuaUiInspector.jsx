@@ -277,15 +277,6 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
         })
     }, [request, selectedUi, selectedPath])
 
-    // --- 无客户端时提示 ---
-    if (!selectedClient) {
-        return (
-            <div className="flex items-center justify-center h-64 text-[var(--coffee-muted)]">
-                请先在左侧选择一个客户端
-            </div>
-        )
-    }
-
     // --- 左侧过滤 ---
     const filteredUiList = leftFilter
         ? uiList.filter(ui => ui.name.toLowerCase().includes(leftFilter.toLowerCase()))
@@ -313,8 +304,8 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                         <span className="text-sm font-semibold text-[var(--coffee-deep)]">Open UIs</span>
                         <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
                             <button onClick={() => { refreshUiList(); if (selectedUi) loadNodeData(selectedUi, selectedPath) }}
-                                disabled={loadingList}
-                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 transition-colors" title="刷新">
+                                disabled={loadingList || !selectedClient}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新">
                                 <RotateCw size={13} className={loadingList ? 'animate-spin' : ''} />
                             </button>
                             <input type="text" inputMode="numeric" value={refreshInterval}

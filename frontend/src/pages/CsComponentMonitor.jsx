@@ -171,10 +171,6 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
         setMonitored({}); setDetails({}); setScanResults([]); setScanInfo(null)
     }, [selectedClient?.id])
 
-    if (!selectedClient) {
-        return <div className="flex items-center justify-center h-64 text-[var(--coffee-muted)]">请先在左侧选择一个客户端</div>
-    }
-
     const monitoredKeys = Object.keys(monitored)
 
     return (
@@ -191,8 +187,8 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
                         <span className="text-sm font-semibold text-[var(--coffee-deep)]">C# Component</span>
                         <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
                             <button onClick={() => monitoredKeys.forEach(key => refreshDetail(key, monitored[key]))}
-                                disabled={monitoredKeys.length === 0}
-                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 transition-colors" title="刷新">
+                                disabled={monitoredKeys.length === 0 || !selectedClient}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新">
                                 <RotateCw size={13} />
                             </button>
                             <input type="text" inputMode="numeric" value={refreshInterval}

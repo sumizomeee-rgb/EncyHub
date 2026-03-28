@@ -126,10 +126,6 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
 
   useEffect(() => { fetchAnimators(); return () => { unsubscribe() } }, [selectedClient])
 
-  if (!selectedClient) {
-    return <div className="flex items-center justify-center h-64 text-[var(--coffee-muted)]">请先在左侧选择一个客户端</div>
-  }
-
   const filteredAnimators = filter
     ? animators.filter(a => a.name.toLowerCase().includes(filter.toLowerCase()) || (a.controllerName || '').toLowerCase().includes(filter.toLowerCase()))
     : animators
@@ -147,7 +143,7 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
             <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsStatus === 'connected' ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
             <span className="text-sm font-semibold text-[var(--coffee-deep)]">Animators</span>
             <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
-              <button onClick={manualRefresh} className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] transition-colors" title="刷新">
+              <button onClick={manualRefresh} disabled={!selectedClient} className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] transition-colors disabled:opacity-40 disabled:pointer-events-none" title="刷新">
                 <RotateCw size={13} />
               </button>
               <input type="text" inputMode="numeric" value={refreshInterval}
