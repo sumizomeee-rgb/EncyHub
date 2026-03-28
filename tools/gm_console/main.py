@@ -125,6 +125,15 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_timeline_data = on_timeline_data
 
+    def on_cs_monitor_data(client_id, pkt):
+        asyncio.create_task(broadcast_cs_monitor_event({
+            "type": pkt.get("action", "unknown"),
+            "client_id": client_id,
+            "data": pkt.get("data", {})
+        }))
+
+    server_mgr.on_cs_monitor_data = on_cs_monitor_data
+
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
     if success:
@@ -383,6 +392,45 @@ async def inspector_command(client_id: str, request: Request):
         raise HTTPException(400, "Missing action")
     await server_mgr.send_inspector_request(client_id, action, body)
     return {"status": "requested"}
+
+# === C# Component Monitor API ===
+
+cs_monitor_ws_connections: list = []
+
+async def broadcast_cs_monitor_event(data: dict):
+    dead = []
+    for ws in cs_monitor_ws_connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        cs_monitor_ws_connections.remove(ws)
+
+@app.post("/cs_monitor/{client_id}/command")
+async def cs_monitor_command(client_id: str, request: Request):
+    body = await request.json()
+    action = body.pop("action", "")
+    if not action:
+        raise HTTPException(400, "Missing action")
+    await server_mgr.send_cs_monitor_request(client_id, action, body)
+    return {"status": "requested"}
+
+@app.websocket("/ws/cs_monitor")
+async def websocket_cs_monitor(websocket: WebSocket):
+    await websocket.accept()
+    cs_monitor_ws_connections.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in cs_monitor_ws_connections:
+            cs_monitor_ws_connections.remove(websocket)
+
 
 # === Timeline Monitor API ===
 

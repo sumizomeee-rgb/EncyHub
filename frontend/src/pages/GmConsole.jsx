@@ -10,6 +10,7 @@ import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
+import CsComponentMonitor from './CsComponentMonitor'
 
 // Tab 配置
 const TAB_META = {
@@ -17,9 +18,10 @@ const TAB_META = {
   custom_gm:     { label: '自定义',    icon: Layers },
   lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
   timeline:      { label: 'Timeline',  icon: Play },
+  cs_monitor:    { label: 'C# Monitor', icon: Activity },
   animator:      { label: 'Animator',  icon: Activity },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'animator']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -54,6 +56,7 @@ function GmConsole() {
   const [wsStatus, setWsStatus] = useState('connecting')
   const [activeTab, setActiveTab] = useState('lua_gm')
   const [luaUiContext, setLuaUiContext] = useState(null) // null=普通模式, "UIName"=LuaUI上下文模式
+  const [pendingCsPin, setPendingCsPin] = useState(null) // 从 Inspector 联动到 CsMonitor 的待 pin 数据
   const [tabOrder, setTabOrder] = useState(loadTabOrder)
   const dragTabRef = useRef(null)
   const [dropTarget, setDropTarget] = useState(null) // { id, side: 'left'|'right' }
@@ -1114,6 +1117,10 @@ end`
                     broadcastMode={broadcastMode}
                     luaUiContext={luaUiContext}
                     onBindConsole={(uiName) => setLuaUiContext(uiName)}
+                    onPinToMonitor={(pinData) => {
+                      setPendingCsPin(pinData)
+                      setActiveTab('cs_monitor')
+                    }}
                   />
                 )}
 
@@ -1124,6 +1131,15 @@ end`
                     broadcastMode={broadcastMode}
                   />
                 )}
+
+                <div style={{ display: activeTab === 'cs_monitor' ? 'contents' : 'none' }}>
+                  <CsComponentMonitor
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    pendingPin={pendingCsPin}
+                    onPendingPinConsumed={() => setPendingCsPin(null)}
+                  />
+                </div>
               </div>
             </div>
 

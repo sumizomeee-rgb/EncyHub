@@ -115,7 +115,7 @@ const TYPE_COLORS = {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole }) {
+export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole, onPinToMonitor }) {
     // --- 左栏宽度（可拖拽） ---
     const [leftWidth, setLeftWidth] = useState(208)
     const isDragging = useRef(false)
@@ -490,6 +490,9 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                                         }
                                     })
                                 }}
+                                onPinToMonitor={onPinToMonitor ? (fieldPath, compIndex, typeName) => {
+                                    onPinToMonitor({ uiName: selectedUi, path: fieldPath, compIndex, typeName })
+                                } : null}
                             />
                             {nodeData.truncated && (
                                 <div className="mt-2 px-3 py-2 rounded-md bg-[var(--caramel)]/10 text-[var(--coffee-muted)] text-xs">
@@ -615,7 +618,7 @@ function TreeNode({ node, selectedPath, expandedNodes, onSelect, onToggle, inden
 // ============================================================================
 // 右侧属性列表
 // ============================================================================
-function FieldList({ fields, filter, expandedFields, expandedCategories, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction }) {
+function FieldList({ fields, filter, expandedFields, expandedCategories, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
     if (!fields || fields.length === 0) return <div className="text-center text-[var(--coffee-muted)] text-xs py-4">无字段</div>
 
     // 按类型分组
@@ -668,6 +671,7 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, selecte
                                         onNavigate={onNavigate}
                                         onCallMethod={onCallMethod}
                                         onGoAction={onGoAction}
+                                        onPinToMonitor={onPinToMonitor}
                                     />
                                 ))}
                             </div>
@@ -682,7 +686,7 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, selecte
 // ============================================================================
 // 单行字段
 // ============================================================================
-function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction }) {
+function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
     const [editValue, setEditValue] = useState(String(field.value ?? ''))
     const [isEditing, setIsEditing] = useState(false)
     const [callResult, setCallResult] = useState(null)
@@ -946,26 +950,35 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                             {/* Level 1: 组件标签页 */}
                             <div className="flex flex-wrap gap-0.5 mb-1">
                                 {compList.map(c => (
-                                    <button key={c.index}
-                                        onClick={() => {
-                                            if (selectedComp === c.index) { setSelectedComp(null); setCompDetail(null); return }
-                                            setSelectedComp(c.index)
-                                            setCompDetailLoading(true)
-                                            setCompDetail(null)
-                                            setMethodResult(null)
-                                            onGoAction && onGoAction('get_component_detail', fieldPath, { compIndex: c.index }, (data) => {
-                                                setCompDetailLoading(false)
-                                                if (data && !data.error) setCompDetail(data)
-                                                else setCompDetail({ error: data?.error || 'failed' })
-                                            })
-                                        }}
-                                        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${
-                                            selectedComp === c.index
-                                                ? 'bg-[var(--caramel)]/20 text-[var(--caramel)] font-medium'
-                                                : 'bg-black/5 text-[var(--coffee-muted)] hover:bg-black/10'
-                                        }`}>
-                                        {c.typeName}
-                                    </button>
+                                    <span key={c.index} className="inline-flex items-center gap-0">
+                                        <button
+                                            onClick={() => {
+                                                if (selectedComp === c.index) { setSelectedComp(null); setCompDetail(null); return }
+                                                setSelectedComp(c.index)
+                                                setCompDetailLoading(true)
+                                                setCompDetail(null)
+                                                setMethodResult(null)
+                                                onGoAction && onGoAction('get_component_detail', fieldPath, { compIndex: c.index }, (data) => {
+                                                    setCompDetailLoading(false)
+                                                    if (data && !data.error) setCompDetail(data)
+                                                    else setCompDetail({ error: data?.error || 'failed' })
+                                                })
+                                            }}
+                                            className={`px-2 py-0.5 rounded-l text-[10px] font-mono transition-colors ${
+                                                selectedComp === c.index
+                                                    ? 'bg-[var(--caramel)]/20 text-[var(--caramel)] font-medium'
+                                                    : 'bg-black/5 text-[var(--coffee-muted)] hover:bg-black/10'
+                                            }`}>
+                                            {c.typeName}
+                                        </button>
+                                        {onPinToMonitor && (
+                                            <button onClick={(e) => { e.stopPropagation(); onPinToMonitor(fieldPath, c.index, c.typeName) }}
+                                                className="px-0.5 py-0.5 rounded-r bg-black/5 hover:bg-[var(--caramel)]/15 text-[var(--coffee-muted)] opacity-40 hover:opacity-100 hover:text-[var(--caramel)] text-[9px]"
+                                                title={`发送 ${c.typeName} 到 C# Monitor`}>
+                                                📌
+                                            </button>
+                                        )}
+                                    </span>
                                 ))}
                             </div>
 

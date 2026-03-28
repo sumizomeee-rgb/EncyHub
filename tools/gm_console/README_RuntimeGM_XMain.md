@@ -1178,6 +1178,282 @@ local function StartRuntimeGM()
         end
     end
 
+    -- 前置声明：供 CsMonitor 和 Inspector 共用的属性值序列化函数（定义在 Inspector 区域）
+    local inspectorSerializePropValue
+
+    -- ========== LuaCsMonitor: C# 组件搜索 + 监控 (真机兼容) ==========
+    local LuaCsMonitor = {}
+    LuaCsMonitor._compRefs = {}    -- "goId_compIdx" → {go, comp, goName, parentName, typeName}
+    LuaCsMonitor._scanResults = {} -- 最近一次搜索结果
+
+    origin_print("[RuntimeGM] LuaCsMonitor module initialized")
+
+    local CS_MONITOR_NS_PREFIXES = { "", "UnityEngine.UI.", "UnityEngine.", "TMPro.", "UnityEngine.Video.", "UnityEngine.Playables." }
+
+    -- 扫描所有 GameObject，按组件类型名字符串匹配（绕过 typeof 动态解析的 xlua 兼容问题）
+    function LuaCsMonitor.Scan(typeName)
+        local ok, allGOs = pcall(function()
+            return CS.UnityEngine.Object.FindObjectsOfType(typeof(CS.UnityEngine.GameObject))
+        end)
+        if not ok or not allGOs then return { error = "扫描 GameObject 失败: " .. tostring(allGOs) } end
+
+        local results = {}
+        local maxShow = 200
+        local total = 0
+        LuaCsMonitor._compRefs = {}
+
+        for gi = 0, allGOs.Length - 1 do
+            if #results >= maxShow then break end
+            pcall(function()
+                local go = allGOs[gi]
+                if not go then return end
+                local comps = go:GetComponents(typeof(CS.UnityEngine.Component))
+                if not comps then return end
+
+                -- 统计匹配组件数
+                local sameCount, matches = 0, {}
+                for ci = 0, comps.Length - 1 do
+                    pcall(function()
+                        local c = comps[ci]
+                        if c and tostring(c:GetType().Name) == typeName then
+                            sameCount = sameCount + 1
+                            matches[#matches + 1] = ci
+                        end
+                    end)
+                end
+                if sameCount == 0 then return end
+
+                local goId = go:GetInstanceID()
+                local goName = go.name
+                local parentName = ""
+                pcall(function() local p = go.transform.parent; if p then parentName = p.name end end)
+
+                for si, ci in ipairs(matches) do
+                    if #results >= maxShow then total = total + 1; return end
+                    total = total + 1
+                    local key = goId .. "_" .. ci
+                    LuaCsMonitor._compRefs[key] = { go = go, comp = comps[ci], goName = goName, parentName = parentName, typeName = typeName }
+                    results[#results + 1] = {
+                        goInstanceId = goId, goName = goName, parentName = parentName,
+                        compIndex = ci, compTypeName = typeName,
+                        sameTypeIndex = si - 1, sameTypeCount = sameCount,
+                    }
+                end
+            end)
+        end
+
+        local resp = { results = results }
+        if total > maxShow then resp.truncated = true; resp.total = total; resp.shown = maxShow end
+        return resp
+    end
+
+    function LuaCsMonitor.GetDetail(goInstanceId, compIndex)
+        local key = goInstanceId .. "_" .. compIndex
+        local ref = LuaCsMonitor._compRefs[key]
+        if not ref or not ref.comp then return { error = "组件未找到，请重新搜索" } end
+
+        local result = { properties = {}, methods = {}, goName = ref.goName, typeName = ref.typeName }
+
+        -- 检查 GO 是否存活
+        local alive = false
+        pcall(function() alive = ref.go.name ~= nil end)
+        if not alive then return { error = "GameObject 已销毁" } end
+
+        result.isActive = false
+        pcall(function() result.isActive = ref.go.activeInHierarchy end)
+
+        local ok, err = pcall(function()
+            local comp = ref.comp
+
+            -- 属性 (Properties)
+            local props
+            pcall(function() props = comp:GetType():GetProperties(20) end)
+            local propCount = 0
+            if props then pcall(function() propCount = props.Length end) end
+            local propBlacklist = { mesh=1, material=1, materials=1, sharedMesh=1, sharedMaterial=1, sharedMaterials=1,
+                rigidbody=1, rigidbody2D=1, camera=1, light=1, animation=1, constantForce=1,
+                renderer=1, audio=1, networkView=1, collider=1, collider2D=1, hingeJoint=1, particleSystem=1,
+                destroyCancellationToken=1, useGUILayout=1, runInEditMode=1 }
+            for i = 0, propCount - 1 do
+                local prop = props[i]
+                pcall(function()
+                    if prop.IsSpecialName then return end
+                    local idxParams = prop:GetIndexParameters()
+                    if idxParams and idxParams.Length > 0 then return end
+                    if not prop.CanRead then return end
+                    local pName = tostring(prop.Name)
+                    if propBlacklist[pName] then return end
+                    local propTypeName = tostring(prop.PropertyType.Name)
+                    local valOk, val = pcall(function() return comp[pName] end)
+                    if not valOk then valOk, val = pcall(function() return prop:GetValue(comp) end) end
+                    if not valOk then return end
+                    local serialized, valueType = inspectorSerializePropValue(val, propTypeName)
+                    result.properties[#result.properties + 1] = {
+                        name = pName, typeName = propTypeName, valueType = valueType,
+                        value = serialized, editable = prop.CanWrite and valueType ~= "readonly",
+                    }
+                end)
+            end
+
+            -- 字段 (Fields)
+            local fields
+            pcall(function() fields = comp:GetType():GetFields(20) end)
+            local fieldCount = 0
+            if fields then pcall(function() fieldCount = fields.Length end) end
+            for i = 0, fieldCount - 1 do
+                local fld = fields[i]
+                pcall(function()
+                    if fld.IsSpecialName then return end
+                    local fName = tostring(fld.Name)
+                    local fTypeName = tostring(fld.FieldType.Name)
+                    local valOk, val = pcall(function() return comp[fName] end)
+                    if not valOk then valOk, val = pcall(function() return fld:GetValue(comp) end) end
+                    if not valOk then return end
+                    local serialized, valueType = inspectorSerializePropValue(val, fTypeName)
+                    result.properties[#result.properties + 1] = {
+                        name = fName, typeName = fTypeName, valueType = valueType,
+                        value = serialized, editable = (not fld.IsInitOnly) and valueType ~= "readonly", isField = true,
+                    }
+                end)
+            end
+
+            -- 方法
+            local skipMethods = {
+                Awake=1, Start=1, Update=1, LateUpdate=1, FixedUpdate=1, OnDestroy=1, OnEnable=1, OnDisable=1,
+                OnApplicationFocus=1, OnApplicationPause=1, OnApplicationQuit=1, OnValidate=1, Reset=1,
+                OnBecameVisible=1, OnBecameInvisible=1, OnPreRender=1, OnPostRender=1, OnRenderObject=1,
+                OnWillRenderObject=1, OnRenderImage=1, OnDrawGizmos=1, OnDrawGizmosSelected=1, OnGUI=1,
+                OnCollisionEnter=1, OnCollisionExit=1, OnCollisionStay=1, OnTriggerEnter=1, OnTriggerExit=1, OnTriggerStay=1,
+                OnCollisionEnter2D=1, OnCollisionExit2D=1, OnTriggerEnter2D=1, OnTriggerExit2D=1,
+                OnMouseDown=1, OnMouseUp=1, OnMouseEnter=1, OnMouseExit=1, OnMouseDrag=1, OnMouseOver=1,
+                OnTransformParentChanged=1, OnTransformChildrenChanged=1, OnBeforeTransformParentChanged=1,
+                ToString=1, GetHashCode=1, Equals=1, GetType=1, GetInstanceID=1, GetComponent=1, GetComponentInChildren=1,
+                GetComponentInParent=1, GetComponents=1, GetComponentsInChildren=1, GetComponentsInParent=1,
+                CompareTag=1, SendMessage=1, SendMessageUpwards=1, BroadcastMessage=1, TryGetComponent=1,
+                StartCoroutine=1, StopCoroutine=1, StopAllCoroutines=1, Invoke=1, InvokeRepeating=1, CancelInvoke=1, IsInvoking=1,
+            }
+            local methods
+            pcall(function() methods = comp:GetType():GetMethods(20) end)
+            local methodCount = 0
+            if methods then pcall(function() methodCount = methods.Length end) end
+            for i = 0, methodCount - 1 do
+                local m = methods[i]
+                pcall(function()
+                    if m.IsSpecialName then return end
+                    if skipMethods[m.Name] then return end
+                    local params = m:GetParameters()
+                    local paramList = {}
+                    for j = 0, params.Length - 1 do
+                        paramList[#paramList + 1] = { name = params[j].Name, typeName = tostring(params[j].ParameterType.Name) }
+                    end
+                    result.methods[#result.methods + 1] = { name = m.Name, paramCount = params.Length, params = paramList }
+                end)
+            end
+        end)
+        if not ok then return { error = tostring(err) } end
+        -- 按名称排序
+        table.sort(result.properties, function(a, b) return a.name < b.name end)
+        table.sort(result.methods, function(a, b) return a.name < b.name end)
+        return result
+    end
+
+    function LuaCsMonitor.SetProp(goInstanceId, compIndex, propName, value, valueType)
+        local key = goInstanceId .. "_" .. compIndex
+        local ref = LuaCsMonitor._compRefs[key]
+        if not ref or not ref.comp then return { error = "组件未找到" } end
+        local ok, err = pcall(function()
+            local converted = value
+            if valueType == "bool" then converted = (value == true or value == "true")
+            elseif valueType == "int" then converted = math.floor(tonumber(value) or 0)
+            elseif valueType == "float" then converted = tonumber(value) or 0
+            elseif valueType == "string" then converted = tostring(value or "")
+            elseif valueType == "vector2" then converted = CS.UnityEngine.Vector2(value[1] or 0, value[2] or 0)
+            elseif valueType == "vector3" then converted = CS.UnityEngine.Vector3(value[1] or 0, value[2] or 0, value[3] or 0)
+            elseif valueType == "vector4" then converted = CS.UnityEngine.Vector4(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 0)
+            elseif valueType == "color" then converted = CS.UnityEngine.Color(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 1)
+            elseif valueType == "euler" then converted = CS.UnityEngine.Quaternion.Euler(value[1] or 0, value[2] or 0, value[3] or 0)
+            end
+            ref.comp[propName] = converted
+        end)
+        if not ok then return { error = tostring(err) } end
+        return { success = true }
+    end
+
+    function LuaCsMonitor.CallMethod(goInstanceId, compIndex, methodName)
+        local key = goInstanceId .. "_" .. compIndex
+        local ref = LuaCsMonitor._compRefs[key]
+        if not ref or not ref.comp then return { error = "组件未找到" } end
+        local ok, ret = pcall(function()
+            local m = ref.comp:GetType():GetMethod(methodName)
+            if not m then error("method not found: " .. tostring(methodName)) end
+            local result = m:Invoke(ref.comp, nil)
+            return result ~= nil and tostring(result) or "void"
+        end)
+        if not ok then return { error = tostring(ret) } end
+        return { success = true, result = ret }
+    end
+
+    function LuaCsMonitor.HandleCommand(packet)
+        local action = packet.action
+        local result
+        if action == "scan" then
+            result = LuaCsMonitor.Scan(packet.typeName)
+        elseif action == "cache_from_inspector" then
+            result = (function()
+                -- 内联路径导航（不依赖 Inspector 的 local 函数，因为 CsMonitor 定义在 Inspector 之前）
+                local luaUi = XLuaUiManager.GetTopLuaUi(packet.uiName)
+                if not luaUi then return { error = "UI not found: " .. tostring(packet.uiName) } end
+                local target = luaUi
+                local path = packet.path
+                if path and path ~= "" then
+                    for seg in string.gmatch(path, "[^%.]+") do
+                        local key = tonumber(seg) or seg
+                        if type(target) ~= "table" then return { error = "path resolve failed" } end
+                        target = target[key]
+                    end
+                end
+                if not target or type(target) ~= "userdata" then return { error = "target is not userdata" } end
+                -- 获取 GO
+                local go
+                pcall(function()
+                    local ok2, goObj = pcall(function() return target.gameObject end)
+                    if ok2 and goObj then go = goObj
+                    else
+                        local ok3, ah = pcall(function() return target.activeInHierarchy end)
+                        if ok3 and type(ah) == "boolean" then go = target end
+                    end
+                end)
+                if not go then return { error = "GO not found" } end
+                local ok2, r = pcall(function()
+                    local allC = go:GetComponents(typeof(CS.UnityEngine.Component))
+                    local ci = packet.compIndex
+                    if ci < 0 or ci >= allC.Length then error("compIndex out of range") end
+                    local comp = allC[ci]
+                    local goId = go:GetInstanceID()
+                    local key = goId .. "_" .. ci
+                    local tn = ""; pcall(function() tn = tostring(comp:GetType().Name) end)
+                    local pn = ""; pcall(function() local p = go.transform.parent; if p then pn = p.name end end)
+                    LuaCsMonitor._compRefs[key] = { go = go, comp = comp, goName = go.name, parentName = pn, typeName = tn }
+                    return { success = true, entry = {
+                        goInstanceId = goId, goName = go.name, parentName = pn,
+                        compIndex = ci, compTypeName = tn, sameTypeIndex = 0, sameTypeCount = 1,
+                    }}
+                end)
+                if not ok2 then return { error = tostring(r) } end
+                return r
+            end)()
+        elseif action == "get_detail" then
+            result = LuaCsMonitor.GetDetail(packet.goInstanceId, packet.compIndex)
+        elseif action == "set_prop" then
+            result = LuaCsMonitor.SetProp(packet.goInstanceId, packet.compIndex, packet.propName, packet.value, packet.valueType)
+        elseif action == "call_method" then
+            result = LuaCsMonitor.CallMethod(packet.goInstanceId, packet.compIndex, packet.methodName)
+        else
+            result = { error = "Unknown action: " .. tostring(action) }
+        end
+        RuntimeGMClient.Send({ type = "CS_MONITOR_RESP", action = action, data = result })
+    end
+
     -- ========== LuaUiInspector: 运行时 Lua UI 数据查看 (真机兼容) ==========
     local LuaUiInspector = {}
     LuaUiInspector._OriginalValues = {}  -- { [uiName] = { [path] = originalValue } }
@@ -1577,7 +1853,7 @@ local function StartRuntimeGM()
     end
 
     -- 序列化单个属性值为 JSON 安全的 Lua 表
-    local function inspectorSerializePropValue(val, typeName)
+    inspectorSerializePropValue = function(val, typeName)
         if val == nil then return nil, "nil" end
         local tn = typeName or ""
         -- 基本类型
@@ -1942,6 +2218,11 @@ local function StartRuntimeGM()
             local ok, err = pcall(LuaTimelineMonitor.HandleCommand, packet)
             if not ok then
                 origin_print("[RuntimeGM] TIMELINE command error: " .. tostring(err))
+            end
+        elseif type == "CS_MONITOR" then
+            local ok, err = pcall(LuaCsMonitor.HandleCommand, packet)
+            if not ok then
+                origin_print("[RuntimeGM] CS_MONITOR command error: " .. tostring(err))
             end
         end
     end
