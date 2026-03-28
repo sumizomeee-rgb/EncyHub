@@ -115,7 +115,7 @@ const TYPE_COLORS = {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole, onPinToMonitor }) {
+export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole, onPinToMonitor, active }) {
     // --- 左栏宽度（可拖拽） ---
     const [leftWidth, setLeftWidth] = useState(208)
     const isDragging = useRef(false)
@@ -139,8 +139,8 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
     const [leftFilter, setLeftFilter] = useState('')
     const [rightFilter, setRightFilter] = useState('')
     const [depth, setDepth] = useState(3)
-    const [liveMode, setLiveMode] = useState(false)
-    const [liveInterval, setLiveInterval] = useState(1)
+    const [autoRefresh, setAutoRefresh] = useState(false)
+    const [refreshInterval, setRefreshInterval] = useState(3)
 
     // --- 树展开状态 ---
     const [expandedNodes, setExpandedNodes] = useState(new Set())
@@ -215,7 +215,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                 setNodeData(null)
                 setLastError('node_data: ' + data.error)
                 if (String(data.error).includes('not found')) {
-                    setLiveMode(false)
+                    setAutoRefresh(false)
                 }
                 return
             }
@@ -223,17 +223,17 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
         })
     }, [request, depth])
 
-    // --- Live 刷新 ---
+    // --- Auto-refresh ---
     useEffect(() => {
-        if (!liveMode || !selectedUi) return
+        if (!autoRefresh || !active || !selectedUi || refreshInterval <= 0) return
         const timer = setInterval(() => {
             request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (data) => {
-                if (data.error) { setLiveMode(false); return }
+                if (data.error) { setAutoRefresh(false); return }
                 setNodeData(data)
             })
-        }, liveInterval * 1000)
+        }, refreshInterval * 1000)
         return () => clearInterval(timer)
-    }, [liveMode, liveInterval, selectedUi, selectedPath, depth, request])
+    }, [autoRefresh, active, refreshInterval, selectedUi, selectedPath, depth, request])
 
     // --- 修改值 ---
     const setValue = useCallback((path, value, valueType) => {
@@ -308,29 +308,25 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
             <div className="flex-shrink-0 border-r border-[var(--glass-border)] flex flex-col" style={{ width: leftWidth }}>
                 {/* UI 列表头部 */}
                 <div className="p-3 border-b border-[var(--glass-border)]">
-                    <div className="flex items-center justify-between mb-2">
-                        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--coffee-deep)]">
-                            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} title={wsConnected ? 'WS 已连接' : 'WS 未连接'} />
-                            Open UIs
-                        </span>
-                        <button
-                            onClick={refreshUiList}
-                            disabled={loadingList}
-                            className="p-1 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] transition-colors disabled:opacity-50"
-                            title="刷新 UI 列表"
-                        >
-                            <RotateCw size={14} className={loadingList ? 'animate-spin' : ''} />
-                        </button>
+                    <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
+                        <span className="text-sm font-semibold text-[var(--coffee-deep)]">Open UIs</span>
+                        <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
+                            <button onClick={() => { refreshUiList(); if (selectedUi) loadNodeData(selectedUi, selectedPath) }}
+                                disabled={loadingList}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 transition-colors" title="刷新">
+                                <RotateCw size={13} className={loadingList ? 'animate-spin' : ''} />
+                            </button>
+                            <input type="text" inputMode="numeric" value={refreshInterval}
+                                onChange={e => { const v = parseInt(e.target.value); setRefreshInterval(isNaN(v) ? 0 : Math.max(0, Math.min(60, v))); setAutoRefresh(v > 0) }}
+                                style={{ width: 24, padding: '0 1px', fontSize: 10, lineHeight: '18px' }} className="h-5 rounded border border-[var(--glass-border)] bg-white/70 text-center font-mono focus:outline-none focus:border-[var(--caramel)] appearance-none"
+                            /><span className="text-[10px]">s</span>
+                        </div>
                     </div>
-                    <div className="relative">
-                        {!leftFilter && <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)] pointer-events-none" />}
-                        <input
-                            type="text"
-                            value={leftFilter}
-                            onChange={e => setLeftFilter(e.target.value)}
-                            className={`w-full pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)] ${leftFilter ? 'pl-2' : 'pl-8'}`}
-                        />
-                    </div>
+                    <input type="text" value={leftFilter} onChange={e => setLeftFilter(e.target.value)}
+                        placeholder="搜索 UI..."
+                        className="w-full mt-2 px-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+                    />
                 </div>
 
                 {/* UI 列表 + 树 */}
@@ -409,7 +405,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                         )}
                     </div>
 
-                    {/* 过滤 + Depth + Live */}
+                    {/* 过滤 + Depth + Refresh pill */}
                     <div className="flex items-center gap-3">
                         <div className="relative flex-1">
                             {!rightFilter && <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)] pointer-events-none" />}
@@ -503,8 +499,8 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                     ) : null}
                 </div>
 
-                {/* 底栏 */}
-                <div className="p-3 border-t border-[var(--glass-border)] flex items-center justify-between">
+                {/* 底栏 — Revert only */}
+                <div className="p-3 border-t border-[var(--glass-border)]">
                     <button
                         onClick={revertAll}
                         disabled={!selectedUi}
@@ -512,26 +508,6 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                     >
                         <span className="flex items-center gap-1"><Undo2 size={12} /> Revert All</span>
                     </button>
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={() => setLiveMode(!liveMode)}
-                            className={`px-3 py-1.5 text-xs rounded-md flex items-center gap-1 transition-colors ${
-                                liveMode
-                                    ? 'bg-[var(--sage)] text-white'
-                                    : 'border border-[var(--glass-border)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
-                            }`}
-                        >
-                            {liveMode ? <Pause size={12} /> : <Play size={12} />}
-                            {liveMode ? 'Live' : 'Paused'}
-                        </button>
-                        <select
-                            value={liveInterval}
-                            onChange={e => setLiveInterval(Number(e.target.value))}
-                            className="px-1 py-1 rounded border border-[var(--glass-border)] text-xs bg-white"
-                        >
-                            {[0.5, 1, 2, 3].map(s => <option key={s} value={s}>{s}s</option>)}
-                        </select>
-                    </div>
                 </div>
             </div>
         </div>

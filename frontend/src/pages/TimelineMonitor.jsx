@@ -28,7 +28,7 @@ function formatTime(t) {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function TimelineMonitor({ clients, selectedClient, broadcastMode }) {
+export default function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
     const [directors, setDirectors] = useState([])
     const [monitored, setMonitored] = useState(new Set())
     const [snapshots, setSnapshots] = useState({})
@@ -36,10 +36,16 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
     const [filter, setFilter] = useState('')
     const [wsConnected, setWsConnected] = useState(false)
     const [loading, setLoading] = useState(false)
+    const [refreshInterval, setRefreshInterval] = useState(2)
+    const [autoRefresh, setAutoRefresh] = useState(true)
     const [leftWidth, setLeftWidth] = useState(220)
     const isDragging = useRef(false)
 
     const wsRef = useRef(null)
+    const activeRef = useRef(active)
+    const autoRefreshRef = useRef(autoRefresh)
+    const refreshIntervalRef = useRef(refreshInterval)
+    const lastUpdateRef = useRef(0)
 
     // --- WebSocket ---
     useEffect(() => {
@@ -65,8 +71,12 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
                         setDirectors(msg.data || [])
                         setLoading(false)
                     } else if (msg.type === 'snapshot' && msg.data) {
+                        // Throttle: skip state updates when inactive or too frequent
+                        if (!activeRef.current || !autoRefreshRef.current) return
+                        const now = Date.now()
+                        if (now - lastUpdateRef.current < refreshIntervalRef.current * 1000) return
+                        lastUpdateRef.current = now
                         setSnapshots(prev => ({ ...prev, [msg.data.instanceId]: msg.data }))
-                        // 同步更新左侧列表的播放状态
                         const snapId = msg.data.instanceId
                         const snapPlaying = msg.data.playState === 'Playing'
                         setDirectors(prev => prev.map(d => d.instanceId === snapId ? { ...d, isPlaying: snapPlaying } : d))
@@ -130,6 +140,12 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
         setSnapshots({})
     }, [sendCmd])
 
+    useEffect(() => { activeRef.current = active }, [active])
+    useEffect(() => { autoRefreshRef.current = autoRefresh }, [autoRefresh])
+    useEffect(() => { refreshIntervalRef.current = refreshInterval }, [refreshInterval])
+
+    const manualRefresh = useCallback(() => { lastUpdateRef.current = 0 }, [])
+
     // --- Cleanup on client change ---
     useEffect(() => {
         setMonitored(new Set())
@@ -159,22 +175,24 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
             {/* ===== Left Panel ===== */}
             <div className="flex-shrink-0 border-r border-[var(--glass-border)] flex flex-col" style={{ width: leftWidth }}>
                 <div className="p-3 border-b border-[var(--glass-border)]">
-                    <div className="flex items-center justify-between mb-2">
-                        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--coffee-deep)]">
-                            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
-                            Directors
-                        </span>
-                        <button onClick={scan} disabled={loading}
-                            className="p-1 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] disabled:opacity-50">
-                            <RotateCw size={14} className={loading ? 'animate-spin' : ''} />
-                        </button>
+                    <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
+                        <span className="text-sm font-semibold text-[var(--coffee-deep)]">Directors</span>
+                        <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
+                            <button onClick={() => { scan(); manualRefresh() }} disabled={loading}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 transition-colors" title="刷新">
+                                <RotateCw size={13} className={loading ? 'animate-spin' : ''} />
+                            </button>
+                            <input type="text" inputMode="numeric" value={refreshInterval}
+                                onChange={e => { const v = parseInt(e.target.value); setRefreshInterval(isNaN(v) ? 0 : Math.max(0, Math.min(60, v))); setAutoRefresh(v > 0) }}
+                                style={{ width: 24, padding: '0 1px', fontSize: 10, lineHeight: '18px' }} className="h-5 rounded border border-[var(--glass-border)] bg-white/70 text-center font-mono focus:outline-none focus:border-[var(--caramel)] appearance-none"
+                            /><span className="text-[10px]">s</span>
+                        </div>
                     </div>
-                    <div className="relative">
-                        {!filter && <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)] pointer-events-none" />}
-                        <input type="text" value={filter} onChange={e => setFilter(e.target.value)}
-                            className={`w-full pr-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)] ${filter ? 'pl-2' : 'pl-8'}`}
-                        />
-                    </div>
+                    <input type="text" value={filter} onChange={e => setFilter(e.target.value)}
+                        placeholder="搜索 Director..."
+                        className="w-full mt-2 px-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+                    />
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 text-xs">
                     {loading && <div className="flex items-center justify-center gap-1.5 py-4 text-[var(--coffee-muted)]"><Loader2 size={14} className="animate-spin" /><span>扫描中...</span></div>}
@@ -227,6 +245,7 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
                         <MonitorCard key={id} instanceId={id} snapshot={snap} isCollapsed={isCollapsed}
                             onToggleCollapse={() => setCollapsed(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })}
                             onRemove={() => removeMonitor(id)}
+                            onRefresh={manualRefresh}
                             onControl={(cmd, value) => sendCmd('control', { instanceId: id, cmd, value })}
                             onMuteTrack={(trackIndex) => sendCmd('mute_track', { instanceId: id, trackIndex })}
                             onInvokeSignal={(eventIndex) => sendCmd('invoke_signal', { instanceId: id, eventIndex })}
@@ -242,7 +261,7 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
 // ============================================================================
 // 监控卡片
 // ============================================================================
-function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRemove, onControl, onMuteTrack, onInvokeSignal, onScrub }) {
+function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRemove, onRefresh, onControl, onMuteTrack, onInvokeSignal, onScrub }) {
     if (!snapshot) {
         return (
             <div className="rounded-lg border border-[var(--glass-border)] bg-white/30 p-3">
@@ -271,6 +290,10 @@ function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRe
                 }`}>
                     {snapshot.playState}
                 </span>
+                <button onClick={e => { e.stopPropagation(); onRefresh() }}
+                    className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] flex-shrink-0" title="刷新">
+                    <RotateCw size={12} />
+                </button>
                 <button onClick={e => { e.stopPropagation(); onRemove() }}
                     className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--terracotta)] flex-shrink-0">
                     <X size={14} />

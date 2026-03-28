@@ -4,7 +4,7 @@ import { Search, RotateCw, X, ChevronDown, ChevronRight, Pin, Loader2, Clipboard
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function CsComponentMonitor({ clients, selectedClient, pendingPin, onPendingPinConsumed }) {
+export default function CsComponentMonitor({ clients, selectedClient, pendingPin, onPendingPinConsumed, active }) {
     const [searchType, setSearchType] = useState('')
     const [scanResults, setScanResults] = useState([])
     const [scanInfo, setScanInfo] = useState(null) // {truncated, total, shown}
@@ -14,6 +14,8 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
     const [methodResults, setMethodResults] = useState({}) // "key_methodName" → {result, error}
     const [wsConnected, setWsConnected] = useState(false)
     const [loading, setLoading] = useState(false)
+    const [refreshInterval, setRefreshInterval] = useState(3)
+    const [autoRefresh, setAutoRefresh] = useState(false)
     const [leftWidth, setLeftWidth] = useState(280)
     const isDragging = useRef(false)
 
@@ -150,6 +152,20 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
         onPendingPinConsumed && onPendingPinConsumed()
     }, [pendingPin, wsConnected])
 
+    // --- Auto-refresh monitored cards ---
+    useEffect(() => {
+        if (!autoRefresh || !active || refreshInterval <= 0) return
+        const keys = Object.keys(monitored)
+        if (keys.length === 0) return
+        const timer = setInterval(() => {
+            keys.forEach(key => {
+                const entry = monitored[key]
+                if (entry) refreshDetail(key, entry)
+            })
+        }, refreshInterval * 1000)
+        return () => clearInterval(timer)
+    }, [autoRefresh, active, refreshInterval, monitored, refreshDetail])
+
     // --- Cleanup on client change ---
     useEffect(() => {
         setMonitored({}); setDetails({}); setScanResults([]); setScanInfo(null)
@@ -170,23 +186,26 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
             {/* ===== Left Panel ===== */}
             <div className="flex-shrink-0 border-r border-[var(--glass-border)] flex flex-col" style={{ width: leftWidth }}>
                 <div className="p-3 border-b border-[var(--glass-border)]">
-                    <div className="flex items-center justify-between mb-2">
-                        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--coffee-deep)]">
-                            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
-                            C# Component
-                        </span>
+                    <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
+                        <span className="text-sm font-semibold text-[var(--coffee-deep)]">C# Component</span>
+                        <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
+                            <button onClick={() => monitoredKeys.forEach(key => refreshDetail(key, monitored[key]))}
+                                disabled={monitoredKeys.length === 0}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 transition-colors" title="刷新">
+                                <RotateCw size={13} />
+                            </button>
+                            <input type="text" inputMode="numeric" value={refreshInterval}
+                                onChange={e => { const v = parseInt(e.target.value); setRefreshInterval(isNaN(v) ? 0 : Math.max(0, Math.min(60, v))); setAutoRefresh(v > 0) }}
+                                style={{ width: 24, padding: '0 1px', fontSize: 10, lineHeight: '18px' }} className="h-5 rounded border border-[var(--glass-border)] bg-white/70 text-center font-mono focus:outline-none focus:border-[var(--caramel)] appearance-none"
+                            /><span className="text-[10px]">s</span>
+                        </div>
                     </div>
-                    <div className="flex gap-1">
-                        <input type="text" value={searchType} onChange={e => setSearchType(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
-                            placeholder="组件类型名 (如 Image, Button)"
-                            className="flex-1 px-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
-                        />
-                        <button onClick={handleScan} disabled={loading || !searchType.trim()}
-                            className="px-2 py-1.5 rounded-md bg-[var(--caramel)]/15 text-[var(--caramel)] hover:bg-[var(--caramel)]/25 disabled:opacity-40 text-xs">
-                            {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-                        </button>
-                    </div>
+                    <input type="text" value={searchType} onChange={e => setSearchType(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
+                        placeholder="组件类型名 (回车搜索, 如 Image)"
+                        className="w-full mt-2 px-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+                    />
                 </div>
 
                 {/* Scan Results */}

@@ -1102,15 +1102,16 @@ end`
                   </div>
                 )}
 
-                {activeTab === 'animator' && (
+                <div style={{ display: activeTab === 'animator' ? 'contents' : 'none' }}>
                   <AnimatorViewer
                     clients={clients}
                     selectedClient={selectedClient}
                     broadcastMode={broadcastMode}
+                    active={activeTab === 'animator'}
                   />
-                )}
+                </div>
 
-                {activeTab === 'lua_inspector' && (
+                <div style={{ display: activeTab === 'lua_inspector' ? 'contents' : 'none' }}>
                   <LuaUiInspector
                     clients={clients}
                     selectedClient={selectedClient}
@@ -1121,16 +1122,18 @@ end`
                       setPendingCsPin(pinData)
                       setActiveTab('cs_monitor')
                     }}
+                    active={activeTab === 'lua_inspector'}
                   />
-                )}
+                </div>
 
-                {activeTab === 'timeline' && (
+                <div style={{ display: activeTab === 'timeline' ? 'contents' : 'none' }}>
                   <TimelineMonitor
                     clients={clients}
                     selectedClient={selectedClient}
                     broadcastMode={broadcastMode}
+                    active={activeTab === 'timeline'}
                   />
-                )}
+                </div>
 
                 <div style={{ display: activeTab === 'cs_monitor' ? 'contents' : 'none' }}>
                   <CsComponentMonitor
@@ -1138,6 +1141,7 @@ end`
                     selectedClient={selectedClient}
                     pendingPin={pendingCsPin}
                     onPendingPinConsumed={() => setPendingCsPin(null)}
+                    active={activeTab === 'cs_monitor'}
                   />
                 </div>
               </div>
