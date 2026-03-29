@@ -655,7 +655,7 @@ local function StartRuntimeGM()
     -- 处理来自 EncyHub 的 ANIM 命令
     function LuaAnimatorMonitor.HandleCommand(packet)
         local cmdType = packet.type
-        origin_print("[RuntimeGM] ANIM command received: " .. tostring(cmdType))
+        -- origin_print("[RuntimeGM] ANIM command received: " .. tostring(cmdType))
 
         if cmdType == "ANIM_LIST" then
             LuaAnimatorMonitor.ScanAnimators()
@@ -674,7 +674,7 @@ local function StartRuntimeGM()
                     animators[#animators + 1] = info
                 end
             end
-            origin_print("[RuntimeGM] ANIM_LIST_RESP: found " .. #animators .. " animators")
+            -- origin_print("[RuntimeGM] ANIM_LIST_RESP: found " .. #animators .. " animators")
             RuntimeGMClient.Send({ type = "ANIM_LIST_RESP", animators = animators })
 
         elseif cmdType == "ANIM_SUBSCRIBE" then
@@ -1188,6 +1188,21 @@ local function StartRuntimeGM()
 
     origin_print("[RuntimeGM] LuaCsMonitor module initialized")
 
+    local function getHierarchyPath(go)
+        local parts = {}
+        local t = go.transform
+        while t do
+            parts[#parts + 1] = t.name
+            t = t.parent
+        end
+        -- 反转拼接
+        local path = ""
+        for i = #parts, 1, -1 do
+            path = path .. (path ~= "" and "/" or "") .. parts[i]
+        end
+        return path
+    end
+
     local CS_MONITOR_NS_PREFIXES = { "", "UnityEngine.UI.", "UnityEngine.", "TMPro.", "UnityEngine.Video.", "UnityEngine.Playables." }
 
     -- 扫描所有 GameObject，按组件类型名字符串匹配（绕过 typeof 动态解析的 xlua 兼容问题）
@@ -1227,6 +1242,7 @@ local function StartRuntimeGM()
                 local goName = go.name
                 local parentName = ""
                 pcall(function() local p = go.transform.parent; if p then parentName = p.name end end)
+                local hPath = ""; pcall(function() hPath = getHierarchyPath(go) end)
 
                 for si, ci in ipairs(matches) do
                     if #results >= maxShow then total = total + 1; return end
@@ -1235,6 +1251,7 @@ local function StartRuntimeGM()
                     LuaCsMonitor._compRefs[key] = { go = go, comp = comps[ci], goName = goName, parentName = parentName, typeName = typeName }
                     results[#results + 1] = {
                         goInstanceId = goId, goName = goName, parentName = parentName,
+                        hierarchyPath = hPath,
                         compIndex = ci, compTypeName = typeName,
                         sameTypeIndex = si - 1, sameTypeCount = sameCount,
                     }
@@ -1346,7 +1363,24 @@ local function StartRuntimeGM()
                     for j = 0, params.Length - 1 do
                         paramList[#paramList + 1] = { name = params[j].Name, typeName = tostring(params[j].ParameterType.Name) }
                     end
-                    result.methods[#result.methods + 1] = { name = m.Name, paramCount = params.Length, params = paramList }
+                    local entry = { name = m.Name, paramCount = params.Length, params = paramList }
+                    -- 检测 xlua metatable 是否可调用（0 参数方法）
+                    if params.Length == 0 then
+                        local canCall = false
+                        pcall(function()
+                            local fn = ref.comp[m.Name]
+                            if fn and type(fn) == "function" then canCall = true end
+                        end)
+                        if not canCall then
+                            pcall(function() xlua.private_accessible(ref.comp:GetType()) end)
+                            pcall(function()
+                                local fn = ref.comp[m.Name]
+                                if fn and type(fn) == "function" then canCall = true end
+                            end)
+                        end
+                        if not canCall then entry.callable = false end
+                    end
+                    result.methods[#result.methods + 1] = entry
                 end)
             end
         end)
@@ -1384,10 +1418,20 @@ local function StartRuntimeGM()
         local ref = LuaCsMonitor._compRefs[key]
         if not ref or not ref.comp then return { error = "组件未找到" } end
         local ok, ret = pcall(function()
-            local m = ref.comp:GetType():GetMethod(methodName)
-            if not m then error("method not found: " .. tostring(methodName)) end
-            local result = m:Invoke(ref.comp, nil)
-            return result ~= nil and tostring(result) or "void"
+            -- 尝试 1: xlua metatable 直接调用
+            local fn = ref.comp[methodName]
+            if fn and type(fn) == "function" then
+                local result = fn(ref.comp)
+                return result ~= nil and tostring(result) or "void"
+            end
+            -- 尝试 2: xlua.private_accessible 强制注册后重试
+            pcall(function() xlua.private_accessible(ref.comp:GetType()) end)
+            fn = ref.comp[methodName]
+            if fn and type(fn) == "function" then
+                local result = fn(ref.comp)
+                return result ~= nil and tostring(result) or "void"
+            end
+            error("method not found: " .. tostring(methodName))
         end)
         if not ok then return { error = tostring(ret) } end
         return { success = true, result = ret }
@@ -1433,9 +1477,11 @@ local function StartRuntimeGM()
                     local key = goId .. "_" .. ci
                     local tn = ""; pcall(function() tn = tostring(comp:GetType().Name) end)
                     local pn = ""; pcall(function() local p = go.transform.parent; if p then pn = p.name end end)
+                    local hPath = ""; pcall(function() hPath = getHierarchyPath(go) end)
                     LuaCsMonitor._compRefs[key] = { go = go, comp = comp, goName = go.name, parentName = pn, typeName = tn }
                     return { success = true, entry = {
                         goInstanceId = goId, goName = go.name, parentName = pn,
+                        hierarchyPath = hPath,
                         compIndex = ci, compTypeName = tn, sameTypeIndex = 0, sameTypeCount = 1,
                     }}
                 end)
@@ -2019,11 +2065,23 @@ local function StartRuntimeGM()
                             typeName = tostring(params[j].ParameterType.Name),
                         }
                     end
-                    result.methods[#result.methods + 1] = {
-                        name = m.Name,
-                        paramCount = params.Length,
-                        params = paramList,
-                    }
+                    local entry = { name = m.Name, paramCount = params.Length, params = paramList }
+                    if params.Length == 0 then
+                        local canCall = false
+                        pcall(function()
+                            local fn = comp[m.Name]
+                            if fn and type(fn) == "function" then canCall = true end
+                        end)
+                        if not canCall then
+                            pcall(function() xlua.private_accessible(comp:GetType()) end)
+                            pcall(function()
+                                local fn = comp[m.Name]
+                                if fn and type(fn) == "function" then canCall = true end
+                            end)
+                        end
+                        if not canCall then entry.callable = false end
+                    end
+                    result.methods[#result.methods + 1] = entry
                 end)
             end
         end)
@@ -2062,12 +2120,20 @@ local function StartRuntimeGM()
         local ok, err = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
             local comp = all[compIndex]
-            local m = comp:GetType():GetMethod(methodName)
-            if not m then error("method not found: " .. tostring(methodName)) end
-            local params = m:GetParameters()
-            if params.Length > 0 then error("method has parameters, not supported yet") end
-            local ret = m:Invoke(comp, nil)
-            return ret
+            -- 尝试 1: xlua metatable 直接调用
+            local fn = comp[methodName]
+            if fn and type(fn) == "function" then
+                local ret = fn(comp)
+                return ret ~= nil and tostring(ret) or "void"
+            end
+            -- 尝试 2: xlua.private_accessible 强制注册后重试
+            pcall(function() xlua.private_accessible(comp:GetType()) end)
+            fn = comp[methodName]
+            if fn and type(fn) == "function" then
+                local ret = fn(comp)
+                return ret ~= nil and tostring(ret) or "void"
+            end
+            error("method not found: " .. tostring(methodName))
         end)
         if not ok then return { error = tostring(err) } end
         return { success = true, result = tostring(err or "void") }

@@ -987,7 +987,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                                                     {compDetail.methods.map((m, mi) => (
                                                         <div key={mi} className="flex items-center gap-2 py-0.5">
                                                             <span className="font-mono text-[var(--coffee-deep)]">{m.name}({m.params?.map(p => p.name).join(', ')})</span>
-                                                            {m.paramCount === 0 && (
+                                                            {m.paramCount === 0 && m.callable !== false && (
                                                                 <button onClick={() => {
                                                                     onGoAction && onGoAction('call_component_method', fieldPath, {
                                                                         compIndex: selectedComp, methodName: m.name,
@@ -996,7 +996,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                                                                         setTimeout(() => setMethodResult(null), 5000)
                                                                     })
                                                                 }}
-                                                                    className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--sage)]/10 text-[var(--sage)] hover:bg-[var(--sage)]/20">
+                                                                    className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-[var(--sage)]/10 text-[var(--sage)] hover:bg-[var(--sage)]/20">
                                                                     ▶ Call
                                                                 </button>
                                                             )}

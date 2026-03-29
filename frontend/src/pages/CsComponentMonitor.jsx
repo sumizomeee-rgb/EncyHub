@@ -16,6 +16,7 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
     const [loading, setLoading] = useState(false)
     const [refreshInterval, setRefreshInterval] = useState(3)
     const [autoRefresh, setAutoRefresh] = useState(false)
+    const [pinLoading, setPinLoading] = useState(false)
     const [leftWidth, setLeftWidth] = useState(280)
     const isDragging = useRef(false)
 
@@ -131,13 +132,13 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
     // --- Handle pin from Inspector（等 WS 连上再发）---
     useEffect(() => {
         if (!pendingPin || !selectedClient || !wsConnected) return
+        setPinLoading(true)
         sendCmd('cache_from_inspector', {
             uiName: pendingPin.uiName, path: pendingPin.path, compIndex: pendingPin.compIndex
         }, (data) => {
             if (data?.success && data.entry) {
                 const entry = data.entry
                 const key = `${entry.goInstanceId}_${entry.compIndex}`
-                // 重复 pin 防护
                 setMonitored(prev => {
                     if (prev[key]) return prev
                     return { ...prev, [key]: entry }
@@ -146,7 +147,10 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
                 sendCmd('get_detail', { goInstanceId: entry.goInstanceId, compIndex: entry.compIndex }, (detail) => {
                     setDetailLoading(dl => ({ ...dl, [key]: false }))
                     setDetails(d => ({ ...d, [key]: detail }))
+                    setPinLoading(false)
                 })
+            } else {
+                setPinLoading(false)
             }
         })
         onPendingPinConsumed && onPendingPinConsumed()
@@ -252,9 +256,14 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
 
             {/* ===== Right Panel: Monitor Cards ===== */}
             <div className="flex-1 min-w-0 overflow-y-auto p-3 space-y-3">
-                {monitoredKeys.length === 0 && (
+                {monitoredKeys.length === 0 && !pinLoading && (
                     <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
                         搜索组件类型后点击条目 📌 添加监控
+                    </div>
+                )}
+                {pinLoading && (
+                    <div className="flex items-center justify-center gap-2 h-32 text-[var(--coffee-muted)] text-sm">
+                        <Loader2 size={16} className="animate-spin" /> 正在加载组件...
                     </div>
                 )}
                 {monitoredKeys.map(key => {
@@ -299,13 +308,15 @@ function MonitorCard({ cardKey, entry, detail, isLoading, methodResults, onRemov
             <div className="flex items-center gap-2 px-3 py-2 bg-[var(--cream-warm)]/30 cursor-pointer select-none" onClick={() => setCollapsed(!collapsed)}>
                 {collapsed ? <ChevronRight size={14} className="text-[var(--coffee-muted)]" /> : <ChevronDown size={14} className="text-[var(--coffee-muted)]" />}
                 <span className="text-sm font-medium text-[var(--coffee-deep)]">{typeLabel}</span>
-                <span className="text-xs text-[var(--coffee-muted)]">on "{entry.goName}"</span>
-                {entry.parentName && <span className="text-[10px] text-[var(--coffee-muted)] opacity-50">({entry.parentName})</span>}
-                {detail?.isActive === false && <span className="text-[10px] text-[var(--caramel)]">(inactive)</span>}
-                {detail?.error && <span className="text-[10px] text-[var(--terracotta)]">⚠</span>}
-                <span className="ml-auto text-[10px] text-[var(--coffee-muted)] opacity-30">#{entry.goInstanceId}</span>
-                <button onClick={e => { e.stopPropagation(); onRefresh() }} className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)]" title="刷新"><RotateCw size={12} /></button>
-                <button onClick={e => { e.stopPropagation(); onRemove() }} className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--terracotta)]"><X size={14} /></button>
+                <span className="text-xs text-[var(--coffee-deep)] select-text cursor-text" onClick={e => e.stopPropagation()}>{entry.goName}</span>
+                {entry.hierarchyPath && entry.hierarchyPath !== entry.goName && (
+                    <span className="text-[10px] text-[var(--coffee-muted)] opacity-40 truncate min-w-0" title={entry.hierarchyPath}>{entry.hierarchyPath}</span>
+                )}
+                {detail?.isActive === false && <span className="text-[10px] text-[var(--caramel)] flex-shrink-0">(inactive)</span>}
+                {detail?.error && <span className="text-[10px] text-[var(--terracotta)] flex-shrink-0">⚠</span>}
+                <span className="ml-auto text-[10px] text-[var(--coffee-muted)] opacity-30 flex-shrink-0">#{entry.goInstanceId}</span>
+                <button onClick={e => { e.stopPropagation(); onRefresh() }} className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] flex-shrink-0" title="刷新"><RotateCw size={12} /></button>
+                <button onClick={e => { e.stopPropagation(); onRemove() }} className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--terracotta)] flex-shrink-0"><X size={14} /></button>
             </div>
 
             {!collapsed && (
@@ -352,26 +363,28 @@ function MonitorCard({ cardKey, entry, detail, isLoading, methodResults, onRemov
                                             const result = methodResults[rKey]
                                             return (
                                                 <div key={i} className="flex items-center gap-2 py-0.5 text-xs">
-                                                    <span className="font-mono text-[var(--coffee-deep)] truncate">{m.name}({m.params?.map(p => p.name).join(', ')})</span>
-                                                    {m.paramCount === 0 && (
-                                                        <button onClick={() => onCallMethod(m.name)}
-                                                            className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--sage)]/10 text-[var(--sage)] hover:bg-[var(--sage)]/20 flex-shrink-0">
-                                                            ▶ Call
-                                                        </button>
-                                                    )}
-                                                    {result && (
-                                                        <>
-                                                            <span className={`text-[10px] font-mono truncate ${result.error ? 'text-[var(--terracotta)]' : 'text-[var(--sage)]'}`}>
-                                                                {result.error ? `✗ ${result.error}` : `→ ${result.result}`}
-                                                            </span>
-                                                            {result.result && !result.error && (
-                                                                <button onClick={() => { navigator.clipboard.writeText(result.result) }}
-                                                                    className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] flex-shrink-0" title="复制返回值">
-                                                                    <Clipboard size={10} />
-                                                                </button>
-                                                            )}
-                                                        </>
-                                                    )}
+                                                    <span className="font-mono text-[var(--coffee-deep)] truncate min-w-0">{m.name}({m.params?.map(p => p.name).join(', ')})</span>
+                                                    <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+                                                        {result && (
+                                                            <>
+                                                                <span className={`text-[10px] font-mono truncate max-w-[160px] ${result.error ? 'text-[var(--terracotta)]' : 'text-[var(--sage)]'}`}>
+                                                                    {result.error ? `✗ ${result.error}` : `→ ${result.result}`}
+                                                                </span>
+                                                                {result.result && !result.error && (
+                                                                    <button onClick={() => { navigator.clipboard.writeText(result.result) }}
+                                                                        className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)]" title="复制返回值">
+                                                                        <Clipboard size={10} />
+                                                                    </button>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                        {m.paramCount === 0 && m.callable !== false && (
+                                                            <button onClick={() => onCallMethod(m.name)}
+                                                                className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--sage)]/10 text-[var(--sage)] hover:bg-[var(--sage)]/20">
+                                                                ▶ Call
+                                                            </button>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             )
                                         })}
@@ -395,10 +408,13 @@ function PropRow({ prop, onSet }) {
     const isEditing = editVal !== null
     const commit = (val) => { onSet(val); setEditVal(null) }
 
+    const nameCol = "font-mono text-[var(--coffee-muted)] text-[10px] w-32 truncate flex-shrink-0"
+    const inputCls = "h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+
     if (p.valueType === 'bool' && p.editable) {
         return (
             <div className="flex items-center gap-2 py-0.5 text-xs">
-                <span className="font-mono text-[var(--coffee-muted)] w-36 truncate text-[10px]">{p.name}</span>
+                <span className={nameCol} title={p.name}>{p.name}:</span>
                 <button onClick={() => onSet(!p.value)}
                     className={`relative inline-flex items-center h-4 w-7 flex-shrink-0 rounded-full transition-colors ${p.value ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/30'}`}>
                     <span className={`inline-block w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${p.value ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
@@ -409,14 +425,14 @@ function PropRow({ prop, onSet }) {
     if ((p.valueType === 'int' || p.valueType === 'float') && p.editable) {
         return (
             <div className="flex items-center gap-2 py-0.5 text-xs">
-                <span className="font-mono text-[var(--coffee-muted)] w-36 truncate text-[10px]">{p.name}</span>
+                <span className={nameCol} title={p.name}>{p.name}:</span>
                 <input type="number" step={p.valueType === 'float' ? 0.01 : 1}
                     value={isEditing ? editVal : (p.value ?? 0)}
                     onFocus={() => setEditVal(p.value ?? 0)}
                     onChange={e => setEditVal(parseFloat(e.target.value) || 0)}
                     onBlur={() => { if (isEditing) commit(editVal) }}
                     onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
-                    className="w-20 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+                    className={`w-24 ${inputCls}`}
                 />
             </div>
         )
@@ -424,13 +440,13 @@ function PropRow({ prop, onSet }) {
     if (p.valueType === 'string' && p.editable) {
         return (
             <div className="flex items-center gap-2 py-0.5 text-xs">
-                <span className="font-mono text-[var(--coffee-muted)] w-36 truncate text-[10px]">{p.name}</span>
+                <span className={nameCol} title={p.name}>{p.name}:</span>
                 <input type="text" value={isEditing ? editVal : (p.value ?? '')}
                     onFocus={() => setEditVal(p.value ?? '')}
                     onChange={e => setEditVal(e.target.value)}
                     onBlur={() => { if (isEditing) commit(editVal) }}
                     onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
-                    className="flex-1 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+                    className={`flex-1 ${inputCls}`}
                 />
             </div>
         )
@@ -442,7 +458,7 @@ function PropRow({ prop, onSet }) {
         const current = isEditing ? editVal : arr.slice(0, count)
         return (
             <div className="flex items-center gap-1 py-0.5 text-xs flex-wrap">
-                <span className="font-mono text-[var(--coffee-muted)] w-36 truncate text-[10px]">{p.name}</span>
+                <span className={nameCol} title={p.name}>{p.name}:</span>
                 {p.valueType === 'color' && <span className="w-3 h-3 rounded-sm border border-black/10 flex-shrink-0" style={{ background: `rgba(${(arr[0]*255)|0},${(arr[1]*255)|0},${(arr[2]*255)|0},${arr[3]??1})` }} />}
                 {Array.from({ length: count }).map((_, i) => (
                     <div key={i} className="flex items-center gap-0.5">
@@ -453,7 +469,7 @@ function PropRow({ prop, onSet }) {
                             onChange={e => { const n = [...(editVal || arr.slice(0, count))]; n[i] = parseFloat(e.target.value) || 0; setEditVal(n) }}
                             onBlur={() => { if (isEditing) commit(editVal) }}
                             onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
-                            className="w-14 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+                            className={`w-14 ${inputCls}`}
                         />
                     </div>
                 ))}
@@ -463,9 +479,9 @@ function PropRow({ prop, onSet }) {
     // readonly
     return (
         <div className="flex items-center gap-2 py-0.5 text-xs">
-            <span className="font-mono text-[var(--coffee-muted)] w-36 truncate text-[10px]">{p.name}</span>
+            <span className={nameCol} title={p.name}>{p.name}:</span>
             <span className="font-mono text-[var(--coffee-muted)] opacity-60 text-[10px] truncate">{String(p.value ?? 'null')}</span>
-            <span className="text-[9px] text-[var(--coffee-muted)] opacity-40">{p.typeName}</span>
+            <span className="text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">{p.typeName}</span>
         </div>
     )
 }
