@@ -1181,6 +1181,154 @@ local function StartRuntimeGM()
     -- 前置声明：供 CsMonitor 和 Inspector 共用的属性值序列化函数（定义在 Inspector 区域）
     local inspectorSerializePropValue
 
+    -- ========== 共享常量 & 工具函数 (CsMonitor + Inspector 复用) ==========
+    local _PROP_BLACKLIST = {
+        mesh=1, material=1, materials=1, sharedMesh=1, sharedMaterial=1, sharedMaterials=1,
+        rigidbody=1, rigidbody2D=1, camera=1, light=1, animation=1, constantForce=1,
+        renderer=1, audio=1, networkView=1, collider=1, collider2D=1, hingeJoint=1, particleSystem=1,
+        destroyCancellationToken=1, useGUILayout=1, runInEditMode=1,
+    }
+    local _SKIP_METHODS = {
+        Awake=1, Start=1, Update=1, LateUpdate=1, FixedUpdate=1, OnDestroy=1, OnEnable=1, OnDisable=1,
+        OnApplicationFocus=1, OnApplicationPause=1, OnApplicationQuit=1, OnValidate=1, Reset=1,
+        OnBecameVisible=1, OnBecameInvisible=1, OnPreRender=1, OnPostRender=1, OnRenderObject=1,
+        OnWillRenderObject=1, OnRenderImage=1, OnDrawGizmos=1, OnDrawGizmosSelected=1, OnGUI=1,
+        OnCollisionEnter=1, OnCollisionExit=1, OnCollisionStay=1, OnTriggerEnter=1, OnTriggerExit=1, OnTriggerStay=1,
+        OnCollisionEnter2D=1, OnCollisionExit2D=1, OnTriggerEnter2D=1, OnTriggerExit2D=1,
+        OnMouseDown=1, OnMouseUp=1, OnMouseEnter=1, OnMouseExit=1, OnMouseDrag=1, OnMouseOver=1,
+        OnTransformParentChanged=1, OnTransformChildrenChanged=1, OnBeforeTransformParentChanged=1,
+        ToString=1, GetHashCode=1, Equals=1, GetType=1, GetInstanceID=1, GetComponent=1, GetComponentInChildren=1,
+        GetComponentInParent=1, GetComponents=1, GetComponentsInChildren=1, GetComponentsInParent=1,
+        CompareTag=1, SendMessage=1, SendMessageUpwards=1, BroadcastMessage=1, TryGetComponent=1,
+        StartCoroutine=1, StopCoroutine=1, StopAllCoroutines=1, Invoke=1, InvokeRepeating=1, CancelInvoke=1, IsInvoking=1,
+    }
+
+    local function convertTypedValue(value, valueType)
+        if valueType == "bool" then return (value == true or value == "true")
+        elseif valueType == "int" then return math.floor(tonumber(value) or 0)
+        elseif valueType == "float" then return tonumber(value) or 0
+        elseif valueType == "string" then return tostring(value or "")
+        elseif valueType == "vector2" then return CS.UnityEngine.Vector2(value[1] or 0, value[2] or 0)
+        elseif valueType == "vector3" then return CS.UnityEngine.Vector3(value[1] or 0, value[2] or 0, value[3] or 0)
+        elseif valueType == "vector4" then return CS.UnityEngine.Vector4(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 0)
+        elseif valueType == "color" then return CS.UnityEngine.Color(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 1)
+        elseif valueType == "euler" then return CS.UnityEngine.Quaternion.Euler(value[1] or 0, value[2] or 0, value[3] or 0)
+        else return value
+        end
+    end
+
+    local function callCompMethodImpl(comp, methodName)
+        local fn = comp[methodName]
+        if fn and type(fn) == "function" then
+            local result = fn(comp)
+            return true, result ~= nil and tostring(result) or "void"
+        end
+        pcall(function() xlua.private_accessible(comp:GetType()) end)
+        fn = comp[methodName]
+        if fn and type(fn) == "function" then
+            local result = fn(comp)
+            return true, result ~= nil and tostring(result) or "void"
+        end
+        return false, "method not found: " .. tostring(methodName)
+    end
+
+    -- 读取组件的属性、字段、方法（CsMonitor.GetDetail 和 Inspector.GetComponentDetail 共用）
+    local function readComponentDetail(comp)
+        local result = { properties = {}, methods = {}, _debug = { propCount = 0, tried = 0, failed = 0 } }
+
+        -- 属性 (Properties)
+        local props
+        pcall(function() props = comp:GetType():GetProperties(20) end)
+        if not props then pcall(function() props = comp:GetType():GetProperties() end) end
+        local propCount = 0
+        if props then pcall(function() propCount = props.Length end) end
+        result._debug.propCount = propCount
+        for i = 0, propCount - 1 do
+            local prop = props[i]
+            pcall(function()
+                if prop.IsSpecialName then return end
+                local idxParams = prop:GetIndexParameters()
+                if idxParams and idxParams.Length > 0 then return end
+                if not prop.CanRead then return end
+                local pName = tostring(prop.Name)
+                if _PROP_BLACKLIST[pName] then return end
+                local propTypeName = tostring(prop.PropertyType.Name)
+                result._debug.tried = result._debug.tried + 1
+                local valOk, val = pcall(function() return comp[pName] end)
+                if not valOk then valOk, val = pcall(function() return prop:GetValue(comp) end) end
+                if not valOk then valOk, val = pcall(function() return prop:GetValue(comp, nil) end) end
+                if not valOk then result._debug.failed = result._debug.failed + 1; return end
+                local serialized, valueType = inspectorSerializePropValue(val, propTypeName)
+                result.properties[#result.properties + 1] = {
+                    name = pName, typeName = propTypeName, valueType = valueType,
+                    value = serialized, editable = prop.CanWrite and valueType ~= "readonly",
+                }
+            end)
+        end
+
+        -- 字段 (Fields)
+        local fields
+        pcall(function() fields = comp:GetType():GetFields(20) end)
+        local fieldCount = 0
+        if fields then pcall(function() fieldCount = fields.Length end) end
+        for i = 0, fieldCount - 1 do
+            local fld = fields[i]
+            pcall(function()
+                if fld.IsSpecialName then return end
+                local fName = tostring(fld.Name)
+                local fTypeName = tostring(fld.FieldType.Name)
+                local valOk, val = pcall(function() return comp[fName] end)
+                if not valOk then valOk, val = pcall(function() return fld:GetValue(comp) end) end
+                if not valOk then return end
+                local serialized, valueType = inspectorSerializePropValue(val, fTypeName)
+                result.properties[#result.properties + 1] = {
+                    name = fName, typeName = fTypeName, valueType = valueType,
+                    value = serialized, editable = (not fld.IsInitOnly) and valueType ~= "readonly", isField = true,
+                }
+            end)
+        end
+
+        -- 方法
+        local methods
+        local mOk, _ = pcall(function() methods = comp:GetType():GetMethods(20) end)
+        if not mOk then pcall(function() methods = comp:GetType():GetMethods() end) end
+        if not methods then methods = {} end
+        local methodCount = 0
+        pcall(function() methodCount = methods.Length end)
+        if methodCount == 0 then methodCount = #methods end
+        for i = 0, methodCount - 1 do
+            local m = methods[i]
+            pcall(function()
+                if m.IsSpecialName then return end
+                if _SKIP_METHODS[m.Name] then return end
+                local params = m:GetParameters()
+                local paramList = {}
+                for j = 0, params.Length - 1 do
+                    paramList[#paramList + 1] = { name = params[j].Name, typeName = tostring(params[j].ParameterType.Name) }
+                end
+                local entry = { name = m.Name, paramCount = params.Length, params = paramList }
+                if params.Length == 0 then
+                    local canCall = false
+                    pcall(function()
+                        local fn = comp[m.Name]
+                        if fn and type(fn) == "function" then canCall = true end
+                    end)
+                    if not canCall then
+                        pcall(function() xlua.private_accessible(comp:GetType()) end)
+                        pcall(function()
+                            local fn = comp[m.Name]
+                            if fn and type(fn) == "function" then canCall = true end
+                        end)
+                    end
+                    if not canCall then entry.callable = false end
+                end
+                result.methods[#result.methods + 1] = entry
+            end)
+        end
+
+        return result
+    end
+
     -- ========== LuaCsMonitor: C# 组件搜索 + 监控 (真机兼容) ==========
     local LuaCsMonitor = {}
     LuaCsMonitor._compRefs = {}    -- "goId_compIdx" → {go, comp, goName, parentName, typeName}
@@ -1202,8 +1350,6 @@ local function StartRuntimeGM()
         end
         return path
     end
-
-    local CS_MONITOR_NS_PREFIXES = { "", "UnityEngine.UI.", "UnityEngine.", "TMPro.", "UnityEngine.Video.", "UnityEngine.Playables." }
 
     -- 扫描所有 GameObject，按组件类型名字符串匹配（绕过 typeof 动态解析的 xlua 兼容问题）
     function LuaCsMonitor.Scan(typeName)
@@ -1268,147 +1414,25 @@ local function StartRuntimeGM()
         local key = goInstanceId .. "_" .. compIndex
         local ref = LuaCsMonitor._compRefs[key]
         if not ref or not ref.comp then return { error = "组件未找到，请重新搜索" } end
-
-        local result = { properties = {}, methods = {}, goName = ref.goName, typeName = ref.typeName }
-
-        -- 检查 GO 是否存活
         local alive = false
         pcall(function() alive = ref.go.name ~= nil end)
         if not alive then return { error = "GameObject 已销毁" } end
-
-        result.isActive = false
-        pcall(function() result.isActive = ref.go.activeInHierarchy end)
-
-        local ok, err = pcall(function()
-            local comp = ref.comp
-
-            -- 属性 (Properties)
-            local props
-            pcall(function() props = comp:GetType():GetProperties(20) end)
-            local propCount = 0
-            if props then pcall(function() propCount = props.Length end) end
-            local propBlacklist = { mesh=1, material=1, materials=1, sharedMesh=1, sharedMaterial=1, sharedMaterials=1,
-                rigidbody=1, rigidbody2D=1, camera=1, light=1, animation=1, constantForce=1,
-                renderer=1, audio=1, networkView=1, collider=1, collider2D=1, hingeJoint=1, particleSystem=1,
-                destroyCancellationToken=1, useGUILayout=1, runInEditMode=1 }
-            for i = 0, propCount - 1 do
-                local prop = props[i]
-                pcall(function()
-                    if prop.IsSpecialName then return end
-                    local idxParams = prop:GetIndexParameters()
-                    if idxParams and idxParams.Length > 0 then return end
-                    if not prop.CanRead then return end
-                    local pName = tostring(prop.Name)
-                    if propBlacklist[pName] then return end
-                    local propTypeName = tostring(prop.PropertyType.Name)
-                    local valOk, val = pcall(function() return comp[pName] end)
-                    if not valOk then valOk, val = pcall(function() return prop:GetValue(comp) end) end
-                    if not valOk then return end
-                    local serialized, valueType = inspectorSerializePropValue(val, propTypeName)
-                    result.properties[#result.properties + 1] = {
-                        name = pName, typeName = propTypeName, valueType = valueType,
-                        value = serialized, editable = prop.CanWrite and valueType ~= "readonly",
-                    }
-                end)
-            end
-
-            -- 字段 (Fields)
-            local fields
-            pcall(function() fields = comp:GetType():GetFields(20) end)
-            local fieldCount = 0
-            if fields then pcall(function() fieldCount = fields.Length end) end
-            for i = 0, fieldCount - 1 do
-                local fld = fields[i]
-                pcall(function()
-                    if fld.IsSpecialName then return end
-                    local fName = tostring(fld.Name)
-                    local fTypeName = tostring(fld.FieldType.Name)
-                    local valOk, val = pcall(function() return comp[fName] end)
-                    if not valOk then valOk, val = pcall(function() return fld:GetValue(comp) end) end
-                    if not valOk then return end
-                    local serialized, valueType = inspectorSerializePropValue(val, fTypeName)
-                    result.properties[#result.properties + 1] = {
-                        name = fName, typeName = fTypeName, valueType = valueType,
-                        value = serialized, editable = (not fld.IsInitOnly) and valueType ~= "readonly", isField = true,
-                    }
-                end)
-            end
-
-            -- 方法
-            local skipMethods = {
-                Awake=1, Start=1, Update=1, LateUpdate=1, FixedUpdate=1, OnDestroy=1, OnEnable=1, OnDisable=1,
-                OnApplicationFocus=1, OnApplicationPause=1, OnApplicationQuit=1, OnValidate=1, Reset=1,
-                OnBecameVisible=1, OnBecameInvisible=1, OnPreRender=1, OnPostRender=1, OnRenderObject=1,
-                OnWillRenderObject=1, OnRenderImage=1, OnDrawGizmos=1, OnDrawGizmosSelected=1, OnGUI=1,
-                OnCollisionEnter=1, OnCollisionExit=1, OnCollisionStay=1, OnTriggerEnter=1, OnTriggerExit=1, OnTriggerStay=1,
-                OnCollisionEnter2D=1, OnCollisionExit2D=1, OnTriggerEnter2D=1, OnTriggerExit2D=1,
-                OnMouseDown=1, OnMouseUp=1, OnMouseEnter=1, OnMouseExit=1, OnMouseDrag=1, OnMouseOver=1,
-                OnTransformParentChanged=1, OnTransformChildrenChanged=1, OnBeforeTransformParentChanged=1,
-                ToString=1, GetHashCode=1, Equals=1, GetType=1, GetInstanceID=1, GetComponent=1, GetComponentInChildren=1,
-                GetComponentInParent=1, GetComponents=1, GetComponentsInChildren=1, GetComponentsInParent=1,
-                CompareTag=1, SendMessage=1, SendMessageUpwards=1, BroadcastMessage=1, TryGetComponent=1,
-                StartCoroutine=1, StopCoroutine=1, StopAllCoroutines=1, Invoke=1, InvokeRepeating=1, CancelInvoke=1, IsInvoking=1,
-            }
-            local methods
-            pcall(function() methods = comp:GetType():GetMethods(20) end)
-            local methodCount = 0
-            if methods then pcall(function() methodCount = methods.Length end) end
-            for i = 0, methodCount - 1 do
-                local m = methods[i]
-                pcall(function()
-                    if m.IsSpecialName then return end
-                    if skipMethods[m.Name] then return end
-                    local params = m:GetParameters()
-                    local paramList = {}
-                    for j = 0, params.Length - 1 do
-                        paramList[#paramList + 1] = { name = params[j].Name, typeName = tostring(params[j].ParameterType.Name) }
-                    end
-                    local entry = { name = m.Name, paramCount = params.Length, params = paramList }
-                    -- 检测 xlua metatable 是否可调用（0 参数方法）
-                    if params.Length == 0 then
-                        local canCall = false
-                        pcall(function()
-                            local fn = ref.comp[m.Name]
-                            if fn and type(fn) == "function" then canCall = true end
-                        end)
-                        if not canCall then
-                            pcall(function() xlua.private_accessible(ref.comp:GetType()) end)
-                            pcall(function()
-                                local fn = ref.comp[m.Name]
-                                if fn and type(fn) == "function" then canCall = true end
-                            end)
-                        end
-                        if not canCall then entry.callable = false end
-                    end
-                    result.methods[#result.methods + 1] = entry
-                end)
-            end
-        end)
-        if not ok then return { error = tostring(err) } end
-        -- 按名称排序
-        table.sort(result.properties, function(a, b) return a.name < b.name end)
-        table.sort(result.methods, function(a, b) return a.name < b.name end)
-        return result
+        local ok, detail = pcall(readComponentDetail, ref.comp)
+        if not ok then return { error = tostring(detail) } end
+        detail.goName = ref.goName
+        detail.typeName = ref.typeName
+        detail.isActive = false
+        pcall(function() detail.isActive = ref.go.activeInHierarchy end)
+        table.sort(detail.properties, function(a, b) return a.name < b.name end)
+        table.sort(detail.methods, function(a, b) return a.name < b.name end)
+        return detail
     end
 
     function LuaCsMonitor.SetProp(goInstanceId, compIndex, propName, value, valueType)
         local key = goInstanceId .. "_" .. compIndex
         local ref = LuaCsMonitor._compRefs[key]
         if not ref or not ref.comp then return { error = "组件未找到" } end
-        local ok, err = pcall(function()
-            local converted = value
-            if valueType == "bool" then converted = (value == true or value == "true")
-            elseif valueType == "int" then converted = math.floor(tonumber(value) or 0)
-            elseif valueType == "float" then converted = tonumber(value) or 0
-            elseif valueType == "string" then converted = tostring(value or "")
-            elseif valueType == "vector2" then converted = CS.UnityEngine.Vector2(value[1] or 0, value[2] or 0)
-            elseif valueType == "vector3" then converted = CS.UnityEngine.Vector3(value[1] or 0, value[2] or 0, value[3] or 0)
-            elseif valueType == "vector4" then converted = CS.UnityEngine.Vector4(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 0)
-            elseif valueType == "color" then converted = CS.UnityEngine.Color(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 1)
-            elseif valueType == "euler" then converted = CS.UnityEngine.Quaternion.Euler(value[1] or 0, value[2] or 0, value[3] or 0)
-            end
-            ref.comp[propName] = converted
-        end)
+        local ok, err = pcall(function() ref.comp[propName] = convertTypedValue(value, valueType) end)
         if not ok then return { error = tostring(err) } end
         return { success = true }
     end
@@ -1418,20 +1442,9 @@ local function StartRuntimeGM()
         local ref = LuaCsMonitor._compRefs[key]
         if not ref or not ref.comp then return { error = "组件未找到" } end
         local ok, ret = pcall(function()
-            -- 尝试 1: xlua metatable 直接调用
-            local fn = ref.comp[methodName]
-            if fn and type(fn) == "function" then
-                local result = fn(ref.comp)
-                return result ~= nil and tostring(result) or "void"
-            end
-            -- 尝试 2: xlua.private_accessible 强制注册后重试
-            pcall(function() xlua.private_accessible(ref.comp:GetType()) end)
-            fn = ref.comp[methodName]
-            if fn and type(fn) == "function" then
-                local result = fn(ref.comp)
-                return result ~= nil and tostring(result) or "void"
-            end
-            error("method not found: " .. tostring(methodName))
+            local found, result = callCompMethodImpl(ref.comp, methodName)
+            if not found then error(result) end
+            return result
         end)
         if not ok then return { error = tostring(ret) } end
         return { success = true, result = ret }
@@ -1909,7 +1922,7 @@ local function StartRuntimeGM()
         elseif tn == "String" then return val ~= nil and tostring(val) or "", "string"
         end
         -- Unity 向量/颜色
-        local ok, r = pcall(function()
+        local ok, r, rType = pcall(function()
             if tn == "Vector2" then return {val.x, val.y}, "vector2"
             elseif tn == "Vector3" then return {val.x, val.y, val.z}, "vector3"
             elseif tn == "Vector4" then return {val.x, val.y, val.z, val.w}, "vector4"
@@ -1921,171 +1934,32 @@ local function StartRuntimeGM()
             end
             return nil, nil
         end)
-        if ok and r then return r end
+        if ok and r then return r, rType end
         -- 枚举
-        local eOk, eVal = pcall(function()
+        local eOk, eVal, eType = pcall(function()
             if val:GetType().IsEnum then return tostring(val), "enum" end
             return nil, nil
         end)
-        if eOk and eVal then return eVal end
+        if eOk and eVal then return eVal, eType end
         -- 其他：只读显示
         local sOk, sVal = pcall(function() return tostring(val) end)
         return sOk and sVal or "(unknown)", "readonly"
     end
 
-    -- 获取单个组件的属性 + 方法（Level 2，单组件反射）
+    -- 获取单个组件的属性 + 方法（Level 2，复用 readComponentDetail）
     function LuaUiInspector.GetComponentDetail(uiName, path, compIndex)
         local _, go = inspectorGetGoFromPath(uiName, path)
         if not go then return { error = "GameObject not found" } end
-        local result = { properties = {}, methods = {} }
-        local ok, err = pcall(function()
+        local ok, result = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
             if compIndex < 0 or compIndex >= all.Length then error("index out of range") end
             local comp = all[compIndex]
             if not comp then error("component is null") end
-            result.typeName = tostring(comp:GetType().Name)
-
-            -- 属性：GetProperties 需要传 BindingFlags 数值，无参版在 xlua 下可能返回空
-            -- Public=16, Instance=4 → 20; 加 DeclaredOnly=2 → 22
-            local props
-            pcall(function() props = comp:GetType():GetProperties(20) end)
-            if not props then pcall(function() props = comp:GetType():GetProperties() end) end
-            local propCount = 0
-            if props then pcall(function() propCount = props.Length end) end
-            result._debug = { propCount = propCount, tried = 0, failed = 0 }
-            for i = 0, propCount - 1 do
-                local prop = props[i]
-                pcall(function()
-                    if prop.IsSpecialName then return end
-                    local idxParams = prop:GetIndexParameters()
-                    if idxParams and idxParams.Length > 0 then return end
-                    if not prop.CanRead then return end
-                    local propTypeName = tostring(prop.PropertyType.Name)
-                    local pName = tostring(prop.Name)
-                    -- 黑名单：副作用属性 + Component 上已废弃的快捷属性（全返回 null）
-                    local propBlacklist = { mesh=1, material=1, materials=1, sharedMesh=1, sharedMaterial=1, sharedMaterials=1,
-                        rigidbody=1, rigidbody2D=1, camera=1, light=1, animation=1, constantForce=1,
-                        renderer=1, audio=1, networkView=1, collider=1, collider2D=1, hingeJoint=1, particleSystem=1,
-                        destroyCancellationToken=1, useGUILayout=1, runInEditMode=1 }
-                    if propBlacklist[pName] then return end
-                    result._debug.tried = result._debug.tried + 1
-                    -- 尝试三种读取方式
-                    local val, valOk
-                    -- 方式1: xlua 直接索引
-                    valOk, val = pcall(function() return comp[pName] end)
-                    if not valOk then
-                        -- 方式2: 反射 GetValue 无参
-                        valOk, val = pcall(function() return prop:GetValue(comp) end)
-                    end
-                    if not valOk then
-                        -- 方式3: 反射 GetValue 带 nil
-                        valOk, val = pcall(function() return prop:GetValue(comp, nil) end)
-                    end
-                    if not valOk then
-                        result._debug.failed = result._debug.failed + 1
-                        return
-                    end
-                    local serialized, valueType = inspectorSerializePropValue(val, propTypeName)
-                    result.properties[#result.properties + 1] = {
-                        name = pName,
-                        typeName = propTypeName,
-                        valueType = valueType,
-                        value = serialized,
-                        editable = prop.CanWrite and valueType ~= "readonly",
-                    }
-                end)
-            end
-
-            -- 字段（public fields，区别于 properties — Unity Inspector 里看到的大多是字段）
-            local fields
-            pcall(function() fields = comp:GetType():GetFields(20) end) -- Public=16+Instance=4
-            local fieldCount = 0
-            if fields then pcall(function() fieldCount = fields.Length end) end
-            for i = 0, fieldCount - 1 do
-                local fld = fields[i]
-                pcall(function()
-                    if fld.IsSpecialName then return end
-                    local fName = tostring(fld.Name)
-                    local fTypeName = tostring(fld.FieldType.Name)
-                    local valOk, val = pcall(function() return comp[fName] end)
-                    if not valOk then
-                        valOk, val = pcall(function() return fld:GetValue(comp) end)
-                    end
-                    if not valOk then return end
-                    local serialized, valueType = inspectorSerializePropValue(val, fTypeName)
-                    result.properties[#result.properties + 1] = {
-                        name = fName,
-                        typeName = fTypeName,
-                        valueType = valueType,
-                        value = serialized,
-                        editable = (not fld.IsInitOnly) and valueType ~= "readonly",
-                        isField = true,
-                    }
-                end)
-            end
-
-            -- 方法
-            local skipMethods = {
-                -- Unity 生命周期
-                Awake=1, Start=1, Update=1, LateUpdate=1, FixedUpdate=1, OnDestroy=1, OnEnable=1, OnDisable=1,
-                OnApplicationFocus=1, OnApplicationPause=1, OnApplicationQuit=1, OnValidate=1, Reset=1,
-                OnBecameVisible=1, OnBecameInvisible=1, OnPreRender=1, OnPostRender=1, OnRenderObject=1,
-                OnWillRenderObject=1, OnRenderImage=1, OnDrawGizmos=1, OnDrawGizmosSelected=1, OnGUI=1,
-                OnCollisionEnter=1, OnCollisionExit=1, OnCollisionStay=1, OnTriggerEnter=1, OnTriggerExit=1, OnTriggerStay=1,
-                OnCollisionEnter2D=1, OnCollisionExit2D=1, OnTriggerEnter2D=1, OnTriggerExit2D=1,
-                OnMouseDown=1, OnMouseUp=1, OnMouseEnter=1, OnMouseExit=1, OnMouseDrag=1, OnMouseOver=1,
-                OnTransformParentChanged=1, OnTransformChildrenChanged=1, OnBeforeTransformParentChanged=1,
-                -- Object/Component 基础
-                ToString=1, GetHashCode=1, Equals=1, GetType=1, GetInstanceID=1, GetComponent=1, GetComponentInChildren=1,
-                GetComponentInParent=1, GetComponents=1, GetComponentsInChildren=1, GetComponentsInParent=1,
-                CompareTag=1, SendMessage=1, SendMessageUpwards=1, BroadcastMessage=1, TryGetComponent=1,
-                -- MonoBehaviour
-                StartCoroutine=1, StopCoroutine=1, StopAllCoroutines=1, Invoke=1, InvokeRepeating=1, CancelInvoke=1, IsInvoking=1,
-            }
-            -- BindingFlags: Public=16, Instance=4, DeclaredOnly=2 → 用数值避免 xlua 枚举兼容问题
-            local methods
-            local mOk, _ = pcall(function()
-                methods = comp:GetType():GetMethods(20) -- Public=16+Instance=4，包含继承方法
-            end)
-            if not mOk then pcall(function() methods = comp:GetType():GetMethods() end) end
-            if not methods then methods = {} end
-            local methodCount = 0
-            pcall(function() methodCount = methods.Length end)
-            if methodCount == 0 then methodCount = #methods end
-            for i = 0, methodCount - 1 do
-                local m = methods[i]
-                pcall(function()
-                    if m.IsSpecialName then return end
-                    if skipMethods[m.Name] then return end
-                    local params = m:GetParameters()
-                    local paramList = {}
-                    for j = 0, params.Length - 1 do
-                        paramList[#paramList + 1] = {
-                            name = params[j].Name,
-                            typeName = tostring(params[j].ParameterType.Name),
-                        }
-                    end
-                    local entry = { name = m.Name, paramCount = params.Length, params = paramList }
-                    if params.Length == 0 then
-                        local canCall = false
-                        pcall(function()
-                            local fn = comp[m.Name]
-                            if fn and type(fn) == "function" then canCall = true end
-                        end)
-                        if not canCall then
-                            pcall(function() xlua.private_accessible(comp:GetType()) end)
-                            pcall(function()
-                                local fn = comp[m.Name]
-                                if fn and type(fn) == "function" then canCall = true end
-                            end)
-                        end
-                        if not canCall then entry.callable = false end
-                    end
-                    result.methods[#result.methods + 1] = entry
-                end)
-            end
+            local detail = readComponentDetail(comp)
+            detail.typeName = tostring(comp:GetType().Name)
+            return detail
         end)
-        if not ok then return { error = tostring(err) } end
+        if not ok then return { error = tostring(result) } end
         return result
     end
 
@@ -2096,18 +1970,7 @@ local function StartRuntimeGM()
         local ok, err = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
             local comp = all[compIndex]
-            local converted = value
-            if valueType == "bool" then converted = (value == true or value == "true")
-            elseif valueType == "int" then converted = math.floor(tonumber(value) or 0)
-            elseif valueType == "float" then converted = tonumber(value) or 0
-            elseif valueType == "string" then converted = tostring(value or "")
-            elseif valueType == "vector2" then converted = CS.UnityEngine.Vector2(value[1] or 0, value[2] or 0)
-            elseif valueType == "vector3" then converted = CS.UnityEngine.Vector3(value[1] or 0, value[2] or 0, value[3] or 0)
-            elseif valueType == "vector4" then converted = CS.UnityEngine.Vector4(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 0)
-            elseif valueType == "color" then converted = CS.UnityEngine.Color(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 1)
-            elseif valueType == "euler" then converted = CS.UnityEngine.Quaternion.Euler(value[1] or 0, value[2] or 0, value[3] or 0)
-            end
-            comp[propName] = converted
+            comp[propName] = convertTypedValue(value, valueType)
         end)
         if not ok then return { error = tostring(err) } end
         return { success = true }
@@ -2117,26 +1980,15 @@ local function StartRuntimeGM()
     function LuaUiInspector.CallComponentMethod(uiName, path, compIndex, methodName)
         local _, go = inspectorGetGoFromPath(uiName, path)
         if not go then return { error = "GO not found" } end
-        local ok, err = pcall(function()
+        local ok, ret = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
             local comp = all[compIndex]
-            -- 尝试 1: xlua metatable 直接调用
-            local fn = comp[methodName]
-            if fn and type(fn) == "function" then
-                local ret = fn(comp)
-                return ret ~= nil and tostring(ret) or "void"
-            end
-            -- 尝试 2: xlua.private_accessible 强制注册后重试
-            pcall(function() xlua.private_accessible(comp:GetType()) end)
-            fn = comp[methodName]
-            if fn and type(fn) == "function" then
-                local ret = fn(comp)
-                return ret ~= nil and tostring(ret) or "void"
-            end
-            error("method not found: " .. tostring(methodName))
+            local found, result = callCompMethodImpl(comp, methodName)
+            if not found then error(result) end
+            return result
         end)
-        if not ok then return { error = tostring(err) } end
-        return { success = true, result = tostring(err or "void") }
+        if not ok then return { error = tostring(ret) } end
+        return { success = true, result = tostring(ret or "void") }
     end
 
     function LuaUiInspector.HandleCommand(packet)
