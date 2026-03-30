@@ -134,6 +134,15 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_cs_monitor_data = on_cs_monitor_data
 
+    def on_subpkg_monitor_data(client_id, pkt):
+        asyncio.create_task(broadcast_subpkg_monitor_event({
+            "type": pkt.get("action", "unknown"),
+            "client_id": client_id,
+            "data": pkt.get("data", {})
+        }))
+
+    server_mgr.on_subpkg_monitor_data = on_subpkg_monitor_data
+
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
     if success:
@@ -485,6 +494,45 @@ async def websocket_inspector(websocket: WebSocket):
     finally:
         if websocket in inspector_ws_connections:
             inspector_ws_connections.remove(websocket)
+
+
+# === SubPackage Monitor API ===
+
+subpkg_monitor_ws_connections: list = []
+
+async def broadcast_subpkg_monitor_event(data: dict):
+    dead = []
+    for ws in subpkg_monitor_ws_connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        subpkg_monitor_ws_connections.remove(ws)
+
+@app.post("/subpkg_monitor/{client_id}/command")
+async def subpkg_monitor_command(client_id: str, request: Request):
+    body = await request.json()
+    action = body.pop("action", "")
+    if not action:
+        raise HTTPException(400, "Missing action")
+    await server_mgr.send_subpkg_monitor_request(client_id, action, body)
+    return {"status": "requested"}
+
+@app.websocket("/ws/subpkg_monitor")
+async def websocket_subpkg_monitor(websocket: WebSocket):
+    await websocket.accept()
+    subpkg_monitor_ws_connections.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in subpkg_monitor_ws_connections:
+            subpkg_monitor_ws_connections.remove(websocket)
 
 
 # ============================================================================

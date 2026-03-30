@@ -2096,6 +2096,164 @@ local function StartRuntimeGM()
         end
     end
 
+    -- ========== SubPkgMonitor: 分包监控（只读） ==========
+    local SubPkgMonitor = {}
+
+    local function _spm_getAgency()
+        local ok, agency = pcall(function() return XMVCA.XSubPackage end)
+        if not ok or not agency then return nil end
+        return agency
+    end
+
+    local function _spm_sendError(action, msg)
+        RuntimeGMClient.Send({ type = "SUBPKG_MONITOR_RESP", action = action, error = msg })
+    end
+
+    function SubPkgMonitor.HandleGetStructure()
+        local agency = _spm_getAgency()
+        if not agency then _spm_sendError("get_structure", "XSubPackage agency not available"); return end
+        local isOpen = false
+        pcall(function() isOpen = agency:IsOpen() end)
+        if not isOpen then _spm_sendError("get_structure", "SubPackage system not open"); return end
+
+        local subIndexInfo, resDict, subDict
+        pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
+        pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
+        if not subDict then _spm_sendError("get_structure", "_SubpackageDict is nil"); return end
+
+        -- 1) subs
+        local subs = {}
+        for subId, _ in pairs(subDict) do
+            local template = nil
+            pcall(function() template = agency:GetSubpackageTemplate(subId) end)
+            subs[tostring(subId)] = {
+                name   = (template and template.Name) or ("Sub_" .. tostring(subId)),
+                resIds = (template and template.ResIds) or {}
+            }
+        end
+
+        -- 2) resources (骨架：只含 subIds + fileCount，不含文件列表)
+        local resources = {}
+        if subIndexInfo then
+            for resId, fileDict in pairs(subIndexInfo) do
+                local subIds = {}
+                pcall(function() subIds = agency._Model:GetSubpackageIdByResId(resId) or {} end)
+                local fileCount = 0
+                if fileDict then for _ in pairs(fileDict) do fileCount = fileCount + 1 end end
+                resources[tostring(resId)] = { subIds = subIds, fileCount = fileCount }
+            end
+        end
+
+        RuntimeGMClient.Send({
+            type = "SUBPKG_MONITOR_RESP", action = "get_structure",
+            data = { subs = subs, resources = resources }
+        })
+    end
+
+    function SubPkgMonitor.HandleGetResFiles(resId)
+        local agency = _spm_getAgency()
+        if not agency then _spm_sendError("get_res_files", "agency not available"); return end
+        local subIndexInfo
+        pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
+        if not subIndexInfo then _spm_sendError("get_res_files", "SubIndexInfo is nil"); return end
+
+        local fileDict = subIndexInfo[tonumber(resId)]
+        local files = {}
+        local sharedFiles = {}
+        if fileDict then
+            -- 先收集本 Res 的文件
+            for assetPath, info in pairs(fileDict) do
+                files[#files + 1] = { asset = assetPath, name = info[1], sha1 = info[2], size = info[3] }
+            end
+            -- 检查共享：遍历其他 Res 看哪些共享同名文件
+            for otherResId, otherDict in pairs(subIndexInfo) do
+                if otherResId ~= tonumber(resId) and otherDict then
+                    for _, info in pairs(otherDict) do
+                        local fn = info[1]
+                        if fn and not sharedFiles[fn] then
+                            -- 检查本 Res 是否也有这个文件
+                            for _, myInfo in pairs(fileDict) do
+                                if myInfo[1] == fn then
+                                    sharedFiles[fn] = sharedFiles[fn] or { tonumber(resId) }
+                                    -- 避免重复添加
+                                    local exists = false
+                                    for _, rid in ipairs(sharedFiles[fn]) do if rid == otherResId then exists = true; break end end
+                                    if not exists then table.insert(sharedFiles[fn], otherResId) end
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            -- 只保留共享的 (>1 个 Res)
+            for fn, rids in pairs(sharedFiles) do
+                if #rids <= 1 then sharedFiles[fn] = nil end
+            end
+        end
+
+        RuntimeGMClient.Send({
+            type = "SUBPKG_MONITOR_RESP", action = "get_res_files",
+            data = { resId = tostring(resId), files = files, sharedFiles = sharedFiles }
+        })
+    end
+
+    function SubPkgMonitor.HandleGetStatus()
+        local agency = _spm_getAgency()
+        if not agency then _spm_sendError("get_status", "XSubPackage agency not available"); return end
+        local isOpen = false
+        pcall(function() isOpen = agency:IsOpen() end)
+        if not isOpen then _spm_sendError("get_status", "SubPackage system not open"); return end
+
+        local resDict, subDict
+        pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
+        if not subDict and not resDict then _spm_sendError("get_status", "Item dicts are nil"); return end
+
+        local subsStatus = {}
+        if subDict then
+            for subId, item in pairs(subDict) do
+                local e = {}
+                pcall(function() e.state = item:GetState() end)
+                pcall(function() e.dlSize = item:GetDownloadSize() end)
+                pcall(function() e.totalSize = item:GetTotalSize() end)
+                pcall(function() e.progress = item:GetProgress() end)
+                subsStatus[tostring(subId)] = e
+            end
+        end
+
+        local resStatus = {}
+        if resDict then
+            for resId, item in pairs(resDict) do
+                local e = {}
+                pcall(function() e.state = item:GetState() end)
+                pcall(function() local tg = item:GetTaskGroup(); e.tgState = tg and tg.State or -1 end)
+                pcall(function() e.dlSize = item:GetDownloadSize() end)
+                pcall(function() e.totalSize = item:GetTotalSize() end)
+                pcall(function() e.progress = item:GetProgress() end)
+                resStatus[tostring(resId)] = e
+            end
+        end
+
+        RuntimeGMClient.Send({
+            type = "SUBPKG_MONITOR_RESP", action = "get_status",
+            data = { subs = subsStatus, resources = resStatus }
+        })
+    end
+
+    function SubPkgMonitor.Handle(packet)
+        local action = packet and packet.action
+        if not action then _spm_sendError("unknown", "missing action"); return end
+        local ok, err = pcall(function()
+            if action == "get_structure" then SubPkgMonitor.HandleGetStructure()
+            elseif action == "get_status" then SubPkgMonitor.HandleGetStatus()
+            elseif action == "get_res_files" then SubPkgMonitor.HandleGetResFiles(packet.resId)
+            else _spm_sendError(action, "unknown action: " .. tostring(action)) end
+        end)
+        if not ok then _spm_sendError(action, "error: " .. tostring(err)) end
+    end
+
+    origin_print("[RuntimeGM] SubPkgMonitor module initialized")
+
     function RuntimeGMClient.ProcessPacket(line)
         -- origin_print("[RuntimeGM] Received: " .. tostring(line))
         local json = nil
@@ -2141,6 +2299,11 @@ local function StartRuntimeGM()
             local ok, err = pcall(LuaCsMonitor.HandleCommand, packet)
             if not ok then
                 origin_print("[RuntimeGM] CS_MONITOR command error: " .. tostring(err))
+            end
+        elseif type == "SUBPKG_MONITOR" then
+            local ok, err = pcall(SubPkgMonitor.Handle, packet)
+            if not ok then
+                origin_print("[RuntimeGM] SUBPKG_MONITOR command error: " .. tostring(err))
             end
         end
     end

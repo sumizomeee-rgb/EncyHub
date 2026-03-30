@@ -448,6 +448,25 @@ select {
   }
 }
 
+/* === Scrollbar Hide (for tab bars) === */
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* === SubPackage Monitor Animations === */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.highlight-flash {
+  animation: highlightFlash 0.6s ease;
+}
+
+@keyframes highlightFlash {
+  0% { background-color: var(--caramel-light); }
+  100% { background-color: transparent; }
+}
+
 /* === Badge === */
 .badge {
   display: inline-flex;

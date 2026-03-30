@@ -70,6 +70,7 @@ class ServerMgr:
         self.on_inspector_data = None       # Callback for UI_INSPECTOR_RESP
         self.on_timeline_data = None        # Callback for TIMELINE_RESP
         self.on_cs_monitor_data = None      # Callback for CS_MONITOR_RESP
+        self.on_subpkg_monitor_data = None  # Callback for SUBPKG_MONITOR_RESP
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -275,6 +276,12 @@ class ServerMgr:
         elif t == "CS_MONITOR_RESP":
             if self.on_cs_monitor_data:
                 self.on_cs_monitor_data(cid, pkt)
+        elif t == "SUBPKG_MONITOR_RESP":
+            action = pkt.get("action", "?")
+            data_keys = list(pkt.get("data", {}).keys()) if isinstance(pkt.get("data"), dict) else "N/A"
+            print(f"[ServerMgr] SUBPKG_MONITOR_RESP: action={action}, data_keys={data_keys}, error={pkt.get('error', 'none')}")
+            if self.on_subpkg_monitor_data:
+                self.on_subpkg_monitor_data(cid, pkt)
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -552,6 +559,20 @@ class ServerMgr:
             await c.writer.drain()
         except Exception as e:
             self._add_log("error", f"Send TIMELINE failed: {e}", client_id)
+
+    async def send_subpkg_monitor_request(self, client_id: str, action: str, params: dict):
+        """发送 SubPackage Monitor 命令到客户端"""
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        pkt = {"type": "SUBPKG_MONITOR", "action": action}
+        pkt.update(params)
+        msg = json.dumps(pkt) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send SUBPKG_MONITOR failed: {e}", client_id)
 
     async def shutdown(self):
         """关闭所有连接并清理端口"""

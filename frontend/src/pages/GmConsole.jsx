@@ -4,13 +4,14 @@ import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity,
-  PanelLeftClose, PanelLeftOpen
+  PanelLeftClose, PanelLeftOpen, Package
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
 import CsComponentMonitor from './CsComponentMonitor'
+import SubPackageMonitor from './SubPackageMonitor'
 
 // Tab 配置
 const TAB_META = {
@@ -20,8 +21,9 @@ const TAB_META = {
   timeline:      { label: 'Timeline',  icon: Play },
   cs_monitor:    { label: 'C# Monitor', icon: Activity },
   animator:      { label: 'Animator',  icon: Activity },
+  subpkg_monitor:{ label: '分包监控',  icon: Package },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -771,7 +773,7 @@ end`
               <div className="glass-card p-5 h-full animate-fade-in" style={{ animationDelay: '0.15s' }}>
                 {/* Tab Bar */}
                 <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1 bg-[var(--cream-warm)] rounded-lg p-1">
+                  <div className="flex items-center gap-1 bg-[var(--cream-warm)] rounded-lg p-1 overflow-x-auto scrollbar-hide">
                     {tabOrder.map(tabId => {
                       const meta = TAB_META[tabId]
                       if (!meta) return null
@@ -824,7 +826,7 @@ end`
                             })
                             setDropTarget(null)
                           }}
-                          className={`relative px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap cursor-grab active:cursor-grabbing ${
+                          className={`relative px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 cursor-grab active:cursor-grabbing ${
                             isActive
                               ? 'bg-white text-[var(--coffee-deep)] shadow-sm'
                               : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'
@@ -1143,6 +1145,15 @@ end`
                     pendingPin={pendingCsPin}
                     onPendingPinConsumed={() => setPendingCsPin(null)}
                     active={activeTab === 'cs_monitor'}
+                  />
+                </div>
+
+                <div style={{ display: activeTab === 'subpkg_monitor' ? 'contents' : 'none' }}>
+                  <SubPackageMonitor
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    broadcastMode={broadcastMode}
+                    active={activeTab === 'subpkg_monitor'}
                   />
                 </div>
               </div>
