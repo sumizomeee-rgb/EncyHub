@@ -45,6 +45,7 @@ function useInspectorWs(selectedClient) {
                 }, 25000)
             }
             socket.onmessage = (event) => {
+                if (event.data === 'pong') return
                 try {
                     const msg = JSON.parse(event.data)
                     if (msg.client_id !== selectedClient?.id) return
@@ -1107,19 +1108,19 @@ function CompPropRow({ prop, onSet }) {
         const count = p.valueType === 'vector2' ? 2 : p.valueType === 'vector3' || p.valueType === 'euler' ? 3 : 4
         const current = isEditing ? editVal : arr.slice(0, count)
         return (
-            <div className="flex items-center gap-1 py-0.5 flex-wrap">
-                <span className="font-mono text-[var(--coffee-muted)] w-32 truncate text-[10px]">{p.name}</span>
+            <div className="flex items-center gap-1 py-0.5">
+                <span className="font-mono text-[var(--coffee-muted)] w-28 truncate text-[10px] flex-shrink-0">{p.name}</span>
                 {p.valueType === 'color' && <span className="w-3 h-3 rounded-sm border border-black/10 flex-shrink-0" style={{ background: `rgba(${(arr[0]*255)|0},${(arr[1]*255)|0},${(arr[2]*255)|0},${arr[3]??1})` }} />}
                 {Array.from({ length: count }).map((_, i) => (
-                    <div key={i} className="flex items-center gap-0.5">
-                        <span className="text-[9px] text-[var(--coffee-muted)] opacity-50">{labels[i]}</span>
+                    <div key={i} className="flex items-center gap-0.5 flex-1 min-w-0">
+                        <span className="text-[9px] text-[var(--coffee-muted)] opacity-50 flex-shrink-0">{labels[i]}</span>
                         <input type="number" step={0.01}
                             value={isEditing ? current[i] : (arr[i] ?? 0)}
                             onFocus={() => { if (!isEditing) setEditVal([...arr.slice(0, count)]) }}
                             onChange={e => { const n = [...(editVal || arr.slice(0, count))]; n[i] = parseFloat(e.target.value) || 0; setEditVal(n) }}
                             onBlur={() => { if (isEditing) commit(editVal) }}
                             onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
-                            className="w-14 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
+                            className="w-full min-w-0 h-5 px-1 rounded border border-[var(--glass-border)] bg-white/70 font-mono text-[10px] focus:outline-none focus:border-[var(--caramel)]"
                         />
                     </div>
                 ))}

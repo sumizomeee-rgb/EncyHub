@@ -513,7 +513,7 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
       <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">S{sub.id}</span>
       {sub.name && <span className="text-[11px] text-[var(--coffee-light)] truncate min-w-0 flex-1">{sub.name}</span>}
       <div className="w-14 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-[70px] text-right flex-shrink-0">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-[90px] text-right flex-shrink-0 whitespace-nowrap">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
     </div>
   )
 
@@ -522,7 +522,7 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
       <StateBadge state={res.state} mini />
       <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">R{res.id}</span>
       <div className="w-14 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-[70px] text-right flex-shrink-0">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-[90px] text-right flex-shrink-0 whitespace-nowrap">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
       <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
     </div>
   )

@@ -45,7 +45,7 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
     const activeRef = useRef(active)
     const autoRefreshRef = useRef(autoRefresh)
     const refreshIntervalRef = useRef(refreshInterval)
-    const lastUpdateRef = useRef(0)
+    const lastUpdateMapRef = useRef({})
 
     // --- WebSocket ---
     useEffect(() => {
@@ -64,6 +64,7 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
                 }, 25000)
             }
             ws.onmessage = (event) => {
+                if (event.data === 'pong') return
                 try {
                     const msg = JSON.parse(event.data)
                     if (msg.client_id !== selectedClient?.id) return
@@ -71,12 +72,14 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
                         setDirectors(msg.data || [])
                         setLoading(false)
                     } else if (msg.type === 'snapshot' && msg.data) {
-                        // Throttle: skip state updates when inactive or too frequent
+                        // Throttle per-instance: skip state updates when inactive or too frequent
                         if (!activeRef.current || !autoRefreshRef.current) return
+                        const instanceId = msg.data.instanceId
                         const now = Date.now()
-                        if (now - lastUpdateRef.current < refreshIntervalRef.current * 1000) return
-                        lastUpdateRef.current = now
-                        setSnapshots(prev => ({ ...prev, [msg.data.instanceId]: msg.data }))
+                        const lastMap = lastUpdateMapRef.current
+                        if (now - (lastMap[instanceId] || 0) < refreshIntervalRef.current * 1000) return
+                        lastMap[instanceId] = now
+                        setSnapshots(prev => ({ ...prev, [instanceId]: msg.data }))
                         const snapId = msg.data.instanceId
                         const snapPlaying = msg.data.playState === 'Playing'
                         setDirectors(prev => prev.map(d => d.instanceId === snapId ? { ...d, isPlaying: snapPlaying } : d))
@@ -144,13 +147,14 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
     useEffect(() => { autoRefreshRef.current = autoRefresh }, [autoRefresh])
     useEffect(() => { refreshIntervalRef.current = refreshInterval }, [refreshInterval])
 
-    const manualRefresh = useCallback(() => { lastUpdateRef.current = 0 }, [])
+    const manualRefresh = useCallback(() => { lastUpdateMapRef.current = {} }, [])
 
     // --- Cleanup on client change ---
     useEffect(() => {
         setMonitored(new Set())
         setSnapshots({})
         setDirectors([])
+        lastUpdateMapRef.current = {}
     }, [selectedClient?.id])
 
     const filteredDirs = filter

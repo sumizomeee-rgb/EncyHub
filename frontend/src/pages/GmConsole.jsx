@@ -185,6 +185,7 @@ function GmConsole() {
       }
 
       ws.onmessage = (e) => {
+        if (e.data === 'pong') return
         try {
           const event = JSON.parse(e.data)
           if (event.type === 'init' || event.type === 'update') {

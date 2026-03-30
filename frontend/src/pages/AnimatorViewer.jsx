@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Activity, Trash2, Play, ChevronRight, RotateCw } from 'lucide-react'
+import { Activity, Trash2, Play, ChevronRight, RotateCw, Loader2 } from 'lucide-react'
 
 export default function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
   const [animators, setAnimators] = useState([])
@@ -11,6 +11,7 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
   const [filter, setFilter] = useState('')
   const [refreshInterval, setRefreshInterval] = useState(2)
   const [autoRefresh, setAutoRefresh] = useState(true)
+  const [listLoading, setListLoading] = useState(false)
   const [leftWidth, setLeftWidth] = useState(220)
   const isDragging = useRef(false)
 
@@ -22,28 +23,36 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
   const lastUpdateRef = useRef(0)
 
   const fetchAnimators = useCallback(async () => {
-    if (!selectedClient) return
+    const targets = selectedClient ? [selectedClient] : clients
+    if (targets.length === 0) return
+    setListLoading(true)
     try {
-      const res = await fetch(`/api/gm_console/animators/${selectedClient.id}`)
-      if (res.ok) {
-        const data = await res.json()
-        setAnimators(data.animators || [])
+      const all = []
+      for (const c of targets) {
+        const res = await fetch(`/api/gm_console/animators/${c.id}`)
+        if (res.ok) { const data = await res.json(); all.push(...(data.animators || [])) }
       }
+      setAnimators(all)
     } catch (e) {
       console.error('Failed to fetch animators:', e)
+    } finally {
+      setListLoading(false)
     }
-  }, [selectedClient])
+  }, [selectedClient, clients])
 
   const subscribe = useCallback(async (animatorId) => {
     if (!selectedClient) return
-    if (selectedAnimator) {
-      await fetch(`/api/gm_console/animators/${selectedClient.id}/unsubscribe`, { method: 'POST' })
-    }
-    await fetch(`/api/gm_console/animators/${selectedClient.id}/subscribe/${animatorId}`, { method: 'POST' })
+    const prevAnimator = selectedAnimator
+    // 即时 UI 反馈：先切换选中态和清空快照
     setSelectedAnimator(animatorId)
     setSnapshot(null)
     historyRef.current = []
     setStateHistory([])
+    // 再执行网络请求
+    if (prevAnimator) {
+      await fetch(`/api/gm_console/animators/${selectedClient.id}/unsubscribe`, { method: 'POST' })
+    }
+    await fetch(`/api/gm_console/animators/${selectedClient.id}/subscribe/${animatorId}`, { method: 'POST' })
   }, [selectedClient, selectedAnimator])
 
   const unsubscribe = useCallback(async () => {
@@ -80,6 +89,7 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
         pingTimer = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping') }, 25000)
       }
       ws.onmessage = (event) => {
+        if (event.data === 'pong') return
         try {
           const data = JSON.parse(event.data)
           if (data.type === 'animator_data') {
@@ -143,7 +153,7 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
             <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsStatus === 'connected' ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
             <span className="text-sm font-semibold text-[var(--coffee-deep)]">Animators</span>
             <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
-              <button onClick={manualRefresh} disabled={!selectedClient} className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] transition-colors disabled:opacity-40 disabled:pointer-events-none" title="刷新">
+              <button onClick={manualRefresh} disabled={!selectedClient && clients.length === 0} className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] transition-colors disabled:opacity-40 disabled:pointer-events-none" title="刷新">
                 <RotateCw size={13} />
               </button>
               <input type="text" inputMode="numeric" value={refreshInterval}
@@ -158,8 +168,16 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
           />
         </div>
         <div className="flex-1 overflow-y-auto p-2 text-xs">
-          {animators.length === 0 && (
+          {listLoading && (
+            <div className="flex items-center justify-center gap-1.5 text-[var(--coffee-muted)] py-4">
+              <Loader2 size={14} className="animate-spin" /> 加载中...
+            </div>
+          )}
+          {!listLoading && animators.length === 0 && (
             <div className="text-center text-[var(--coffee-muted)] py-4">点击 ⟳ 加载</div>
+          )}
+          {!listLoading && animators.length > 0 && filteredAnimators.length === 0 && (
+            <div className="text-center text-[var(--coffee-muted)] py-4">无匹配</div>
           )}
           {filteredAnimators.map(a => (
             <button key={a.id} onClick={() => subscribe(a.id)}
@@ -190,7 +208,8 @@ export default function AnimatorViewer({ clients, selectedClient, broadcastMode,
             点击左侧 Animator 开始监控
           </div>
         ) : !snapshot ? (
-          <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
+          <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm gap-2">
+            <Loader2 size={16} className="animate-spin" />
             等待数据...
           </div>
         ) : (

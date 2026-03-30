@@ -38,6 +38,7 @@ export default function CsComponentMonitor({ clients, selectedClient, pendingPin
                 pingTimer = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping') }, 25000)
             }
             ws.onmessage = (event) => {
+                if (event.data === 'pong') return
                 try {
                     const msg = JSON.parse(event.data)
                     if (msg.client_id !== selectedClient?.id) return
