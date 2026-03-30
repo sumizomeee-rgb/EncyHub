@@ -60,8 +60,17 @@ function sizeText(dlSize, totalSize, state) {
 // Sub-components
 // ============================================================================
 
-function StateBadge({ state }) {
+function StateBadge({ state, mini }) {
   const cfg = stateOf(state)
+  if (mini) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold flex-shrink-0 whitespace-nowrap"
+        style={{ color: cfg.color }}>
+        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: cfg.color }} />
+        {cfg.label}
+      </span>
+    )
+  }
   return (
     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
       style={{ background: cfg.bg, color: cfg.color }}>
@@ -72,16 +81,31 @@ function StateBadge({ state }) {
   )
 }
 
-function ProgressBar({ progress, state }) {
+function ProgressBar({ progress, state, mini }) {
   const pct = Math.min(100, Math.max(0, (progress || 0) * 100))
   const cfg = stateOf(state)
+  if (mini) {
+    // Compact: just the bar, no text
+    return (
+      <div className="h-1 rounded-full bg-[var(--cream-warm)] overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-500 ease-out"
+          style={{
+            width: `${Math.max(pct, state === 5 ? 100 : 0)}%`,
+            background: state === 4
+              ? 'linear-gradient(90deg, var(--sky) 0%, var(--sky-soft) 50%, var(--sky) 100%)'
+              : cfg.color,
+            ...(state === 4 ? { backgroundSize: '200% 100%', animation: 'shimmer 2s linear infinite' } : {}),
+          }} />
+      </div>
+    )
+  }
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-1.5 rounded-full bg-[var(--cream-warm)] overflow-hidden">
         <div className="h-full rounded-full transition-all duration-500 ease-out"
           style={{
             width: `${pct}%`,
-            background: state === 3
+            background: state === 4
               ? 'linear-gradient(90deg, var(--sky) 0%, var(--sky-soft) 50%, var(--sky) 100%)'
               : cfg.color,
             ...(state === 4 ? { backgroundSize: '200% 100%', animation: 'shimmer 2s linear infinite' } : {}),
@@ -94,15 +118,35 @@ function ProgressBar({ progress, state }) {
   )
 }
 
-function SharedBadge({ count, type, onClick }) {
-  if (!count || count <= 1) return null
+function SharedPopover({ ids, type, onJump, onClose }) {
   return (
-    <button onClick={onClick}
-      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors
-        bg-[var(--info-soft)] text-[var(--sky)] hover:bg-[var(--sky)] hover:text-white cursor-pointer">
-      ×{count} {type}
-      {onClick && <ExternalLink size={9} />}
-    </button>
+    <div className="absolute z-50 mt-1 p-2 rounded-lg border border-[var(--glass-border)] bg-[var(--cream-soft)] shadow-lg min-w-[140px]"
+      onClick={e => e.stopPropagation()}>
+      <div className="text-[10px] text-[var(--coffee-muted)] mb-1 font-semibold">共享此项的 {type}</div>
+      {ids.map(id => (
+        <button key={id} onClick={() => { onJump(String(id)); onClose() }}
+          className="flex items-center gap-1 w-full px-1.5 py-1 rounded text-xs hover:bg-[var(--cream-warm)] text-[var(--coffee-deep)] transition-colors">
+          <span className="font-mono font-semibold">{type} {id}</span>
+          <ExternalLink size={10} className="ml-auto text-[var(--sky)]" />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function SharedBadge({ count, type, ids, onJump }) {
+  if (!count || count <= 1) return null
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative inline-block">
+      <button onClick={(e) => { e.stopPropagation(); setOpen(v => !v) }}
+        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors
+          bg-[var(--info-soft)] text-[var(--sky)] hover:bg-[var(--sky)] hover:text-white cursor-pointer">
+        ×{count} {type}
+        <ExternalLink size={9} />
+      </button>
+      {open && <SharedPopover ids={ids || []} type={type} onJump={onJump} onClose={() => setOpen(false)} />}
+    </div>
   )
 }
 
@@ -123,6 +167,8 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   const [searchQuery, setSearchQuery] = useState('')
   const [stateFilter, setStateFilter] = useState(() => new Set(ALL_STATES))
   const [showFilterDrop, setShowFilterDrop] = useState(false)
+  const [onlyShared, setOnlyShared] = useState(false)
+  const [copiedSha1, setCopiedSha1] = useState(null)
   const [autoRefresh, setAutoRefresh] = useState(() => lsGet(LS_KEYS.autoRefresh, true))
   const [refreshInterval, setRefreshInterval] = useState(() => lsGet(LS_KEYS.interval, 2))
   const [leftWidth, setLeftWidth] = useState(() => lsGet(LS_KEYS.leftWidth, 300))
@@ -295,8 +341,8 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   [subList, stateFilter, matchesSearch])
 
   const filteredRes = useMemo(() =>
-    resList.filter(r => (r.state === -1 || stateFilter.has(r.state)) && matchesSearch(r, 'res')),
-  [resList, stateFilter, matchesSearch])
+    resList.filter(r => (r.state === -1 || stateFilter.has(r.state)) && matchesSearch(r, 'res') && (!onlyShared || r.subIds.length > 1)),
+  [resList, stateFilter, matchesSearch, onlyShared])
 
   // ==========================================================================
   // Navigation / Jump
@@ -305,6 +351,11 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
     clearTimeout(highlightTimer.current)
     setHighlightId(id)
     highlightTimer.current = setTimeout(() => setHighlightId(null), 800)
+    // Scroll to target after React renders
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-id="${id}"]`)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
   }, [])
 
   const jumpToSub = useCallback((subId) => {
@@ -379,16 +430,18 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
         <button onClick={() => setShowFilterDrop(v => !v)}
           className="flex items-center gap-1 px-1.5 py-1 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 hover:border-[var(--caramel)] transition-colors">
           <Filter size={11} />
-          {stateFilter.size < 6 && <span className="text-[var(--caramel)] font-semibold text-[10px]">{stateFilter.size}</span>}
+          {(stateFilter.size < 6 || onlyShared) && <span className="text-[var(--caramel)] font-semibold text-[10px]">{stateFilter.size < 6 ? stateFilter.size : ''}{onlyShared ? '✦' : ''}</span>}
         </button>
         {showFilterDrop && (
-          <div className="absolute top-full left-0 mt-1 z-50 p-2 rounded-lg border border-[var(--glass-border)] bg-[var(--cream-soft)] shadow-lg min-w-[120px]">
+          <div className="absolute top-full left-0 mt-1 z-50 p-2 rounded-lg border border-[var(--glass-border)] bg-[var(--cream-soft)] shadow-lg min-w-[120px]"
+            onClick={e => e.stopPropagation()}>
             {Object.entries(STATE_CONFIG).map(([val, cfg]) => (
               <label key={val} className="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-[var(--cream-warm)] cursor-pointer text-xs">
                 <input type="checkbox" checked={stateFilter.has(Number(val))}
                   onChange={() => {
+                    const num = Number(val)
                     const n = new Set(stateFilter)
-                    n.has(Number(val)) ? n.delete(Number(val)) : n.add(Number(val))
+                    n.has(num) ? n.delete(num) : n.add(num)
                     setStateFilter(n)
                   }}
                   className="rounded" />
@@ -399,6 +452,12 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
               <button onClick={() => setStateFilter(new Set(ALL_STATES))} className="text-[10px] text-[var(--sky)] hover:underline">全选</button>
               <button onClick={() => setStateFilter(new Set())} className="text-[10px] text-[var(--terracotta)] hover:underline">清空</button>
             </div>
+            {perspective === 'res' && (
+              <label className="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-[var(--cream-warm)] cursor-pointer text-xs border-t border-[var(--glass-border)] mt-1 pt-1">
+                <input type="checkbox" checked={onlyShared} onChange={() => setOnlyShared(v => !v)} className="rounded" />
+                <span className="text-[var(--sky)]">仅共享 Res</span>
+              </label>
+            )}
           </div>
         )}
       </div>
@@ -435,68 +494,40 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   // Render: Stats overview
   // ==========================================================================
   const renderStats = () => (
-    <div className="flex items-center gap-4 flex-wrap">
-      <div className="flex flex-col items-center">
-        <span className="text-lg font-display font-bold text-[var(--coffee-deep)]">{stats.subTotal}</span>
-        <span className="text-[10px] text-[var(--coffee-muted)]">Sub 总数</span>
-      </div>
-      <div className="flex flex-col items-center">
-        <span className="text-lg font-display font-bold text-[var(--coffee-deep)]">{stats.resTotal}</span>
-        <span className="text-[10px] text-[var(--coffee-muted)]">Res 总数</span>
-      </div>
-      <div className="flex flex-col items-center">
-        <span className="text-lg font-display font-bold text-[var(--sage)]">{stats.subComplete}</span>
-        <span className="text-[10px] text-[var(--coffee-muted)]">已完成</span>
-      </div>
-      <div className="flex flex-col items-center">
-        <span className="text-lg font-display font-bold text-[var(--sky)]">{stats.subDownloading}</span>
-        <span className="text-[10px] text-[var(--coffee-muted)]">下载中</span>
-      </div>
-      <div className="flex flex-col items-center">
-        <span className="text-sm font-display font-bold text-[var(--coffee-deep)]">{formatSize(stats.totalDl)}</span>
-        <span className="text-[10px] text-[var(--coffee-muted)]">/ {formatSize(stats.totalSize)}</span>
-      </div>
+    <div className="flex items-center gap-3 text-[11px] text-[var(--coffee-muted)] border-t border-[var(--glass-border)]/50 pt-2">
+      <span>Sub <b className="text-[var(--coffee-deep)]">{stats.subTotal}</b></span>
+      <span>Res <b className="text-[var(--coffee-deep)]">{stats.resTotal}</b></span>
+      <span className="text-[var(--sage)]">完成 <b>{stats.subComplete}</b></span>
+      <span className="text-[var(--sky)]">下载中 <b>{stats.subDownloading}</b></span>
+      <span className="ml-auto">{formatSize(stats.totalDl)} / {formatSize(stats.totalSize)}</span>
     </div>
   )
 
   // ==========================================================================
   // Render: Item card (shared by both modes)
   // ==========================================================================
+  const cardCls = (isSelected, extraClass, id) =>
+    `flex items-center gap-2 px-2 py-1.5 rounded-md border cursor-pointer transition-all duration-150 ${
+      isSelected ? 'border-[var(--caramel)] bg-[var(--cream-warm)] shadow-sm' : 'border-transparent hover:border-[var(--glass-border)] hover:bg-white/40'
+    } ${highlightId === id ? 'highlight-flash' : ''} ${extraClass}`
+
   const renderSubCard = (sub, isSelected, onSelect, extraClass = '') => (
-    <div key={sub.id} data-id={sub.id} onClick={() => onSelect(sub.id)}
-      className={`p-2.5 rounded-lg border cursor-pointer transition-all duration-200 ${
-        isSelected ? 'border-[var(--caramel)] bg-[var(--cream-warm)] shadow-sm' : 'border-transparent hover:border-[var(--glass-border)] hover:bg-white/40'
-      } ${highlightId === sub.id ? 'highlight-flash' : ''} ${extraClass}`}>
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-xs font-mono font-semibold text-[var(--coffee-deep)]">Sub {sub.id}</span>
-        {sub.name && <span className="text-xs text-[var(--coffee-light)] truncate">{sub.name}</span>}
-        <div className="ml-auto"><StateBadge state={sub.state} /></div>
-      </div>
-      <ProgressBar progress={sub.progress} state={sub.state} />
-      <div className="flex items-center gap-2 mt-1">
-        <span className="text-[10px] text-[var(--coffee-muted)]">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
-        <span className="text-[10px] text-[var(--coffee-muted)]">{sub.resIds.length} Res</span>
-      </div>
+    <div key={sub.id} data-id={sub.id} onClick={() => onSelect(sub.id)} className={cardCls(isSelected, extraClass, sub.id)}>
+      <StateBadge state={sub.state} mini />
+      <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">S{sub.id}</span>
+      {sub.name && <span className="text-[11px] text-[var(--coffee-light)] truncate min-w-0 flex-1">{sub.name}</span>}
+      <div className="w-14 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-[70px] text-right flex-shrink-0">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
     </div>
   )
 
   const renderResCard = (res, isSelected, onSelect, extraClass = '') => (
-    <div key={res.id} data-id={res.id} onClick={() => onSelect(res.id)}
-      className={`p-2.5 rounded-lg border cursor-pointer transition-all duration-200 ${
-        isSelected ? 'border-[var(--caramel)] bg-[var(--cream-warm)] shadow-sm' : 'border-transparent hover:border-[var(--glass-border)] hover:bg-white/40'
-      } ${highlightId === res.id ? 'highlight-flash' : ''} ${extraClass}`}>
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-xs font-mono font-semibold text-[var(--coffee-deep)]">Res {res.id}</span>
-        <div className="ml-auto flex items-center gap-1.5">
-          <SharedBadge count={res.subIds.length} type="Sub" onClick={() => jumpToSub(String(res.subIds[0]))} />
-          <StateBadge state={res.state} />
-        </div>
-      </div>
-      <ProgressBar progress={res.progress} state={res.state} />
-      <div className="flex items-center gap-2 mt-1">
-        <span className="text-[10px] text-[var(--coffee-muted)]">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
-        <span className="text-[10px] text-[var(--coffee-muted)]">{res.fileCount} files</span>
-      </div>
+    <div key={res.id} data-id={res.id} onClick={() => onSelect(res.id)} className={cardCls(isSelected, extraClass, res.id)}>
+      <StateBadge state={res.state} mini />
+      <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">R{res.id}</span>
+      <div className="w-14 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-[70px] text-right flex-shrink-0">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
+      <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
     </div>
   )
 
@@ -508,6 +539,7 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
       <table className="w-full text-xs">
         <thead>
           <tr className="text-[var(--coffee-muted)] text-[10px]">
+            <th className="text-center py-1 font-medium w-8">状态</th>
             <th className="text-left py-1 font-medium">文件名</th>
             <th className="text-right py-1 font-medium w-16">大小</th>
             <th className="text-left py-1 font-medium w-20 pl-2">sha1</th>
@@ -519,16 +551,21 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
             const refCount = fileSharedMap[f.name]?.length || 0
             return (
               <tr key={i} className="border-t border-[var(--glass-border)]/50 hover:bg-white/30">
+                <td className="py-1 text-center" title={f.exists ? '已存在' : '未下载'}>
+                  <span className={`inline-block w-2 h-2 rounded-full ${f.exists ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]'}`} />
+                </td>
                 <td className="py-1 font-mono text-[var(--coffee-deep)] truncate max-w-[200px]" title={f.asset || f.name}>
                   {f.name}
                 </td>
                 <td className="py-1 text-right text-[var(--coffee-muted)]">{formatSize(f.size)}</td>
-                <td className="py-1 pl-2 font-mono text-[var(--coffee-muted)] truncate max-w-[80px]" title={f.sha1}>
-                  {f.sha1?.substring(0, 8)}...
+                <td className="py-1 pl-2 font-mono truncate max-w-[80px] cursor-pointer transition-colors hover:text-[var(--sky)]"
+                  style={{ color: copiedSha1 === f.sha1 ? 'var(--sage)' : 'var(--coffee-muted)' }}
+                  title={`${f.sha1}\n点击复制`}
+                  onClick={() => { navigator.clipboard.writeText(f.sha1); setCopiedSha1(f.sha1); setTimeout(() => setCopiedSha1(null), 800) }}>
+                  {copiedSha1 === f.sha1 ? '已复制 ✓' : `${f.sha1?.substring(0, 8)}...`}
                 </td>
                 <td className="py-1 text-center">
-                  <SharedBadge count={refCount} type="Res"
-                    onClick={() => { const rid = fileSharedMap[f.name]?.[0]; if (rid != null) jumpToRes(String(rid)) }} />
+                  <SharedBadge count={refCount} type="Res" ids={fileSharedMap[f.name]} onJump={jumpToRes} />
                 </td>
               </tr>
             )
@@ -622,8 +659,8 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
                           <span className="text-xs font-mono font-semibold">Res {res.id}</span>
                           <StateBadge state={res.state} />
                           <div className="flex-1" />
-                          <span className="text-[10px] text-[var(--coffee-muted)]">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
-                          <SharedBadge count={res.subIds.length} type="Sub" onClick={(e) => { e.stopPropagation(); jumpToSub(String(res.subIds[0])) }} />
+                          <span className="text-[10px] text-[var(--coffee-muted)]">{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>
+                          <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
                         </div>
                         {isExpanded && (
                           <div className="ml-5 mt-1 mb-2 p-2 rounded-lg bg-white/30">
@@ -648,8 +685,8 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
                 <h3 className="font-display font-bold text-base text-[var(--coffee-deep)] mb-1">Res {selectedItem.id}</h3>
                 <div className="flex items-center gap-3 mb-2">
                   <StateBadge state={selectedItem.state} />
-                  {selectedItem.tgState >= 0 && (
-                    <span className="text-[10px] text-[var(--coffee-muted)]">TaskGroup State: {selectedItem.tgState}</span>
+                  {selectedItem.tgState > 0 && (
+                    <span className="text-[10px] text-[var(--coffee-muted)]">TaskGroup: {selectedItem.tgState}</span>
                   )}
                   <span className="text-xs text-[var(--coffee-muted)]">{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
                 </div>
@@ -806,17 +843,11 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   // ==========================================================================
   return (
     <div className="space-y-3" onClick={() => showFilterDrop && setShowFilterDrop(false)}>
-      {/* Toolbar */}
-      <div className="glass-card p-3">
+      {/* Toolbar + Stats (merged) */}
+      <div className="glass-card p-3 space-y-2">
         {renderToolbar()}
+        {structure && renderStats()}
       </div>
-
-      {/* Stats */}
-      {structure && (
-        <div className="glass-card p-3">
-          {renderStats()}
-        </div>
-      )}
 
       {/* Main content */}
       <div className="glass-card overflow-hidden" style={{ minHeight: 400 }}>

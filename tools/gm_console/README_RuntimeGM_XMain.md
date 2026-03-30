@@ -2161,9 +2161,15 @@ local function StartRuntimeGM()
         local files = {}
         local sharedFiles = {}
         if fileDict then
-            -- 先收集本 Res 的文件
+            -- 先收集本 Res 的文件 + 检查磁盘是否存在
             for assetPath, info in pairs(fileDict) do
-                files[#files + 1] = { asset = assetPath, name = info[1], sha1 = info[2], size = info[3] }
+                local fileName = info[1]
+                local fileExists = false
+                pcall(function()
+                    local savePath = agency:GetSavePath(fileName)
+                    fileExists = CS.System.IO.File.Exists(savePath)
+                end)
+                files[#files + 1] = { asset = assetPath, name = fileName, sha1 = info[2], size = info[3], exists = fileExists }
             end
             -- 检查共享：遍历其他 Res 看哪些共享同名文件
             for otherResId, otherDict in pairs(subIndexInfo) do
