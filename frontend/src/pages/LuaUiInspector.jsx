@@ -310,7 +310,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                             </button>
                             <input type="text" inputMode="numeric" value={refreshInterval}
                                 onChange={e => { const v = parseInt(e.target.value); setRefreshInterval(isNaN(v) ? 0 : Math.max(0, Math.min(60, v))); setAutoRefresh(v > 0) }}
-                                style={{ width: 24, padding: '0 1px', fontSize: 10, lineHeight: '18px' }} className="h-5 rounded border border-[var(--glass-border)] bg-white/70 text-center font-mono focus:outline-none focus:border-[var(--caramel)] appearance-none"
+                                style={{ width: 24, padding: '0 1px', fontSize: 10, lineHeight: '18px', ...(autoRefresh ? { borderColor: 'var(--sage)', boxShadow: '0 0 3px var(--sage-soft)' } : {}) }} className="h-5 rounded border border-[var(--glass-border)] bg-white/70 text-center font-mono focus:outline-none focus:border-[var(--caramel)] appearance-none"
                             /><span className="text-[10px]">s</span>
                         </div>
                     </div>
