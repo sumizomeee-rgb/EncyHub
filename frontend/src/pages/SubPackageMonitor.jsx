@@ -207,7 +207,7 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   // WebSocket
   // ==========================================================================
   useEffect(() => {
-    if (!selectedClient) return
+    if (!selectedClient || !active) { setWsConnected(false); return }
     let closed = false
     const connect = () => {
       if (closed) return
@@ -216,7 +216,6 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
       wsRef.current = ws
       let pingTimer = null
       ws.onopen = () => {
-        console.log('[SubPkgMonitor WS] connected')
         setWsConnected(true)
         pingTimer = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping') }, 25000)
       }
@@ -224,24 +223,22 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
         if (event.data === 'pong') return
         try {
           const msg = JSON.parse(event.data)
-          console.log('[SubPkgMonitor WS] recv:', msg.type, msg.error || '')
           if (msg.client_id !== selectedClient?.id) return
           const cb = listenersRef.current[msg.type]
           if (cb) cb(msg.data)
-        } catch (e) { console.error('[SubPkgMonitor WS] parse error:', e) }
+        } catch {}
       }
-      ws.onclose = (ev) => {
-        console.log('[SubPkgMonitor WS] closed, code:', ev.code, ev.reason)
+      ws.onclose = () => {
         if (pingTimer) clearInterval(pingTimer)
         setWsConnected(false)
         wsRef.current = null
         if (!closed) setTimeout(connect, 2000)
       }
-      ws.onerror = (e) => { console.error('[SubPkgMonitor WS] error:', e); ws.close() }
+      ws.onerror = () => ws.close()
     }
     connect()
     return () => { closed = true; wsRef.current?.close(); wsRef.current = null }
-  }, [selectedClient?.id])
+  }, [selectedClient?.id, active])
 
   // ==========================================================================
   // Command helper
