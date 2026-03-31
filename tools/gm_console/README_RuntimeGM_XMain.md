@@ -1578,7 +1578,7 @@ local function StartRuntimeGM()
         elseif t == "number" then return { type = "number", value = value, editable = true }
         elseif t == "string" then return { type = "string", value = value, editable = true }
         elseif t == "boolean" then return { type = "boolean", value = value, editable = true }
-        elseif t == "function" then return { type = "function", value = "function", editable = false }
+        elseif t == "function" then return { type = "function", value = "function", editable = false, addr = tostring(value) }
         elseif t == "userdata" then
             local result = { type = "userdata", value = displayName or "userdata", editable = false }
             -- 尝试读取关联 GameObject 的激活状态和名称
@@ -1608,7 +1608,7 @@ local function StartRuntimeGM()
             if visited[value] then return { type = "ref", value = "[circular]", editable = false } end
             local childCount = inspectorTableKeyCount(value)
             if depth <= 0 or (key and INSPECTOR_SKIP_KEYS[key]) then
-                return { type = "table", childCount = childCount, expandable = true, editable = false }
+                return { type = "table", childCount = childCount, expandable = true, editable = false, addr = tostring(value) }
             end
             visited[value] = true
             local fields = {}
@@ -1624,7 +1624,7 @@ local function StartRuntimeGM()
                 shown = shown + 1
             end
             visited[value] = nil
-            local result = { type = "table", childCount = childCount, expandable = true, editable = false, fields = fields }
+            local result = { type = "table", childCount = childCount, expandable = true, editable = false, fields = fields, addr = tostring(value) }
             if truncated then result.truncated = true; result.total = childCount; result.shown = shown end
             return result
         else

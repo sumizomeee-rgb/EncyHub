@@ -140,6 +140,9 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
     const [leftFilter, setLeftFilter] = useState('')
     const [rightFilter, setRightFilter] = useState('')
     const [depth, setDepth] = useState(3)
+    const [showAddr, setShowAddr] = useState(() => {
+        try { return localStorage.getItem('inspector_show_addr') === 'true' } catch { return false }
+    })
     const [autoRefresh, setAutoRefresh] = useState(false)
     const [refreshInterval, setRefreshInterval] = useState(3)
 
@@ -418,6 +421,21 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                                 {[1,2,3,4,5].map(d => <option key={d} value={d}>{d}</option>)}
                             </select>
                         </label>
+                        <button
+                            onClick={() => setShowAddr(prev => {
+                                const next = !prev
+                                try { localStorage.setItem('inspector_show_addr', String(next)) } catch {}
+                                return next
+                            })}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                showAddr
+                                    ? 'bg-[var(--caramel)]/20 text-[var(--caramel)] border border-[var(--caramel)]/30'
+                                    : 'bg-black/5 text-[var(--coffee-muted)] border border-transparent hover:bg-black/8'
+                            }`}
+                            title="显示 Lua 对象内存地址 (table/function)"
+                        >
+                            Addr
+                        </button>
                     </div>
                 </div>
 
@@ -445,6 +463,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                                 filter={rightFilter}
                                 expandedFields={expandedFields}
                                 expandedCategories={expandedCategories}
+                                showAddr={showAddr}
                                 selectedUi={selectedUi}
                                 parentPath={selectedPath}
                                 onToggleField={(key) => {
@@ -586,7 +605,7 @@ function TreeNode({ node, selectedPath, expandedNodes, onSelect, onToggle, inden
 // ============================================================================
 // 右侧属性列表
 // ============================================================================
-function FieldList({ fields, filter, expandedFields, expandedCategories, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
+function FieldList({ fields, filter, expandedFields, expandedCategories, showAddr, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
     if (!fields || fields.length === 0) return <div className="text-center text-[var(--coffee-muted)] text-xs py-4">无字段</div>
 
     // 按类型分组
@@ -631,6 +650,7 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, selecte
                                         field={f}
                                         catColor={cat.color}
                                         expanded={expandedFields.has(f.key)}
+                                        showAddr={showAddr}
                                         selectedUi={selectedUi}
                                         parentPath={parentPath}
                                         onToggle={() => onToggleField(f.key)}
@@ -654,11 +674,12 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, selecte
 // ============================================================================
 // 单行字段
 // ============================================================================
-function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
+function FieldRow({ field, catColor, expanded, canExpand = true, showAddr, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
     const [editValue, setEditValue] = useState(String(field.value ?? ''))
     const [isEditing, setIsEditing] = useState(false)
     const [callResult, setCallResult] = useState(null)
     const [hovered, setHovered] = useState(false)
+    const [addrCopied, setAddrCopied] = useState(false)
     const [destroyConfirm, setDestroyConfirm] = useState(false)
     const [textPopover, setTextPopover] = useState(false)
     const [textEditValue, setTextEditValue] = useState('')
@@ -770,15 +791,54 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                             />
                         )
                     ) : f.type === 'table' ? (
-                        <button
-                            onClick={() => onNavigate(fieldPath, f.key)}
-                            className="text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:underline truncate"
-                        >
-                            {'{' + (f.childCount || '?') + ' fields}'}
-                        </button>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            {showAddr && f.addr && (() => {
+                                const hex = String(f.addr).match(/0x[0-9a-fA-F]+/)?.[0] || String(f.addr)
+                                const short = hex.length > 10 ? hex.slice(0, 6) + '..' + hex.slice(-4) : hex
+                                return (
+                                    <span
+                                        onClick={e => {
+                                            e.stopPropagation()
+                                            navigator.clipboard.writeText(hex)
+                                            setAddrCopied(true)
+                                            setTimeout(() => setAddrCopied(false), 1200)
+                                        }}
+                                        className="font-mono text-[10px] cursor-pointer rounded px-1 py-px flex-shrink-0 transition-colors hover:bg-[var(--caramel)]/15 hover:text-[var(--caramel)]"
+                                        style={{ color: addrCopied ? 'var(--sage)' : 'var(--coffee-muted)', opacity: addrCopied ? 1 : 0.6 }}
+                                        title={`${f.addr}\n点击复制地址`}
+                                    >
+                                        {addrCopied ? '✓ copied' : short}
+                                    </span>
+                                )
+                            })()}
+                            <button
+                                onClick={() => onNavigate(fieldPath, f.key)}
+                                className="text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:underline truncate"
+                            >
+                                {'{' + (f.childCount || '?') + ' fields}'}
+                            </button>
+                        </div>
                     ) : f.type === 'function' ? (
                         <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="text-[var(--coffee-muted)] font-mono truncate flex-1 min-w-0">{String(f.value)}</span>
+                            {showAddr && f.addr ? (() => {
+                                const hex = String(f.addr).match(/0x[0-9a-fA-F]+/)?.[0] || String(f.addr)
+                                const short = hex.length > 10 ? hex.slice(0, 6) + '..' + hex.slice(-4) : hex
+                                return (
+                                    <span
+                                        onClick={e => {
+                                            e.stopPropagation()
+                                            navigator.clipboard.writeText(hex)
+                                            setAddrCopied(true)
+                                            setTimeout(() => setAddrCopied(false), 1200)
+                                        }}
+                                        className="font-mono text-[10px] cursor-pointer rounded px-1 py-px flex-shrink-0 transition-colors hover:bg-[var(--caramel)]/15 hover:text-[var(--caramel)]"
+                                        style={{ color: addrCopied ? 'var(--sage)' : 'var(--coffee-muted)', opacity: addrCopied ? 1 : 0.6 }}
+                                        title={`${f.addr}\n点击复制地址`}
+                                    >
+                                        {addrCopied ? '✓ copied' : short}
+                                    </span>
+                                )
+                            })() : <span className="text-[var(--coffee-muted)] font-mono truncate flex-1 min-w-0">{String(f.value)}</span>}
                             {onCallMethod && (
                                 <button
                                     onClick={handleCall}
@@ -1029,6 +1089,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, selectedUi, par
                             catColor={TYPE_COLORS[sub.type] || TYPE_COLORS.nil}
                             expanded={false}
                             canExpand={false}
+                            showAddr={showAddr}
                             selectedUi={selectedUi}
                             parentPath={fieldPath}
                             onToggle={() => {}}
