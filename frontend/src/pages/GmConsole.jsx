@@ -51,7 +51,7 @@ function GmConsole() {
   const [logs, setLogs] = useState([])
   const [luaInput, setLuaInput] = useState('')
   const [loading, setLoading] = useState(true)
-  const logsEndRef = useRef(null)
+  const logsContainerRef = useRef(null)
   const wsRef = useRef(null)
 
   // WS 连接状态: 'connecting' | 'connected' | 'disconnected'
@@ -254,7 +254,8 @@ function GmConsole() {
   }, [fetchDataHttp, fetchCustomGm])
 
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = logsContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [logs])
 
   // 选择客户端时更新 GM 树
@@ -1217,7 +1218,7 @@ end`
                     </button>
                   )}
                 </div>
-                <div className="min-h-[256px] h-64 bg-[var(--coffee-deep)] rounded-xl p-3 overflow-auto font-mono text-xs leading-relaxed">
+                <div ref={logsContainerRef} className="min-h-[256px] h-64 bg-[var(--coffee-deep)] rounded-xl p-3 overflow-auto font-mono text-xs leading-relaxed">
                   {logs.length === 0 ? (
                     <div className="text-[var(--coffee-muted)] text-center py-8">暂无日志</div>
                   ) : (
@@ -1230,7 +1231,6 @@ end`
                       </div>
                     ))
                   )}
-                  <div ref={logsEndRef} />
                 </div>
               </div>
             </div>
