@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Search, RotateCw, Package, PanelRight, Columns3,
-  ChevronDown, ChevronRight, ExternalLink, Filter, X
+  ChevronDown, ChevronRight, ExternalLink, Filter, X, Copy
 } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 
@@ -48,6 +48,14 @@ function formatSize(bytes) {
 }
 
 function stateOf(s) { return STATE_CONFIG[s] || FALLBACK_STATE }
+
+function formatFilesText(files) {
+  if (!files?.length) return ''
+  const rows = files.map(f => [f.name, f.asset || '', formatSize(f.size), f.sha1 || ''])
+  const widths = [0, 0, 0, 0]
+  for (const r of rows) r.forEach((c, i) => { if (c.length > widths[i]) widths[i] = c.length })
+  return rows.map(r => r.map((c, i) => c.padEnd(widths[i])).join('  ')).join('\n')
+}
 
 // 智能尺寸显示：已完成只显示总大小，已卸载显示 "—"
 function sizeText(dlSize, totalSize, state) {
@@ -552,8 +560,9 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
             const refCount = fileSharedMap[f.name]?.length || 0
             return (
               <tr key={i} className="border-t border-[var(--glass-border)]/50 hover:bg-white/30">
-                <td className="py-1 text-center" title={f.exists ? '已存在' : '未下载'}>
-                  <span className={`inline-block w-2 h-2 rounded-full ${f.exists ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]'}`} />
+                <td className="py-1 text-center cursor-pointer" title={`${f.exists ? '已存在' : '未下载'}\n点击复制该行信息`}
+                  onClick={() => { copyText(`${f.name}  ${f.asset || ''}  ${formatSize(f.size)}  ${f.sha1 || ''}`); setCopiedFile('row_' + i + '_' + f.name); setTimeout(() => setCopiedFile(null), 800) }}>
+                  <span className={`inline-block w-2 h-2 rounded-full transition-colors ${copiedFile === 'row_' + i + '_' + f.name ? 'bg-[var(--sky)]' : f.exists ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]'}`} />
                 </td>
                 <td className="py-1 font-mono max-w-[200px] cursor-pointer transition-colors hover:text-[var(--sky)] truncate"
                   title={`${f.asset || f.name}\n${f.name}\n点击复制路径`}
@@ -663,6 +672,12 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
                           <StateBadge state={res.state} />
                           <div className="flex-1" />
                           <span className="text-[10px] text-[var(--coffee-muted)]">{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>
+                          {resFiles[res.id]?.files?.length > 0 && (
+                            <button onClick={e => { e.stopPropagation(); copyText(formatFilesText(resFiles[res.id].files)); setCopiedFile('res_' + res.id); setTimeout(() => setCopiedFile(null), 800) }}
+                              className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] hover:text-[var(--sky)] transition-colors" title="复制文件列表">
+                              {copiedFile === 'res_' + res.id ? <span className="text-[10px] text-[var(--sage)]">✓</span> : <Copy size={10} />}
+                            </button>
+                          )}
                           <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
                         </div>
                         {isExpanded && (
@@ -728,6 +743,12 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
                   {!resFiles[selectedItem.id] && !resFilesLoading[selectedItem.id] && (
                     <button onClick={() => fetchResFiles(selectedItem.id)}
                       className="text-[10px] text-[var(--sky)] hover:underline">加载文件</button>
+                  )}
+                  {resFiles[selectedItem.id]?.files?.length > 0 && (
+                    <button onClick={() => { copyText(formatFilesText(resFiles[selectedItem.id].files)); setCopiedFile('detail_res'); setTimeout(() => setCopiedFile(null), 800) }}
+                      className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] hover:text-[var(--sky)] transition-colors" title="复制文件列表">
+                      {copiedFile === 'detail_res' ? <span className="text-[10px] text-[var(--sage)]">已复制 ✓</span> : <Copy size={11} />}
+                    </button>
                   )}
                 </h4>
                 {resFilesLoading[selectedItem.id]
@@ -821,6 +842,12 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
             <span className="text-[10px] text-[var(--coffee-muted)]">({colFiles.length})</span>
             {colSelectedRes && (
               <span className="text-[10px] text-[var(--sky)]">← Res {colSelectedRes}</span>
+            )}
+            {colFiles.length > 0 && (
+              <button onClick={() => { copyText(formatFilesText(colFiles)); setCopiedFile('col_files'); setTimeout(() => setCopiedFile(null), 800) }}
+                className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] hover:text-[var(--sky)] transition-colors" title="复制文件列表">
+                {copiedFile === 'col_files' ? <span className="text-[10px] text-[var(--sage)]">已复制 ✓</span> : <Copy size={11} />}
+              </button>
             )}
           </div>
           <div className="flex-1 overflow-y-auto p-2">

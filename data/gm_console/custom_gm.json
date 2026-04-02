@@ -53,7 +53,7 @@
   },
   {
     "name": "战斗胜利(单机版)",
-    "cmd": "local fight = CS.XFightClient.FightInstance\nif fight then\n    fight:Settle(true)\n    fight:Finish()\n    print(\"[GM] 已触发战斗胜利\")\nelse\n    print(\"[GM] 当前不在战斗中\")\nend"
+    "cmd": "local function findGm(nodes, name)\n    for _, n in ipairs(nodes or {}) do\n        if n.name == name then return n.id end\n        local id = findGm(n.children, name)\n        if id then return id end\n    end\nend\nlocal id = findGm(RuntimeGMClient.GMStructure, \"战斗胜利(单机版)\")\nif id and RuntimeGMClient.GMCallbacks[id] then\n    local ok, err = pcall(RuntimeGMClient.GMCallbacks[id])\n    if ok then print(\"[GM] 已触发战斗胜利\")\n    else print(\"[GM] 执行失败: \" .. tostring(err)) end\nelse\n    print(\"[GM] 未找到GM按钮(需先加载GM列表)\")\nend"
   },
   {
     "name": "关闭所有弹窗(切换)",
