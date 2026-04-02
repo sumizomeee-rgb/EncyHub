@@ -276,8 +276,8 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
     if (resFiles[resId]) return  // already loaded
     setResFilesLoading(prev => ({ ...prev, [resId]: true }))
     sendCmd('get_res_files', { resId }, (data) => {
-      setResFilesLoading(prev => ({ ...prev, [resId]: false }))
       if (data?.resId) {
+        setResFilesLoading(prev => ({ ...prev, [data.resId]: false }))
         setResFiles(prev => ({ ...prev, [data.resId]: { files: data.files || [], sharedFiles: data.sharedFiles || {} } }))
       }
     })
