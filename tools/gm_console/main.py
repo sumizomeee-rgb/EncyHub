@@ -143,6 +143,18 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_subpkg_monitor_data = on_subpkg_monitor_data
 
+    def on_player_prefs_data(client_id, pkt):
+        data = pkt.get("data", {})
+        if pkt.get("error"):
+            data = {**data, "error": pkt.get("error")}
+        asyncio.create_task(broadcast_player_prefs_event({
+            "type": pkt.get("action", "unknown"),
+            "client_id": client_id,
+            "data": data,
+        }))
+
+    server_mgr.on_player_prefs_data = on_player_prefs_data
+
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
     if success:
@@ -518,6 +530,45 @@ async def subpkg_monitor_command(client_id: str, request: Request):
         raise HTTPException(400, "Missing action")
     await server_mgr.send_subpkg_monitor_request(client_id, action, body)
     return {"status": "requested"}
+
+# === PlayerPrefs Viewer API ===
+
+player_prefs_ws_connections: list = []
+
+async def broadcast_player_prefs_event(data: dict):
+    dead = []
+    for ws in player_prefs_ws_connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        player_prefs_ws_connections.remove(ws)
+
+@app.post("/player_prefs/{client_id}/command")
+async def player_prefs_command(client_id: str, request: Request):
+    body = await request.json()
+    action = body.pop("action", "")
+    if not action:
+        raise HTTPException(400, "Missing action")
+    await server_mgr.send_player_prefs_request(client_id, action, body)
+    return {"status": "requested"}
+
+@app.websocket("/ws/player_prefs")
+async def websocket_player_prefs(websocket: WebSocket):
+    await websocket.accept()
+    player_prefs_ws_connections.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in player_prefs_ws_connections:
+            player_prefs_ws_connections.remove(websocket)
+
 
 @app.websocket("/ws/subpkg_monitor")
 async def websocket_subpkg_monitor(websocket: WebSocket):

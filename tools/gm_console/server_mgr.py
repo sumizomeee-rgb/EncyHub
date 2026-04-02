@@ -71,6 +71,7 @@ class ServerMgr:
         self.on_timeline_data = None        # Callback for TIMELINE_RESP
         self.on_cs_monitor_data = None      # Callback for CS_MONITOR_RESP
         self.on_subpkg_monitor_data = None  # Callback for SUBPKG_MONITOR_RESP
+        self.on_player_prefs_data = None    # Callback for PLAYER_PREFS_RESP
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -282,6 +283,11 @@ class ServerMgr:
             print(f"[ServerMgr] SUBPKG_MONITOR_RESP: action={action}, data_keys={data_keys}, error={pkt.get('error', 'none')}")
             if self.on_subpkg_monitor_data:
                 self.on_subpkg_monitor_data(cid, pkt)
+        elif t == "PLAYER_PREFS_RESP":
+            action = pkt.get("action", "?")
+            print(f"[ServerMgr] PLAYER_PREFS_RESP: action={action}, error={pkt.get('error', 'none')}")
+            if self.on_player_prefs_data:
+                self.on_player_prefs_data(cid, pkt)
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -559,6 +565,20 @@ class ServerMgr:
             await c.writer.drain()
         except Exception as e:
             self._add_log("error", f"Send TIMELINE failed: {e}", client_id)
+
+    async def send_player_prefs_request(self, client_id: str, action: str, params: dict):
+        """发送 PlayerPrefs 命令到客户端"""
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        pkt = {"type": "PLAYER_PREFS", "action": action}
+        pkt.update(params)
+        msg = json.dumps(pkt) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send PLAYER_PREFS failed: {e}", client_id)
 
     async def send_subpkg_monitor_request(self, client_id: str, action: str, params: dict):
         """发送 SubPackage Monitor 命令到客户端"""

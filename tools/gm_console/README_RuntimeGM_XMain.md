@@ -10,6 +10,10 @@
   - `INSPECTOR_MAX_FIELDS = 200` — 限制根级字段数量，防止大型 UI 返回过大响应
   - `CallMethod` — 可从 Web Inspector 调用 Lua 方法（实例方法 + 元表 class 方法）
   - `GetNodeData` 返回 `truncated`/`totalKeys`/`shownKeys` 字段截断信息
+- **PlayerPrefs Viewer**: 远程查看/编辑 PlayerPrefs 持久化数据
+  - Windows (Editor/Standalone): 通过注册表枚举所有 key，支持过滤搜索
+  - Android: 通过读取 SharedPreferences XML 枚举所有 key
+  - iOS: 仅支持手动输入 key 查询（无法枚举），支持收藏和最近记录
 - **Log 截获**: 远程查看 `print()` 输出
 - **TCP 心跳保活**: 每 15 秒发送 PING，防止 NAT/防火墙超时断开连接
 
@@ -2097,6 +2101,148 @@ local function StartRuntimeGM()
     end
 
     -- ========== SubPkgMonitor: 分包监控（只读） ==========
+    -- ================================================================
+    -- PlayerPrefsMonitor: 远程查看/编辑 PlayerPrefs
+    -- ================================================================
+    local PlayerPrefsMonitor = {}
+
+    local function _ppm_sendResp(action, data, err)
+        local pkt = { type = "PLAYER_PREFS_RESP", action = action }
+        if err then pkt.error = err else pkt.data = data end
+        RuntimeGMClient.Send(pkt)
+    end
+
+    function PlayerPrefsMonitor.HandleGetAll()
+        local entries = {}
+        local enumOk = false
+        local platform = "Unknown"
+        pcall(function() platform = CS.UnityEngine.Application.platform:ToString() end)
+
+        if platform == "WindowsEditor" or platform == "WindowsPlayer" then
+            local ok, err = pcall(function()
+                local Registry = CS.Microsoft.Win32.Registry
+                local company = CS.UnityEngine.Application.companyName
+                local product = CS.UnityEngine.Application.productName
+                local isEditor = CS.UnityEngine.Application.isEditor
+                local path = isEditor
+                    and ("Software\\Unity\\UnityEditor\\" .. company .. "\\" .. product)
+                    or ("Software\\" .. company .. "\\" .. product)
+                local regKey = Registry.CurrentUser:OpenSubKey(path)
+                if not regKey then return end
+                local names = regKey:GetValueNames()
+                for i = 0, names.Length - 1 do
+                    local rawName = names[i]
+                    -- Strip _hXXXXXXXX suffix (8 hex digits at end)
+                    local key = rawName:match("^(.-)_h%x%x%x%x%x%x%x%x$") or rawName
+                    -- Detect type via PlayerPrefs API
+                    local SENTINEL = "\1\2\3_NOTSTR_\3\2\1"
+                    local strVal = CS.UnityEngine.PlayerPrefs.GetString(key, SENTINEL)
+                    if strVal ~= SENTINEL then
+                        entries[#entries + 1] = { key = key, value = strVal, type = "string" }
+                    else
+                        local v1 = CS.UnityEngine.PlayerPrefs.GetInt(key, -1)
+                        local v2 = CS.UnityEngine.PlayerPrefs.GetInt(key, 0)
+                        if v1 == -1 and v2 == 0 then
+                            entries[#entries + 1] = { key = key, value = tostring(CS.UnityEngine.PlayerPrefs.GetFloat(key)), type = "float" }
+                        else
+                            entries[#entries + 1] = { key = key, value = tostring(CS.UnityEngine.PlayerPrefs.GetInt(key)), type = "int" }
+                        end
+                    end
+                end
+                regKey:Close()
+            end)
+            if ok then enumOk = true end
+        elseif platform == "Android" then
+            local ok, err = pcall(function()
+                local id = CS.UnityEngine.Application.identifier
+                local paths = {
+                    "/data/data/" .. id .. "/shared_prefs/" .. id .. ".v2.playerprefs.xml",
+                    "/data/data/" .. id .. "/shared_prefs/" .. id .. ".playerprefs.xml",
+                }
+                local content = nil
+                for _, p in ipairs(paths) do
+                    local fOk, fContent = pcall(function() return CS.System.IO.File.ReadAllText(p) end)
+                    if fOk and fContent and fContent ~= "" then content = fContent; break end
+                end
+                if not content then return end
+                for name, value in content:gmatch('<string%s+name="([^"]+)">(.-)</string>') do
+                    entries[#entries + 1] = { key = name, value = value, type = "string" }
+                end
+                for name, value in content:gmatch('<int%s+name="([^"]+)"%s+value="([^"]*)"') do
+                    entries[#entries + 1] = { key = name, value = value, type = "int" }
+                end
+                for name, value in content:gmatch('<float%s+name="([^"]+)"%s+value="([^"]*)"') do
+                    entries[#entries + 1] = { key = name, value = value, type = "float" }
+                end
+            end)
+            if ok and #entries > 0 then enumOk = true end
+        end
+        -- iOS or other: enumOk stays false
+        _ppm_sendResp("get_all", { entries = entries, enumSupported = enumOk, platform = platform })
+    end
+
+    function PlayerPrefsMonitor.HandleGet(key)
+        if not key or key == "" then _ppm_sendResp("get", { exists = false }); return end
+        local exists = false
+        pcall(function() exists = CS.UnityEngine.PlayerPrefs.HasKey(key) end)
+        if not exists then _ppm_sendResp("get", { key = key, exists = false }); return end
+        -- Detect type
+        local SENTINEL = "\1\2\3_NOTSTR_\3\2\1"
+        local strVal = CS.UnityEngine.PlayerPrefs.GetString(key, SENTINEL)
+        if strVal ~= SENTINEL then
+            _ppm_sendResp("get", { key = key, value = strVal, type = "string", exists = true })
+        else
+            local v1 = CS.UnityEngine.PlayerPrefs.GetInt(key, -1)
+            local v2 = CS.UnityEngine.PlayerPrefs.GetInt(key, 0)
+            if v1 == -1 and v2 == 0 then
+                _ppm_sendResp("get", { key = key, value = tostring(CS.UnityEngine.PlayerPrefs.GetFloat(key)), type = "float", exists = true })
+            else
+                _ppm_sendResp("get", { key = key, value = tostring(CS.UnityEngine.PlayerPrefs.GetInt(key)), type = "int", exists = true })
+            end
+        end
+    end
+
+    function PlayerPrefsMonitor.HandleSet(key, value, valueType)
+        if not key or key == "" then _ppm_sendResp("set", nil, "missing key"); return end
+        local ok, err = pcall(function()
+            if valueType == "int" then
+                CS.UnityEngine.PlayerPrefs.SetInt(key, tonumber(value) or 0)
+            elseif valueType == "float" then
+                CS.UnityEngine.PlayerPrefs.SetFloat(key, tonumber(value) or 0)
+            else
+                CS.UnityEngine.PlayerPrefs.SetString(key, tostring(value or ""))
+            end
+            CS.UnityEngine.PlayerPrefs.Save()
+        end)
+        if ok then _ppm_sendResp("set", { success = true })
+        else _ppm_sendResp("set", nil, "set failed: " .. tostring(err)) end
+    end
+
+    function PlayerPrefsMonitor.HandleDelete(key)
+        if not key or key == "" then _ppm_sendResp("delete", nil, "missing key"); return end
+        local ok, err = pcall(function()
+            CS.UnityEngine.PlayerPrefs.DeleteKey(key)
+            CS.UnityEngine.PlayerPrefs.Save()
+        end)
+        if ok then _ppm_sendResp("delete", { success = true })
+        else _ppm_sendResp("delete", nil, "delete failed: " .. tostring(err)) end
+    end
+
+    function PlayerPrefsMonitor.HandleCommand(packet)
+        local action = packet and packet.action
+        if not action then _ppm_sendResp("unknown", nil, "missing action"); return end
+        local ok, err = pcall(function()
+            if action == "get_all" then PlayerPrefsMonitor.HandleGetAll()
+            elseif action == "get" then PlayerPrefsMonitor.HandleGet(packet.key)
+            elseif action == "set" then PlayerPrefsMonitor.HandleSet(packet.key, packet.value, packet.valueType)
+            elseif action == "delete" then PlayerPrefsMonitor.HandleDelete(packet.key)
+            else _ppm_sendResp(action, nil, "unknown action: " .. tostring(action)) end
+        end)
+        if not ok then _ppm_sendResp(action, nil, "error: " .. tostring(err)) end
+    end
+
+    origin_print("[RuntimeGM] PlayerPrefsMonitor module initialized")
+
     local SubPkgMonitor = {}
 
     local function _spm_getAgency()
@@ -2310,6 +2456,11 @@ local function StartRuntimeGM()
             local ok, err = pcall(SubPkgMonitor.Handle, packet)
             if not ok then
                 origin_print("[RuntimeGM] SUBPKG_MONITOR command error: " .. tostring(err))
+            end
+        elseif type == "PLAYER_PREFS" then
+            local ok, err = pcall(PlayerPrefsMonitor.HandleCommand, packet)
+            if not ok then
+                origin_print("[RuntimeGM] PLAYER_PREFS command error: " .. tostring(err))
             end
         end
     end

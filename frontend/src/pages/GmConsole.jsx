@@ -4,7 +4,7 @@ import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity,
-  PanelLeftClose, PanelLeftOpen, Package
+  PanelLeftClose, PanelLeftOpen, Package, Database
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
@@ -12,6 +12,7 @@ import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
 import CsComponentMonitor from './CsComponentMonitor'
 import SubPackageMonitor from './SubPackageMonitor'
+import PlayerPrefsViewer from './PlayerPrefsViewer'
 
 // Tab 配置
 const TAB_META = {
@@ -22,8 +23,9 @@ const TAB_META = {
   cs_monitor:    { label: 'C# Monitor', icon: Activity },
   animator:      { label: 'Animator',  icon: Activity },
   subpkg_monitor:{ label: '分包监控',  icon: Package },
+  player_prefs:  { label: 'PlayerPrefs', icon: Database },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -1156,6 +1158,14 @@ end`
                     selectedClient={selectedClient}
                     broadcastMode={broadcastMode}
                     active={activeTab === 'subpkg_monitor'}
+                  />
+                </div>
+
+                <div style={{ display: activeTab === 'player_prefs' ? 'contents' : 'none' }}>
+                  <PlayerPrefsViewer
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    active={activeTab === 'player_prefs'}
                   />
                 </div>
               </div>
