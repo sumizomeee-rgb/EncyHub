@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Search, RotateCw, X, ChevronDown, ChevronRight, Pin, Loader2, Clipboard, Play } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 // ============================================================================
 // 主组件
@@ -372,7 +373,7 @@ function MonitorCard({ cardKey, entry, detail, isLoading, methodResults, onRemov
                                                                     {result.error ? `✗ ${result.error}` : `→ ${result.result}`}
                                                                 </span>
                                                                 {result.result && !result.error && (
-                                                                    <button onClick={() => { navigator.clipboard.writeText(result.result) }}
+                                                                    <button onClick={() => { copyText(result.result) }}
                                                                         className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)]" title="复制返回值">
                                                                         <Clipboard size={10} />
                                                                     </button>

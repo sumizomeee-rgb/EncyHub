@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye, EyeOff, PlayCircle, Loader2, Trash2, Pencil } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 // localStorage 持久化分类展开状态
 const CATEGORY_STORAGE_KEY = 'inspector_expanded_categories'
@@ -799,7 +800,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, showAddr, selec
                                     <span
                                         onClick={e => {
                                             e.stopPropagation()
-                                            navigator.clipboard.writeText(hex)
+                                            copyText(hex)
                                             setAddrCopied(true)
                                             setTimeout(() => setAddrCopied(false), 1200)
                                         }}
@@ -827,7 +828,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, showAddr, selec
                                     <span
                                         onClick={e => {
                                             e.stopPropagation()
-                                            navigator.clipboard.writeText(hex)
+                                            copyText(hex)
                                             setAddrCopied(true)
                                             setTimeout(() => setAddrCopied(false), 1200)
                                         }}

@@ -3,6 +3,7 @@ import {
   Search, RotateCw, Package, PanelRight, Columns3,
   ChevronDown, ChevronRight, ExternalLink, Filter, X
 } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 // ============================================================================
 // Constants
@@ -163,12 +164,13 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   const [viewMode, setViewMode] = useState(() => lsGet(LS_KEYS.viewMode, 'detail'))
   const [perspective, setPerspective] = useState(() => lsGet(LS_KEYS.perspective, 'sub'))
   const [selectedId, setSelectedId] = useState(null)
-  const [expandedRes, setExpandedRes] = useState(null)
+  const [expandedRes, setExpandedRes] = useState(() => new Set())
   const [searchQuery, setSearchQuery] = useState('')
   const [stateFilter, setStateFilter] = useState(() => new Set(ALL_STATES))
   const [showFilterDrop, setShowFilterDrop] = useState(false)
   const [onlyShared, setOnlyShared] = useState(false)
   const [copiedSha1, setCopiedSha1] = useState(null)
+  const [copiedFile, setCopiedFile] = useState(null)
   const [autoRefresh, setAutoRefresh] = useState(() => lsGet(LS_KEYS.autoRefresh, true))
   const [refreshInterval, setRefreshInterval] = useState(() => lsGet(LS_KEYS.interval, 2))
   const [leftWidth, setLeftWidth] = useState(() => lsGet(LS_KEYS.leftWidth, 300))
@@ -195,6 +197,9 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   useEffect(() => { lsSet(LS_KEYS.interval, refreshInterval) }, [refreshInterval])
   useEffect(() => { lsSet(LS_KEYS.autoRefresh, autoRefresh) }, [autoRefresh])
   useEffect(() => { lsSet(LS_KEYS.leftWidth, leftWidth) }, [leftWidth])
+
+  // --- 切换选中项时收起所有展开的 Res ---
+  useEffect(() => { setExpandedRes(new Set()) }, [selectedId])
 
   // --- Debounced search ---
   useEffect(() => {
@@ -295,7 +300,7 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   // Reset on client change
   useEffect(() => {
     listenersRef.current = {}
-    setStructure(null); setStatus(null); setSelectedId(null); setExpandedRes(null)
+    setStructure(null); setStatus(null); setSelectedId(null); setExpandedRes(new Set())
     setColSelectedSub(null); setColSelectedRes(null); setResFiles({}); setResFilesLoading({})
   }, [selectedClient?.id])
 
@@ -550,14 +555,16 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
                 <td className="py-1 text-center" title={f.exists ? '已存在' : '未下载'}>
                   <span className={`inline-block w-2 h-2 rounded-full ${f.exists ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]'}`} />
                 </td>
-                <td className="py-1 font-mono text-[var(--coffee-deep)] truncate max-w-[200px]" title={f.asset || f.name}>
-                  {f.name}
+                <td className="py-1 font-mono max-w-[200px] cursor-pointer transition-colors hover:text-[var(--sky)] truncate"
+                  title={`${f.asset || f.name}\n${f.name}\n点击复制路径`}
+                  onClick={() => { copyText(f.asset || f.name); setCopiedFile(f.asset || f.name); setTimeout(() => setCopiedFile(null), 800) }}>
+                  {copiedFile === (f.asset || f.name) ? '已复制 ✓' : (() => { const p = f.asset || f.name; const idx = p.lastIndexOf('/'); return idx < 0 ? p : <><span className="text-[var(--coffee-muted)] opacity-50">…/</span><span style={{ color: 'var(--coffee-deep)' }}>{p.slice(idx + 1)}</span></> })()}
                 </td>
                 <td className="py-1 text-right text-[var(--coffee-muted)]">{formatSize(f.size)}</td>
                 <td className="py-1 pl-2 font-mono truncate max-w-[80px] cursor-pointer transition-colors hover:text-[var(--sky)]"
                   style={{ color: copiedSha1 === f.sha1 ? 'var(--sage)' : 'var(--coffee-muted)' }}
                   title={`${f.sha1}\n点击复制`}
-                  onClick={() => { navigator.clipboard.writeText(f.sha1); setCopiedSha1(f.sha1); setTimeout(() => setCopiedSha1(null), 800) }}>
+                  onClick={() => { copyText(f.sha1); setCopiedSha1(f.sha1); setTimeout(() => setCopiedSha1(null), 800) }}>
                   {copiedSha1 === f.sha1 ? '已复制 ✓' : `${f.sha1?.substring(0, 8)}...`}
                 </td>
                 <td className="py-1 text-center">
@@ -645,12 +652,12 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
                   {selectedItem.resIds.map(rid => {
                     const res = resList.find(r => r.id === String(rid))
                     if (!res) return null
-                    const isExpanded = expandedRes === res.id
+                    const isExpanded = expandedRes.has(res.id)
                     return (
                       <div key={res.id}>
                         <div className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${
                           isExpanded ? 'bg-[var(--cream-warm)]' : 'hover:bg-white/40'
-                        }`} onClick={() => { const next = isExpanded ? null : res.id; setExpandedRes(next); if (next) fetchResFiles(next) }}>
+                        }`} onClick={() => { setExpandedRes(prev => { const next = new Set(prev); if (next.has(res.id)) next.delete(res.id); else { next.add(res.id); fetchResFiles(res.id) } return next }) }}>
                           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                           <span className="text-xs font-mono font-semibold">Res {res.id}</span>
                           <StateBadge state={res.state} />
