@@ -880,7 +880,7 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
       </div>
 
       {/* Main content */}
-      <div className="glass-card overflow-hidden" style={{ minHeight: 400 }}>
+      <div className="glass-card overflow-hidden" style={{ height: 'calc(100vh - 220px)', minHeight: 400 }}>
         {!structure ? (
           <div className="flex flex-col items-center justify-center py-16 text-[var(--coffee-muted)]">
             <RotateCw size={24} className="animate-spin mb-3 opacity-40" />
