@@ -337,21 +337,11 @@ export default function PlayerPrefsViewer({ clients, selectedClient, active }) {
                                             {entry.notFound ? (
                                                 <span className="text-[var(--coffee-muted)] italic">不存在</span>
                                             ) : isEditing ? (
-                                                <div className="flex items-center gap-1">
-                                                    <input type="text" value={editValue} autoFocus
-                                                        onChange={e => setEditValue(e.target.value)}
-                                                        onKeyDown={e => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingKey(null) }}
-                                                        className={`flex-1 min-w-0 ${inputCls} !py-0.5`}
-                                                    />
-                                                    <select value={editType} onChange={e => setEditType(e.target.value)}
-                                                        className={`w-16 ${inputCls} !py-0.5`}>
-                                                        <option value="string">str</option>
-                                                        <option value="int">int</option>
-                                                        <option value="float">float</option>
-                                                    </select>
-                                                    <button onClick={commitEdit} className="p-0.5 rounded hover:bg-[var(--sage)]/20 text-[var(--sage)]"><Check size={12} /></button>
-                                                    <button onClick={() => setEditingKey(null)} className="p-0.5 rounded hover:bg-[var(--terracotta)]/20 text-[var(--terracotta)]"><X size={12} /></button>
-                                                </div>
+                                                <input type="text" value={editValue} autoFocus
+                                                    onChange={e => setEditValue(e.target.value)}
+                                                    onKeyDown={e => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingKey(null) }}
+                                                    className={`w-full ${inputCls} !py-0.5`}
+                                                />
                                             ) : (
                                                 <span className="font-mono text-[var(--coffee-deep)] cursor-pointer hover:text-[var(--caramel)] select-text"
                                                     onClick={() => startEdit(entry)}
@@ -364,16 +354,29 @@ export default function PlayerPrefsViewer({ clients, selectedClient, active }) {
                                         </td>
                                         {/* Type */}
                                         <td className="px-1 py-1 text-center">
-                                            {!entry.notFound && (
+                                            {!entry.notFound && (isEditing ? (
+                                                <select value={editType} onChange={e => setEditType(e.target.value)}
+                                                    className={`w-full ${inputCls} !py-0.5 !px-1`}>
+                                                    <option value="string">str</option>
+                                                    <option value="int">int</option>
+                                                    <option value="float">float</option>
+                                                </select>
+                                            ) : (
                                                 <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
                                                     entry.type === 'int' ? 'bg-[var(--sage)]/10 text-[var(--sage)]' :
                                                     entry.type === 'float' ? 'bg-[var(--caramel)]/10 text-[var(--caramel)]' :
                                                     'bg-[var(--cream-warm)] text-[var(--coffee-muted)]'
                                                 }`}>{entry.type || '?'}</span>
-                                            )}
+                                            ))}
                                         </td>
                                         {/* Actions */}
                                         <td className="px-1 py-1">
+                                            {!entry.notFound && isEditing && (
+                                                <div className="flex items-center gap-0.5">
+                                                    <button onClick={commitEdit} className="p-0.5 rounded hover:bg-[var(--sage)]/20 text-[var(--sage)]" title="确认"><Check size={12} /></button>
+                                                    <button onClick={() => setEditingKey(null)} className="p-0.5 rounded hover:bg-[var(--terracotta)]/20 text-[var(--terracotta)]" title="取消"><X size={12} /></button>
+                                                </div>
+                                            )}
                                             {!entry.notFound && !isEditing && (
                                                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                                     <button onClick={() => copyText(entry.value ?? '')}
