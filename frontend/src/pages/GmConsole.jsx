@@ -13,6 +13,7 @@ import TimelineMonitor from './TimelineMonitor'
 import CsComponentMonitor from './CsComponentMonitor'
 import SubPackageMonitor from './SubPackageMonitor'
 import PlayerPrefsViewer from './PlayerPrefsViewer'
+import AvMonitor from './AvMonitor'
 
 // Tab 配置
 const TAB_META = {
@@ -24,8 +25,9 @@ const TAB_META = {
   animator:      { label: 'Animator',  icon: Activity },
   subpkg_monitor:{ label: '分包监控',  icon: Package },
   player_prefs:  { label: 'PlayerPrefs', icon: Database },
+  av_monitor:    { label: 'AV Monitor', icon: Activity },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -63,6 +65,7 @@ function GmConsole() {
   const [pendingCsPin, setPendingCsPin] = useState(null) // 从 Inspector 联动到 CsMonitor 的待 pin 数据
   const [tabOrder, setTabOrder] = useState(loadTabOrder)
   const dragTabRef = useRef(null)
+  const tabBarRef = useRef(null)
   const [dropTarget, setDropTarget] = useState(null) // { id, side: 'left'|'right' }
 
   // 按钮最小宽度 (px)
@@ -83,6 +86,16 @@ function GmConsole() {
   })
 
   useEffect(() => { document.title = 'GM Console - EncyHub' }, [])
+
+  // tab bar 鼠标滚轮横向滚动（必须用原生非 passive 监听器，React onWheel 无法 preventDefault）
+  // 依赖 loading：tab bar DOM 在 loading=false 后才渲染，需等它出现再绑
+  useEffect(() => {
+    const el = tabBarRef.current
+    if (!el) return
+    const handler = e => { e.preventDefault(); el.scrollLeft += e.deltaY }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [loading])
 
   // 持久化滑块值
   useEffect(() => { localStorage.setItem('gm_btnMinWidth', String(btnMinWidth)) }, [btnMinWidth])
@@ -777,7 +790,7 @@ end`
               <div className="glass-card p-5 h-full animate-fade-in" style={{ animationDelay: '0.15s' }}>
                 {/* Tab Bar */}
                 <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1 bg-[var(--cream-warm)] rounded-lg p-1 overflow-x-auto scrollbar-hide">
+                  <div ref={tabBarRef} className="flex items-center gap-1 bg-[var(--cream-warm)] rounded-lg p-1 overflow-x-auto scrollbar-hide">
                     {tabOrder.map(tabId => {
                       const meta = TAB_META[tabId]
                       if (!meta) return null
@@ -1166,6 +1179,14 @@ end`
                     clients={clients}
                     selectedClient={selectedClient}
                     active={activeTab === 'player_prefs'}
+                  />
+                </div>
+
+                <div style={{ display: activeTab === 'av_monitor' ? 'contents' : 'none' }}>
+                  <AvMonitor
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    active={activeTab === 'av_monitor'}
                   />
                 </div>
               </div>
