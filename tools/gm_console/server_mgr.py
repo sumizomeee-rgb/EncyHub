@@ -73,6 +73,7 @@ class ServerMgr:
         self.on_subpkg_monitor_data = None  # Callback for SUBPKG_MONITOR_RESP
         self.on_player_prefs_data = None    # Callback for PLAYER_PREFS_RESP
         self.on_av_monitor_data = None      # Callback for AV_MONITOR_RESP
+        self.on_proto_call_resp = None      # Callback for PROTO_CALL_RESP
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -294,6 +295,12 @@ class ServerMgr:
             print(f"[ServerMgr] AV_MONITOR_RESP: action={action}, error={pkt.get('error', 'none')}")
             if self.on_av_monitor_data:
                 self.on_av_monitor_data(cid, pkt)
+        elif t == "PROTO_CALL_RESP":
+            protocol = pkt.get("protocol", "?")
+            code = pkt.get("code")
+            print(f"[ServerMgr] PROTO_CALL_RESP: protocol={protocol}, code={code}")
+            if self.on_proto_call_resp:
+                self.on_proto_call_resp(cid, pkt)
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""

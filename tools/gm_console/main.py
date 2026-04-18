@@ -13,6 +13,7 @@ import uvicorn
 
 from .server_mgr import ServerMgr
 from .custom_gm import CustomGmManager
+from .proto_parser import ProtoParser, validate_haruroot, generate_lua_code, parse_log_file
 
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
@@ -25,6 +26,7 @@ DEFAULT_TCP_PORT = 12581
 # 全局实例
 server_mgr: Optional[ServerMgr] = None
 custom_gm_mgr: Optional[CustomGmManager] = None
+proto_parser: Optional[ProtoParser] = None
 
 # WebSocket 连接池
 ws_connections: list[WebSocket] = []
@@ -48,12 +50,19 @@ async def broadcast_event(event: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期"""
-    global server_mgr, custom_gm_mgr
+    global server_mgr, custom_gm_mgr, proto_parser
 
     # 初始化
     os.makedirs(DATA_DIR, exist_ok=True)
     server_mgr = ServerMgr()
     custom_gm_mgr = CustomGmManager(DATA_DIR)
+    proto_parser = ProtoParser(DATA_DIR)
+
+    # 加载 HaruRoot 配置和缓存
+    config = proto_parser.load_config()
+    if config.get("haruroot"):
+        proto_parser.haruroot = config["haruroot"]
+        proto_parser.load_cache()
 
     # 设置回调
     def on_update():
@@ -166,6 +175,18 @@ async def lifespan(app: FastAPI):
         }))
 
     server_mgr.on_av_monitor_data = on_av_monitor_data
+
+    def on_proto_call_resp(client_id, pkt):
+        asyncio.create_task(broadcast_proto_call_event({
+            "type": "PROTO_CALL_RESP",
+            "client_id": client_id,
+            "reqId": pkt.get("reqId", ""),
+            "protocol": pkt.get("protocol", ""),
+            "code": pkt.get("code"),
+            "data": pkt.get("data", {}),
+        }))
+
+    server_mgr.on_proto_call_resp = on_proto_call_resp
 
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
@@ -619,6 +640,161 @@ async def websocket_av_monitor(websocket: WebSocket):
     finally:
         if websocket in av_monitor_ws_connections:
             av_monitor_ws_connections.remove(websocket)
+
+
+# === Proto Requester API ===
+
+proto_call_ws_connections: list = []
+
+async def broadcast_proto_call_event(data: dict):
+    dead = []
+    for ws in proto_call_ws_connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        proto_call_ws_connections.remove(ws)
+
+
+class ProtoConfigRequest(BaseModel):
+    haruroot: str
+
+
+class ProtoCallRequest(BaseModel):
+    client_id: str
+    protocol: str
+    params: dict = {}
+    markTableFields: list = []
+    nilFields: list = []
+
+
+@app.get("/proto/config")
+async def get_proto_config():
+    """获取 HaruRoot 配置"""
+    config = proto_parser.load_config()
+    haruroot = config.get("haruroot", "")
+    return {
+        "haruroot": haruroot,
+        "valid": validate_haruroot(haruroot)[0] if haruroot else False,
+        "protocolCount": proto_parser.protocol_count,
+        "parseTime": proto_parser.parse_time,
+    }
+
+
+@app.post("/proto/config")
+async def set_proto_config(req: ProtoConfigRequest):
+    """设置 HaruRoot 路径（空字符串清除配置）"""
+    if not req.haruroot:
+        # 清除配置
+        proto_parser.save_config("")
+        proto_parser.protocols = {}
+        proto_parser.types = {}
+        proto_parser.protocol_count = 0
+        return {"message": "已清除", "valid": False, "haruroot": ""}
+    valid, msg = validate_haruroot(req.haruroot)
+    if not valid:
+        raise HTTPException(400, f"无效的 HaruRoot: {msg}")
+    proto_parser.save_config(req.haruroot)
+    return {"message": "已保存", "valid": True, "haruroot": req.haruroot}
+
+
+@app.post("/proto/parse")
+async def parse_protocols():
+    """触发协议解析"""
+    if not proto_parser.haruroot:
+        raise HTTPException(400, "请先配置 HaruRoot 路径")
+    valid, msg = validate_haruroot(proto_parser.haruroot)
+    if not valid:
+        raise HTTPException(400, f"HaruRoot 无效: {msg}")
+    result = proto_parser.parse(proto_parser.haruroot)
+    return {"message": "解析完成", **result}
+
+
+@app.get("/proto/search")
+async def search_protocols(q: str = "", limit: int = 50):
+    """搜索协议"""
+    if not proto_parser.protocols:
+        raise HTTPException(400, "请先解析协议")
+    results = proto_parser.search(q, limit)
+    return {"results": results, "total": len(proto_parser.protocols)}
+
+
+@app.get("/proto/detail")
+async def get_proto_detail(name: str):
+    """获取协议详情"""
+    detail = proto_parser.get_detail(name)
+    if not detail:
+        raise HTTPException(404, f"协议 {name} 不存在")
+    return detail
+
+
+@app.post("/proto/call")
+async def proto_call(req: ProtoCallRequest):
+    """发送协议请求"""
+    if not server_mgr:
+        raise HTTPException(500, "服务未初始化")
+
+    lua_code = generate_lua_code(req.protocol, req.params, req.markTableFields, req.nilFields)
+
+    success, msg = await server_mgr.send_to_client(req.client_id, lua_code)
+    if not success:
+        raise HTTPException(400, msg)
+
+    return {"message": "已发送", "protocol": req.protocol}
+
+
+@app.post("/proto/import-log")
+async def import_log(request: Request):
+    """从日志文件导入预设"""
+    # 检查是否有上传文件
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        raise HTTPException(400, "请使用 multipart/form-data 上传文件")
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(400, "未找到上传文件")
+
+    # 读取文件内容到临时文件
+    import tempfile
+    content = await file.read()
+    filename = file.filename or "unknown.log"
+
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(400, "文件过大，限制 50MB")
+
+    with tempfile.NamedTemporaryFile(mode='wb', suffix=os.path.splitext(filename)[1], delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        known_protocols = proto_parser.get_all_request_names() if proto_parser.protocols else None
+        result = parse_log_file(tmp_path, known_protocols)
+        result["fileName"] = os.path.splitext(filename)[0]
+        return result
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
+
+
+@app.websocket("/ws/proto_call")
+async def websocket_proto_call(websocket: WebSocket):
+    await websocket.accept()
+    proto_call_ws_connections.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in proto_call_ws_connections:
+            proto_call_ws_connections.remove(websocket)
 
 
 @app.websocket("/ws/subpkg_monitor")

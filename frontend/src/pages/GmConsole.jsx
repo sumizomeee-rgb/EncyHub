@@ -4,7 +4,8 @@ import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity,
-  PanelLeftClose, PanelLeftOpen, Package, Database
+  PanelLeftClose, PanelLeftOpen, Package, Database, Zap, Settings,
+  Film, Video, Clock
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
@@ -14,20 +15,22 @@ import CsComponentMonitor from './CsComponentMonitor'
 import SubPackageMonitor from './SubPackageMonitor'
 import PlayerPrefsViewer from './PlayerPrefsViewer'
 import AvMonitor from './AvMonitor'
+import ProtoRequester from './ProtoRequester'
 
 // Tab 配置
 const TAB_META = {
   lua_gm:        { label: 'LuaGM',    icon: Code,     gridSlider: true },
   custom_gm:     { label: '自定义',    icon: Layers,   gridSlider: true },
   lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
-  timeline:      { label: 'Timeline',  icon: Play },
+  timeline:      { label: 'Timeline',  icon: Clock },
   cs_monitor:    { label: 'C# Monitor', icon: Activity },
-  animator:      { label: 'Animator',  icon: Activity },
+  animator:      { label: 'Animator',  icon: Film },
   subpkg_monitor:{ label: '分包监控',  icon: Package },
   player_prefs:  { label: 'PlayerPrefs', icon: Database },
-  av_monitor:    { label: 'AV Monitor', icon: Activity },
+  av_monitor:    { label: 'AV Monitor', icon: Video },
+  proto:         { label: 'Proto',    icon: Zap },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor', 'proto']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -63,6 +66,7 @@ function GmConsole() {
   const [activeTab, setActiveTab] = useState('lua_gm')
   const [luaUiContext, setLuaUiContext] = useState(null) // null=普通模式, "UIName"=LuaUI上下文模式
   const [pendingCsPin, setPendingCsPin] = useState(null) // 从 Inspector 联动到 CsMonitor 的待 pin 数据
+  const [haruRootInfo, setHaruRootInfo] = useState({ haruroot: '', valid: false, protocolCount: 0 })
   const [tabOrder, setTabOrder] = useState(loadTabOrder)
   const dragTabRef = useRef(null)
   const tabBarRef = useRef(null)
@@ -86,6 +90,16 @@ function GmConsole() {
   })
 
   useEffect(() => { document.title = 'GM Console - EncyHub' }, [])
+
+  // 加载/刷新 HaruRoot 配置
+  const refreshHaruRootInfo = useCallback(() => {
+    fetch('/api/gm_console/proto/config')
+      .then(r => r.json())
+      .then(data => setHaruRootInfo(data))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => { refreshHaruRootInfo() }, [refreshHaruRootInfo])
 
   // tab bar 鼠标滚轮横向滚动（必须用原生非 passive 监听器，React onWheel 无法 preventDefault）
   // 依赖 loading：tab bar DOM 在 loading=false 后才渲染，需等它出现再绑
@@ -1189,6 +1203,15 @@ end`
                     active={activeTab === 'av_monitor'}
                   />
                 </div>
+
+                <div style={{ display: activeTab === 'proto' ? 'contents' : 'none' }}>
+                  <ProtoRequester
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    active={activeTab === 'proto'}
+                    haruRootInfo={haruRootInfo}
+                  />
+                </div>
               </div>
             </div>
 
@@ -1263,6 +1286,11 @@ end`
                     ))
                   )}
                 </div>
+              </div>
+
+              {/* HaruRoot Config */}
+              <div className="glass-card p-4 animate-fade-in" style={{ animationDelay: '0.3s' }}>
+                <HaruRootConfig haruRootInfo={haruRootInfo} onConfigChange={setHaruRootInfo} onRefresh={refreshHaruRootInfo} />
               </div>
             </div>
           </div>
@@ -1369,3 +1397,98 @@ end`
 }
 
 export default GmConsole
+
+
+// ============================================================================
+// HaruRoot 配置组件
+// ============================================================================
+function HaruRootConfig({ haruRootInfo, onConfigChange, onRefresh }) {
+  const [haruroot, setHaruroot] = useState(haruRootInfo?.haruroot || '')
+  const [saving, setSaving] = useState(false)
+  const [errorMsg, setErrorMsg] = useState('')
+
+  useEffect(() => {
+    setHaruroot(haruRootInfo?.haruroot || '')
+  }, [haruRootInfo?.haruroot])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setErrorMsg('')
+    try {
+      const resp = await fetch('/api/gm_console/proto/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ haruroot: haruroot.trim() })
+      })
+      const data = await resp.json()
+      if (!resp.ok) {
+        setErrorMsg(data.detail || '保存失败')
+      } else {
+        onRefresh?.()
+      }
+    } catch (e) {
+      setErrorMsg('保存失败: ' + e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleClear = async () => {
+    setSaving(true)
+    try {
+      const resp = await fetch('/api/gm_console/proto/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ haruroot: '' })
+      })
+      if (resp.ok) {
+        onRefresh?.()
+      }
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const inputCls = "px-2 py-1 text-xs rounded border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <Settings size={14} className="text-[var(--coffee-light)]" />
+        <h3 className="text-xs font-semibold text-[var(--coffee-deep)]">HaruRoot</h3>
+        {haruRootInfo?.valid && (
+          <span className={`w-1.5 h-1.5 rounded-full bg-[var(--sage)]`} />
+        )}
+        {!haruRootInfo?.valid && haruRootInfo?.haruroot && (
+          <span className={`w-1.5 h-1.5 rounded-full bg-[var(--terracotta)]`} title="路径无效" />
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <input type="text" value={haruroot}
+          onChange={e => setHaruroot(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
+          placeholder="游戏项目根路径 (含 Dev/Client 和 Product/Lua)"
+          className={`flex-1 ${inputCls}`}
+        />
+        <button onClick={handleSave} disabled={saving || !haruroot.trim()}
+          className="px-2 py-1 rounded text-[10px] bg-[var(--cream-warm)] text-[var(--coffee-deep)] hover:bg-[var(--caramel)]/20 disabled:opacity-30 transition-colors">
+          {saving ? '...' : '保存'}
+        </button>
+        {haruRootInfo?.haruroot && (
+          <button onClick={handleClear} disabled={saving}
+            className="px-2 py-1 rounded text-[10px] bg-[var(--terracotta)]/10 text-[var(--terracotta)] hover:bg-[var(--terracotta)]/20 disabled:opacity-30 transition-colors">
+            清除
+          </button>
+        )}
+      </div>
+      {!haruRootInfo?.valid && haruRootInfo?.haruroot && !errorMsg && (
+        <div className="mt-1 text-[10px] text-[var(--terracotta)]">路径无效，需包含 Dev/Client 和 Product/Lua</div>
+      )}
+      {errorMsg && (
+        <div className="mt-1 text-[10px] text-[var(--terracotta)]">{errorMsg}</div>
+      )}
+    </div>
+  )
+}
