@@ -999,7 +999,7 @@ def generate_lua_code(protocol_name: str, params: dict, mark_table_fields: list,
     end)
 end"""
 
-    return code
+    return code, req_id
 
 
 def _build_lua_table(data: any, nil_fields: list, indent: str = "    ") -> str:

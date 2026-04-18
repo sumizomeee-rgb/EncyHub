@@ -735,13 +735,13 @@ async def proto_call(req: ProtoCallRequest):
     if not server_mgr:
         raise HTTPException(500, "服务未初始化")
 
-    lua_code = generate_lua_code(req.protocol, req.params, req.markTableFields, req.nilFields)
+    lua_code, req_id = generate_lua_code(req.protocol, req.params, req.markTableFields, req.nilFields)
 
     success, msg = await server_mgr.send_to_client(req.client_id, lua_code)
     if not success:
         raise HTTPException(400, msg)
 
-    return {"message": "已发送", "protocol": req.protocol}
+    return {"message": "已发送", "protocol": req.protocol, "reqId": req_id}
 
 
 @app.post("/proto/import-log")

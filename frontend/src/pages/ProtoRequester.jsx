@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
     Search, ChevronDown, ChevronRight, X, Loader2, Send, Star, Trash2,
-    Upload, Check, FileText, Bookmark, AlertCircle, Plus, FolderOpen, Copy, ClipboardPaste
+    Upload, Check, FileText, Bookmark, AlertCircle, Plus, FolderOpen, Copy, ClipboardPaste,
+    ArrowUp, ArrowDown, PlayCircle
 } from 'lucide-react'
 
 const LS_PRESETS_KEY = 'proto_presets'
@@ -29,7 +30,7 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
     const [importLoading, setImportLoading] = useState(false)
     const [toast, setToast] = useState(null) // {message, type: 'error'|'success'|'info'} | null
 
-    const [codeImportModal, setCodeImportModal] = useState(null) // {protocol, fieldStates, markTableFields, warnings} | null
+    const [codeImportModal, setCodeImportModal] = useState(null)
 
     const searchRef = useRef(null)
     const dropdownRef = useRef(null)
@@ -37,7 +38,7 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
     const listenersRef = useRef({})
     const wsConnectedRef = useRef(false)
     const cardIdCounter = useRef(0)
-    const lastImportTargetRef = useRef('card')
+    const pendingRequestsRef = useRef({}) // reqId -> cardId
 
     // --- Toast ---
     const showToast = useCallback((message, type = 'error') => {
@@ -197,6 +198,26 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
         return () => document.removeEventListener('mousedown', handler)
     }, [])
 
+    // --- 持久 PROTO_CALL_RESP 监听器（按 reqId 分发到对应卡片） ---
+    useEffect(() => {
+        listenersRef.current['PROTO_CALL_RESP'] = (msg) => {
+            const reqId = msg.reqId
+            if (!reqId) return
+            const cardId = pendingRequestsRef.current[reqId]
+            if (cardId == null) return
+            delete pendingRequestsRef.current[reqId]
+            setCards(prev => prev.map(c =>
+                c.id === cardId ? {
+                    ...c,
+                    sending: false,
+                    lastResponse: msg,
+                    responses: [...c.responses.slice(-19), msg],
+                } : c
+            ))
+        }
+        return () => { delete listenersRef.current['PROTO_CALL_RESP'] }
+    }, [])
+
     // --- 发送请求 ---
     const sendRequest = useCallback((cardId) => {
         const card = cards.find(c => c.id === cardId)
@@ -215,23 +236,8 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
             c.id === cardId ? { ...c, sending: true, currentPresetId: '_lastUsed' } : c
         ))
 
-        // 注册响应监听
-        const onResponse = (msg) => {
-            if (msg.protocol === card.protocol) {
-                setCards(prev => prev.map(c =>
-                    c.id === cardId ? {
-                        ...c,
-                        sending: false,
-                        lastResponse: msg,
-                        responses: [...c.responses.slice(-19), msg],
-                    } : c
-                ))
-            }
-        }
-        listenersRef.current['PROTO_CALL_RESP'] = onResponse
-
         // 30s 超时
-        setTimeout(() => {
+        const timeoutId = setTimeout(() => {
             setCards(prev => prev.map(c =>
                 c.id === cardId && c.sending ? { ...c, sending: false } : c
             ))
@@ -247,11 +253,35 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
                 markTableFields,
                 nilFields,
             })
+        }).then(r => r.json()).then(data => {
+            if (data.reqId) {
+                pendingRequestsRef.current[data.reqId] = cardId
+            }
         }).catch(e => {
             console.error('[Proto] 发送失败:', e)
+            clearTimeout(timeoutId)
             setCards(prev => prev.map(c => c.id === cardId ? { ...c, sending: false } : c))
         })
     }, [cards, selectedClient, presets])
+
+    const sendAll = useCallback(() => {
+        if (!selectedClient || cards.length === 0) return
+        for (const card of cards) {
+            sendRequest(card.id)
+        }
+    }, [cards, selectedClient, sendRequest])
+
+    const moveCard = useCallback((cardId, direction) => {
+        setCards(prev => {
+            const idx = prev.findIndex(c => c.id === cardId)
+            if (idx < 0) return prev
+            const targetIdx = idx + direction
+            if (targetIdx < 0 || targetIdx >= prev.length) return prev
+            const next = [...prev]
+            ;[next[idx], next[targetIdx]] = [next[targetIdx], next[idx]]
+            return next
+        })
+    }, [])
 
     // --- 导入日志 ---
     const handleImportLog = useCallback(() => {
@@ -502,6 +532,12 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
                         <span className="text-[10px] text-[var(--terracotta)]">未配置 HaruRoot · 手动模式</span>
                     )}
                     <div className="ml-auto flex items-center gap-1">
+                        {cards.length > 1 && (
+                            <button onClick={sendAll} disabled={!selectedClient}
+                                className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-[var(--sage)]/15 text-[var(--sage)] hover:bg-[var(--sage)]/25 disabled:opacity-30 transition-colors" title="并行发送所有卡片">
+                                <PlayCircle size={10} /> 全部发送
+                            </button>
+                        )}
                         {cards.length > 0 && (
                             <button onClick={() => setCards([])}
                                 className="p-1 rounded hover:bg-[var(--terracotta)]/10 text-[var(--coffee-muted)] hover:text-[var(--terracotta)] transition-colors" title="清除所有卡片">
@@ -599,9 +635,12 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
                         {hasHaruroot && protoLoaded ? '搜索并选择协议添加请求卡片' : '从日志导入或粘贴 Lua 代码来添加请求卡片'}
                     </div>
                 )}
-                {cards.map(card => (
+                {cards.map((card, cardIdx) => (
                     <ProtoCard key={card.id} card={card} clients={clients} selectedClient={selectedClient}
                         presets={presets[card.protocol] || {}}
+                        isFirst={cardIdx === 0} isLast={cardIdx === cards.length - 1}
+                        onMoveUp={() => moveCard(card.id, -1)}
+                        onMoveDown={() => moveCard(card.id, 1)}
                         onRemove={() => setCards(prev => prev.filter(c => c.id !== card.id))}
                         onSend={() => sendRequest(card.id)}
                         onCopy={() => {
@@ -676,7 +715,7 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
 // ============================================================================
 // Proto Card — 折叠卡片
 // ============================================================================
-function ProtoCard({ card, clients, selectedClient, presets, onRemove, onSend, onUpdateFieldStates, onToggleCollapse, onLoadPreset, onSavePreset, onDeletePreset, onCopy }) {
+function ProtoCard({ card, clients, selectedClient, presets, isFirst, isLast, onMoveUp, onMoveDown, onRemove, onSend, onUpdateFieldStates, onToggleCollapse, onLoadPreset, onSavePreset, onDeletePreset, onCopy }) {
     const [showSaveInput, setShowSaveInput] = useState(false)
     const [presetName, setPresetName] = useState('')
     const [showPresetDropdown, setShowPresetDropdown] = useState(false)
@@ -739,7 +778,7 @@ function ProtoCard({ card, clients, selectedClient, presets, onRemove, onSend, o
     const currentPresetName = card.currentPresetId ? (presets[card.currentPresetId]?.name || '上次使用') : '无预设'
 
     return (
-        <div className="rounded-lg border border-[var(--glass-border)] bg-white/30 overflow-hidden">
+        <div className="rounded-lg border border-[var(--glass-border)] bg-white/30 overflow-hidden group">
             {/* Title bar */}
             <div className="flex items-center gap-2 px-3 py-2 bg-[var(--cream-warm)]/30 cursor-pointer" onClick={onToggleCollapse}>
                 {card.collapsed ? <ChevronRight size={14} className="text-[var(--coffee-muted)]" /> : <ChevronDown size={14} className="text-[var(--coffee-muted)]" />}
@@ -757,6 +796,16 @@ function ProtoCard({ card, clients, selectedClient, presets, onRemove, onSend, o
                     </span>
                 )}
                 <span className="ml-auto flex-shrink-0 flex items-center gap-0.5">
+                    <span className="hidden group-hover:flex items-center gap-0.5">
+                        {!isFirst && (
+                            <button onClick={e => { e.stopPropagation(); onMoveUp() }}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]" title="上移"><ArrowUp size={12} /></button>
+                        )}
+                        {!isLast && (
+                            <button onClick={e => { e.stopPropagation(); onMoveDown() }}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]" title="下移"><ArrowDown size={12} /></button>
+                        )}
+                    </span>
                     {card.collapsed && (
                         <button onClick={e => { e.stopPropagation(); handleSend() }}
                             disabled={card.sending || !selectedClient || batchProgress !== null}

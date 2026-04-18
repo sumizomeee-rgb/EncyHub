@@ -13,18 +13,22 @@
       "last_wifi_ip": "10.101.0.50",
       "last_model": "V2509A",
       "original_hardware_id": "10AFA207PS002PH"
+    },
+    "14261ebb442282d2": {
+      "nickname": "本机Mumu"
     }
   },
   "path_history": {
     "pull": [
+      "/storage/emulated/0/Android/data/com.kurogame.haru/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/log"
     ],
     "push": [
+      "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/",
-      "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/Lua"
     ]
