@@ -700,6 +700,30 @@ function ProtoCard({ card, clients, selectedClient, presets, onRemove, onSend, o
 
     const waitForResponse = () => new Promise(resolve => { waitCbResolveRef.current = resolve })
 
+    const handleSend = async () => {
+        if (sendCount <= 1) { onSend(); return }
+        if (sendMode === 'independent') {
+            batchAbortRef.current = false
+            setBatchProgress({ current: 0, total: sendCount })
+            const runNext = (i) => {
+                if (i >= sendCount || batchAbortRef.current) { setBatchProgress(null); return }
+                setBatchProgress({ current: i + 1, total: sendCount })
+                onSend()
+                setTimeout(() => runNext(i + 1), sendInterval)
+            }
+            runNext(0)
+        } else {
+            batchAbortRef.current = false
+            for (let i = 0; i < sendCount; i++) {
+                if (batchAbortRef.current) break
+                setBatchProgress({ current: i + 1, total: sendCount })
+                onSend()
+                await waitForResponse()
+            }
+            setBatchProgress(null)
+        }
+    }
+
     // 关闭预设下拉
     useEffect(() => {
         const handler = (e) => {
@@ -733,6 +757,12 @@ function ProtoCard({ card, clients, selectedClient, presets, onRemove, onSend, o
                     </span>
                 )}
                 <span className="ml-auto flex-shrink-0 flex items-center gap-0.5">
+                    {card.collapsed && (
+                        <button onClick={e => { e.stopPropagation(); handleSend() }}
+                            disabled={card.sending || !selectedClient || batchProgress !== null}
+                            className="p-0.5 rounded hover:bg-[var(--sage)]/15 text-[var(--coffee-muted)] hover:text-[var(--sage)] disabled:opacity-30"
+                            title={sendCount > 1 ? `发送 x${sendCount} (${sendMode === 'independent' ? '独立发' : '等回调'})` : '发送请求'}><Send size={13} /></button>
+                    )}
                     <button onClick={e => { e.stopPropagation(); onRemove() }}
                         className="p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--terracotta)]"><X size={14} /></button>
                 </span>
@@ -879,29 +909,7 @@ function ProtoCard({ card, clients, selectedClient, presets, onRemove, onSend, o
                     {/* Send + Copy buttons */}
                     <div className="space-y-1 pt-1 border-t border-[var(--glass-border)]/50">
                         <div className="flex items-center gap-2">
-                            <button onClick={async () => {
-                                if (sendCount <= 1) { onSend(); return }
-                                if (sendMode === 'independent') {
-                                    batchAbortRef.current = false
-                                    setBatchProgress({ current: 0, total: sendCount })
-                                    const runNext = (i) => {
-                                        if (i >= sendCount || batchAbortRef.current) { setBatchProgress(null); return }
-                                        setBatchProgress({ current: i + 1, total: sendCount })
-                                        onSend()
-                                        setTimeout(() => runNext(i + 1), sendInterval)
-                                    }
-                                    runNext(0)
-                                } else {
-                                    batchAbortRef.current = false
-                                    for (let i = 0; i < sendCount; i++) {
-                                        if (batchAbortRef.current) break
-                                        setBatchProgress({ current: i + 1, total: sendCount })
-                                        onSend()
-                                        await waitForResponse()
-                                    }
-                                    setBatchProgress(null)
-                                }
-                            }}
+                            <button onClick={handleSend}
                                 disabled={card.sending || !selectedClient || batchProgress !== null}
                                 className="flex items-center gap-1 px-3 py-1 rounded text-xs bg-[var(--sage)]/20 text-[var(--sage)] hover:bg-[var(--sage)]/30 disabled:opacity-30 transition-colors">
                                 <Send size={11} /> {batchProgress ? `${batchProgress.current}/${batchProgress.total}` : card.sending ? '发送中...' : sendCount > 1 ? `发送 x${sendCount}` : '发送请求'}
