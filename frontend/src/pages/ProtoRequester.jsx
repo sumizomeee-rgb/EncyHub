@@ -39,6 +39,7 @@ export default function ProtoRequester({ clients, selectedClient, active, haruRo
     const wsConnectedRef = useRef(false)
     const cardIdCounter = useRef(0)
     const pendingRequestsRef = useRef({}) // reqId -> cardId
+    const lastImportTargetRef = useRef(null)
 
     // --- Toast ---
     const showToast = useCallback((message, type = 'error') => {

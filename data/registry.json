@@ -4,9 +4,9 @@
     "display_name": "ADB Master",
     "description": "Android 设备管理工具",
     "enabled": true,
-    "port": 13126,
-    "pid": 118000,
-    "last_started": "2026-04-18 11:58:06"
+    "port": 6841,
+    "pid": 175060,
+    "last_started": "2026-04-19 19:33:34"
   },
   "flow_svn": {
     "tool_id": "flow_svn",
@@ -22,8 +22,8 @@
     "display_name": "GM Console",
     "description": "游戏 GM 控制台",
     "enabled": true,
-    "port": 13944,
-    "pid": 135308,
-    "last_started": "2026-04-18 15:45:30"
+    "port": 11242,
+    "pid": 176872,
+    "last_started": "2026-04-19 19:55:50"
   }
 }
