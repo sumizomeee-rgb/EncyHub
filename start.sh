@@ -31,11 +31,24 @@ fi
 # 2. Create venv
 echo ""
 echo "[2/6] Setting up virtual environment..."
+RECREATE_VENV=0
 if [ ! -f ".venv/bin/activate" ]; then
-    echo "      Creating venv..."
+    RECREATE_VENV=1
+else
+    # Check venv Python version matches system Python
+    VENV_PYVER=$(.venv/bin/python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+    SYS_PYVER=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+    if [ "$VENV_PYVER" != "$SYS_PYVER" ]; then
+        echo "      venv Python ($VENV_PYVER) != system Python ($SYS_PYVER), recreating..."
+        rm -rf .venv
+        RECREATE_VENV=1
+    fi
+fi
+if [ $RECREATE_VENV -eq 1 ]; then
+    echo "      Creating venv with $PYTHON..."
     $PYTHON -m venv .venv
 fi
-echo "      Venv: OK"
+echo "      Venv: OK ($(.venv/bin/python -c 'import sys; print(sys.version.split()[0])'))"
 
 # 3. Install Python deps
 echo ""
