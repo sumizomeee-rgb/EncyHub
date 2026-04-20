@@ -71,8 +71,26 @@ echo.
 echo ========================================
 echo   URL: http://localhost:9524
 echo   LAN: http://0.0.0.0:9524
+echo   (Ctrl+C or Dashboard to stop)
 echo ========================================
 echo.
-.venv\Scripts\python.exe main.py
 
+:start_loop
+.venv\Scripts\python.exe main.py
+set EXIT_CODE=%ERRORLEVEL%
+
+:: Exit code 0 = normal shutdown (Ctrl+C / Dashboard), don't restart
+if %EXIT_CODE%==0 (
+    echo.
+    echo [EncyHub] Stopped normally.
+    goto end
+)
+
+:: Non-zero = killed externally, auto restart
+echo.
+echo [EncyHub] Process exited unexpectedly (code=%EXIT_CODE%), restarting in 3s...
+timeout /t 3 /nobreak >nul
+goto start_loop
+
+:end
 pause
