@@ -67,6 +67,20 @@ function AdbMaster() {
   // 操作状态
   const [operating, setOperating] = useState(false)
 
+  // 是否为本机访问（localhost / 127.0.0.1）
+  const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+
+  // Push 上传相关状态
+  const [pushUploadFile, setPushUploadFile] = useState(null)
+  const [pushUploadRemotePath, setPushUploadRemotePath] = useState('/sdcard/')
+  const [pushUploadProgress, setPushUploadProgress] = useState(null) // { stage: 'uploading'|'pushing', percent: number }
+  const pushUploadInputRef = useRef(null)
+
+  // Pull 下载相关状态
+  const [pullDownloadRemotePath, setPullDownloadRemotePath] = useState('')
+  const [pullDownloadResult, setPullDownloadResult] = useState(null) // null | { pulling: true } | { ready: true, filename, downloadUrl }
+  const pullDownloadUrlRef = useRef(null)
+
   // 路径历史
   const [pushHistory, setPushHistory] = useState([])
   const [pullHistory, setPullHistory] = useState([])
@@ -139,7 +153,13 @@ function AdbMaster() {
     fetchDevices()
     fetchPathHistory()
     const interval = setInterval(fetchDevices, 3000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      // 清理下载 URL
+      if (pullDownloadUrlRef.current) {
+        URL.revokeObjectURL(pullDownloadUrlRef.current)
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -576,6 +596,113 @@ function AdbMaster() {
     } finally {
       setOperating(false)
     }
+  }
+
+  // Push 上传文件并推送
+  const handlePushUpload = async () => {
+    if (!pushUploadFile || !selectedDevice) return
+    setOperating(true)
+    setPushUploadProgress({ stage: 'uploading', percent: 0 })
+    try {
+      const formData = new FormData()
+      formData.append('file', pushUploadFile)
+
+      const xhr = new XMLHttpRequest()
+      const uploadPromise = new Promise((resolve, reject) => {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setPushUploadProgress({ stage: 'uploading', percent: Math.round((e.loaded / e.total) * 100) })
+          }
+        }
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(JSON.parse(xhr.responseText))
+          } else {
+            try {
+              reject(JSON.parse(xhr.responseText))
+            } catch {
+              reject({ detail: xhr.statusText })
+            }
+          }
+        }
+        xhr.onerror = () => reject({ detail: '网络错误' })
+        xhr.open('POST', `/api/adb_master/devices/${selectedDevice.hardware_id}/push-upload?remote_path=${encodeURIComponent(pushUploadRemotePath)}`)
+        xhr.send(formData)
+      })
+
+      // 上传中切换到 pushing 提示
+      setPushUploadProgress({ stage: 'pushing', percent: 0 })
+      const data = await uploadPromise
+      toast.success(data.message || '推送成功')
+      setPushUploadFile(null)
+      setPushUploadRemotePath('/sdcard/')
+      if (pushUploadInputRef.current) pushUploadInputRef.current.value = ''
+      fetchPathHistory()
+    } catch (err) {
+      toast.error(err.detail || '推送失败')
+    } finally {
+      setOperating(false)
+      setPushUploadProgress(null)
+    }
+  }
+
+  // Pull 远程拉取（先拉到部署机，再提供下载）
+  const handlePullDownload = async () => {
+    const remotePath = isLocalhost ? pullRemotePath : pullDownloadRemotePath
+    if (!remotePath.trim() || !selectedDevice) return
+    setOperating(true)
+    setPullDownloadResult({ pulling: true })
+    try {
+      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/pull-download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: remotePath }),
+      })
+      if (res.ok) {
+        const blob = await res.blob()
+        // 释放旧的下载 URL
+        if (pullDownloadUrlRef.current) {
+          URL.revokeObjectURL(pullDownloadUrlRef.current)
+        }
+        const downloadUrl = URL.createObjectURL(blob)
+        pullDownloadUrlRef.current = downloadUrl
+
+        // 从 Content-Disposition 或路径推断文件名
+        const contentDisposition = res.headers.get('content-disposition')
+        let filename = pullDownloadRemotePath.split('/').pop() || 'file'
+        if (contentDisposition) {
+          const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
+          if (match) filename = match[1].replace(/['"]/g, '')
+        }
+
+        setPullDownloadResult({ ready: true, filename, downloadUrl })
+        toast.success('拉取成功，可点击下载')
+        fetchPathHistory()
+      } else {
+        const text = await res.text()
+        try {
+          const data = JSON.parse(text)
+          toast.error(data.detail || '拉取失败')
+        } catch {
+          toast.error('拉取失败: ' + text.substring(0, 100))
+        }
+        setPullDownloadResult(null)
+      }
+    } catch (err) {
+      toast.error('拉取失败: ' + err.message)
+      setPullDownloadResult(null)
+    } finally {
+      setOperating(false)
+    }
+  }
+
+  // 下载已拉取的文件
+  const handleDownloadPulledFile = () => {
+    if (!pullDownloadResult?.downloadUrl) return
+    const a = document.createElement('a')
+    a.href = pullDownloadResult.downloadUrl
+    a.download = pullDownloadResult.filename
+    a.click()
   }
 
   // 安装 APK
@@ -1249,75 +1376,69 @@ function AdbMaster() {
                             <Upload size={16} className="text-[var(--caramel)]" />
                             <span className="text-sm font-medium text-[var(--coffee-deep)]">推送文件 (本地 → 设备)</span>
                           </div>
-                          <div className="space-y-2.5">
-                            <div className="relative">
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">本地路径 (文件或文件夹)</label>
-                              <div className="flex gap-2">
-                                <input
-                                  type="text"
-                                  value={pushLocalPath}
-                                  onChange={e => setPushLocalPath(e.target.value)}
-                                  placeholder="例: D:\project\assets"
-                                  className="font-mono text-sm flex-1"
-                                />
-                                <button
-                                  className="btn-secondary p-2 shrink-0"
-                                  onClick={async () => {
-                                    if (!pushLocalPath.trim()) return
-                                    try {
-                                      const res = await fetch(`/api/adb_master/open-folder`, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ path: pushLocalPath }),
-                                      })
-                                      if (!res.ok) {
-                                        const data = await res.json()
-                                        toast.error(data.detail || '打开失败')
-                                      }
-                                    } catch (err) {
-                                      toast.error('打开失败: ' + err.message)
-                                    }
-                                  }}
-                                  title="在文件管理器中打开"
-                                >
-                                  <FolderOpen size={16} />
-                                </button>
+
+                          {isLocalhost ? (
+                            /* ── 本机模式：部署机路径推送 ── */
+                            <div className="space-y-2.5">
+                              <div className="relative">
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">部署机路径 (文件或文件夹)</label>
+                                <div className="flex gap-2">
+                                  <input type="text" value={pushLocalPath} onChange={e => setPushLocalPath(e.target.value)} placeholder="例: D:\project\assets" className="font-mono text-sm flex-1" />
+                                  <button className="btn-secondary p-2 shrink-0" onClick={async () => { if (!pushLocalPath.trim()) return; try { const res = await fetch(`/api/adb_master/open-folder`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: pushLocalPath }) }); if (!res.ok) { const data = await res.json(); toast.error(data.detail || '打开失败') } } catch (err) { toast.error('打开失败: ' + err.message) } }} title="在文件管理器中打开"><FolderOpen size={16} /></button>
+                                </div>
                               </div>
+                              <div className="relative">
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备目标路径</label>
+                                <input type="text" value={pushRemotePath} onChange={e => setPushRemotePath(e.target.value)} onFocus={() => setShowPushHistory(true)} onBlur={() => setTimeout(() => setShowPushHistory(false), 200)} placeholder="/sdcard/" className="font-mono text-sm" />
+                                {showPushHistory && pushHistory.length > 0 && (
+                                  <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
+                                    {pushHistory.map((p, i) => (<button key={i} className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate" onMouseDown={() => { setPushRemotePath(p); setShowPushHistory(false) }}>{p}</button>))}
+                                  </div>
+                                )}
+                              </div>
+                              <button className="btn-primary flex items-center gap-2" onClick={handlePush} disabled={!pushLocalPath.trim() || operating}><Upload size={14} />{operating ? '推送中...' : '推送'}</button>
                             </div>
-                            <div className="relative">
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备目标路径</label>
-                              <input
-                                type="text"
-                                value={pushRemotePath}
-                                onChange={e => setPushRemotePath(e.target.value)}
-                                onFocus={() => setShowPushHistory(true)}
-                                onBlur={() => setTimeout(() => setShowPushHistory(false), 200)}
-                                placeholder="/sdcard/"
-                                className="font-mono text-sm"
-                              />
-                              {showPushHistory && pushHistory.length > 0 && (
-                                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
-                                  {pushHistory.map((p, i) => (
-                                    <button
-                                      key={i}
-                                      className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate"
-                                      onMouseDown={() => { setPushRemotePath(p); setShowPushHistory(false) }}
-                                    >
-                                      {p}
-                                    </button>
-                                  ))}
+                          ) : (
+                            /* ── 远程模式：上传文件推送 ── */
+                            <div className="space-y-2.5">
+                              <div>
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">选择文件并推送到设备</label>
+                                <input ref={pushUploadInputRef} type="file" id="push-upload-input" className="hidden" onChange={e => setPushUploadFile(e.target.files?.[0] || null)} />
+                                <button className="btn-secondary w-full flex items-center justify-center gap-2 py-2.5" onClick={() => document.getElementById('push-upload-input').click()}>
+                                  <Upload size={16} />{pushUploadFile ? pushUploadFile.name : '点击选择文件（文件夹请压缩为 zip）'}
+                                </button>
+                                {pushUploadFile && (
+                                  <div className="mt-2 p-3 bg-[var(--cream-warm)] rounded-lg">
+                                    <div className="text-sm font-medium text-[var(--coffee-deep)]">{pushUploadFile.name}</div>
+                                    <div className="text-xs text-[var(--coffee-muted)]">{(pushUploadFile.size / 1024 / 1024).toFixed(2)} MB{pushUploadFile.name.toLowerCase().endsWith('.zip') && ' (zip 将自动解压后推送)'}</div>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="relative">
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备目标路径</label>
+                                <input type="text" value={pushUploadRemotePath} onChange={e => setPushUploadRemotePath(e.target.value)} onFocus={() => setShowPushHistory(true)} onBlur={() => setTimeout(() => setShowPushHistory(false), 200)} placeholder="/sdcard/" className="font-mono text-sm" />
+                                {showPushHistory && pushHistory.length > 0 && (
+                                  <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
+                                    {pushHistory.map((p, i) => (<button key={i} className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate" onMouseDown={() => { setPushUploadRemotePath(p); setShowPushHistory(false) }}>{p}</button>))}
+                                  </div>
+                                )}
+                              </div>
+                              {pushUploadProgress && (
+                                <div className="p-3 bg-[var(--cream-warm)] rounded-lg space-y-2">
+                                  <div className="flex items-center gap-2 text-sm text-[var(--coffee-deep)]">
+                                    <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                                    {pushUploadProgress.stage === 'uploading' ? `上传中... ${pushUploadProgress.percent}%` : '推送中... (写入设备)'}
+                                  </div>
+                                  <div className="w-full h-2 bg-white rounded-full overflow-hidden">
+                                    <div className="h-full bg-[var(--caramel)] rounded-full transition-all duration-300" style={{ width: `${pushUploadProgress.stage === 'uploading' ? pushUploadProgress.percent : 100}%` }} />
+                                  </div>
                                 </div>
                               )}
+                              <button className="btn-primary flex items-center gap-2" onClick={handlePushUpload} disabled={!pushUploadFile || operating}>
+                                <Upload size={14} />{operating ? (pushUploadProgress?.stage === 'uploading' ? '上传中...' : '推送中...') : '推送'}
+                              </button>
                             </div>
-                          </div>
-                          <button
-                            className="btn-primary mt-3 flex items-center gap-2"
-                            onClick={handlePush}
-                            disabled={!pushLocalPath.trim() || operating}
-                          >
-                            <Upload size={14} />
-                            {operating ? '推送中...' : '推送'}
-                          </button>
+                          )}
                         </div>
 
                         <div className="border-t border-[var(--glass-border)]" />
@@ -1328,75 +1449,141 @@ function AdbMaster() {
                             <Download size={16} className="text-[var(--sky)]" />
                             <span className="text-sm font-medium text-[var(--coffee-deep)]">拉取文件 (设备 → 本地)</span>
                           </div>
-                          <div className="space-y-2.5">
-                            <div className="relative">
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备文件路径</label>
-                              <input
-                                type="text"
-                                value={pullRemotePath}
-                                onChange={e => setPullRemotePath(e.target.value)}
-                                onFocus={() => setShowPullHistory(true)}
-                                onBlur={() => setTimeout(() => setShowPullHistory(false), 200)}
-                                placeholder="/sdcard/Download/file.txt"
-                                className="font-mono text-sm"
-                              />
-                              {showPullHistory && pullHistory.length > 0 && (
-                                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
-                                  {pullHistory.map((p, i) => (
-                                    <button
-                                      key={i}
-                                      className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate"
-                                      onMouseDown={() => { setPullRemotePath(p); setShowPullHistory(false) }}
-                                    >
-                                      {p}
-                                    </button>
-                                  ))}
+
+                          {isLocalhost ? (
+                            /* ── 本机模式：部署机路径拉取 ── */
+                            <div className="space-y-2.5">
+                              <div className="relative">
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备文件路径</label>
+                                <input
+                                  type="text"
+                                  value={pullRemotePath}
+                                  onChange={e => setPullRemotePath(e.target.value)}
+                                  onFocus={() => setShowPullHistory(true)}
+                                  onBlur={() => setTimeout(() => setShowPullHistory(false), 200)}
+                                  placeholder="/sdcard/Download/file.txt"
+                                  className="font-mono text-sm"
+                                />
+                                {showPullHistory && pullHistory.length > 0 && (
+                                  <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
+                                    {pullHistory.map((p, i) => (
+                                      <button
+                                        key={i}
+                                        className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate"
+                                        onMouseDown={() => { setPullRemotePath(p); setShowPullHistory(false) }}
+                                      >
+                                        {p}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="relative">
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">保存到部署机路径 (留空则浏览器下载)</label>
+                                <div className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    value={pullLocalPath}
+                                    onChange={e => setPullLocalPath(e.target.value)}
+                                    placeholder="例: D:\Downloads\file.txt"
+                                    className="font-mono text-sm flex-1"
+                                  />
+                                  <button
+                                    className="btn-secondary p-2 shrink-0"
+                                    onClick={async () => {
+                                      if (!pullLocalPath.trim()) return
+                                      try {
+                                        const res = await fetch(`/api/adb_master/open-folder`, {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ path: pullLocalPath }),
+                                        })
+                                        if (!res.ok) {
+                                          const data = await res.json()
+                                          toast.error(data.detail || '打开失败')
+                                        }
+                                      } catch (err) {
+                                        toast.error('打开失败: ' + err.message)
+                                      }
+                                    }}
+                                    title="在文件管理器中打开"
+                                  >
+                                    <FolderOpen size={16} />
+                                  </button>
+                                </div>
+                              </div>
+                              <button
+                                className="btn-primary flex items-center gap-2"
+                                onClick={handlePull}
+                                disabled={!pullRemotePath.trim() || operating}
+                              >
+                                <Download size={14} />
+                                {operating ? '拉取中...' : '拉取'}
+                              </button>
+                            </div>
+                          ) : (
+                            /* ── 远程模式：拉取后浏览器下载 ── */
+                            <div className="space-y-2.5">
+                              <div className="relative">
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">设备文件路径</label>
+                                <input
+                                  type="text"
+                                  value={pullDownloadRemotePath}
+                                  onChange={e => setPullDownloadRemotePath(e.target.value)}
+                                  onFocus={() => setShowPullHistory(true)}
+                                  onBlur={() => setTimeout(() => setShowPullHistory(false), 200)}
+                                  placeholder="/sdcard/Download/file.txt"
+                                  className="font-mono text-sm"
+                                />
+                                {showPullHistory && pullHistory.length > 0 && (
+                                  <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-[var(--glass-border)] max-h-40 overflow-auto">
+                                    {pullHistory.map((p, i) => (
+                                      <button
+                                        key={i}
+                                        className="w-full text-left px-3 py-1.5 text-xs font-mono text-[var(--coffee-light)] hover:bg-[var(--cream-warm)] transition-colors truncate"
+                                        onMouseDown={() => { setPullDownloadRemotePath(p); setShowPullHistory(false) }}
+                                      >
+                                        {p}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              {pullDownloadResult?.pulling && (
+                                <div className="p-3 bg-[var(--cream-warm)] rounded-lg flex items-center gap-2">
+                                  <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                                  <span className="text-sm text-[var(--coffee-deep)]">拉取中...</span>
+                                </div>
+                              )}
+                              <button
+                                className="btn-primary flex items-center gap-2"
+                                onClick={handlePullDownload}
+                                disabled={!pullDownloadRemotePath.trim() || operating}
+                              >
+                                <Download size={14} />
+                                {operating && pullDownloadResult?.pulling ? '拉取中...' : '拉取并下载'}
+                              </button>
+
+                              {/* 拉取结果 - 下载按钮 */}
+                              {pullDownloadResult?.ready && (
+                                <div className="p-3 bg-[var(--sage)]/10 rounded-lg border border-[var(--sage)]/20">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <span className="w-2 h-2 rounded-full bg-[var(--sage)]" />
+                                    <span className="text-sm text-[var(--coffee-deep)]">
+                                      已拉取: {pullDownloadResult.filename}
+                                    </span>
+                                  </div>
+                                  <button
+                                    className="btn-primary flex items-center gap-2"
+                                    onClick={handleDownloadPulledFile}
+                                  >
+                                    <Download size={14} />
+                                    下载到本机
+                                  </button>
                                 </div>
                               )}
                             </div>
-                            <div className="relative">
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">本地保存路径 (留空则浏览器下载)</label>
-                              <div className="flex gap-2">
-                                <input
-                                  type="text"
-                                  value={pullLocalPath}
-                                  onChange={e => setPullLocalPath(e.target.value)}
-                                  placeholder="例: D:\Downloads\file.txt"
-                                  className="font-mono text-sm flex-1"
-                                />
-                                <button
-                                  className="btn-secondary p-2 shrink-0"
-                                  onClick={async () => {
-                                    if (!pullLocalPath.trim()) return
-                                    try {
-                                      const res = await fetch(`/api/adb_master/open-folder`, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ path: pullLocalPath }),
-                                      })
-                                      if (!res.ok) {
-                                        const data = await res.json()
-                                        toast.error(data.detail || '打开失败')
-                                      }
-                                    } catch (err) {
-                                      toast.error('打开失败: ' + err.message)
-                                    }
-                                  }}
-                                  title="在文件管理器中打开"
-                                >
-                                  <FolderOpen size={16} />
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                          <button
-                            className="btn-secondary mt-3 flex items-center gap-2"
-                            onClick={handlePull}
-                            disabled={!pullRemotePath.trim() || operating}
-                          >
-                            <Download size={14} />
-                            {operating ? '拉取中...' : '拉取'}
-                          </button>
+                          )}
                         </div>
                       </div>
                     )}

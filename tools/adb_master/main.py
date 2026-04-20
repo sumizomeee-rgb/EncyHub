@@ -5,10 +5,13 @@ import os
 import asyncio
 import json
 import time
+import uuid
+import shutil
+import zipfile
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -367,6 +370,173 @@ async def pull_file(hw_id: str, req: PathRequest):
         return {"message": f"已保存到 {local_path}", "local_path": local_path}
 
     return FileResponse(local_path, filename=os.path.basename(req.path))
+
+
+@app.post("/devices/{hw_id}/push-upload")
+async def push_upload(hw_id: str, file: UploadFile = File(...), remote_path: str = "/sdcard/"):
+    """通过浏览器上传文件并推送到设备（远程用户专用）"""
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(404, "设备不存在或离线")
+
+    # 保存上传文件到 UUID 隔离的临时目录
+    transfer_id = uuid.uuid4().hex[:8]
+    temp_dir = os.path.join(DATA_DIR, "temp", "push_upload", transfer_id)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    original_filename = file.filename or "upload"
+    temp_path = os.path.join(temp_dir, original_filename)
+
+    try:
+        # 写入上传文件
+        content = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(content)
+
+        # 如果是 zip 文件，自动解压后推送目录
+        push_src = temp_path
+        if original_filename.lower().endswith('.zip'):
+            extract_dir = os.path.join(temp_dir, original_filename[:-4])
+            try:
+                with zipfile.ZipFile(temp_path, 'r') as zf:
+                    zf.extractall(extract_dir)
+                push_src = extract_dir
+            except zipfile.BadZipFile:
+                raise HTTPException(400, "无效的 ZIP 文件")
+
+        # 执行 adb push
+        success, msg = await adb_mgr.push_file(dev.active_serial, push_src, remote_path)
+
+        if not success:
+            raise HTTPException(400, msg)
+
+        # 记录路径历史
+        config_mgr.add_path_history(remote_path, "push")
+
+        return {"message": msg, "filename": original_filename}
+    finally:
+        # 清理临时文件
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+
+
+class PullDownloadRequest(BaseModel):
+    path: str
+
+
+# 目录大小阈值 (500MB)
+_DIR_SIZE_THRESHOLD = 500 * 1024 * 1024
+
+
+@app.post("/devices/{hw_id}/pull-download")
+async def pull_download(hw_id: str, req: PullDownloadRequest, background_tasks: BackgroundTasks):
+    """从设备拉取文件并返回下载（远程用户专用，目录自动打包 zip）"""
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(404, "设备不存在或离线")
+
+    # UUID 隔离的临时目录
+    transfer_id = uuid.uuid4().hex[:8]
+    temp_dir = os.path.join(DATA_DIR, "temp", "pull_download", transfer_id)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    basename = os.path.basename(req.path.rstrip('/')) or 'file'
+    local_path = os.path.join(temp_dir, basename)
+
+    # 拉取文件到临时目录
+    success, msg = await adb_mgr.pull_file(dev.active_serial, req.path, local_path)
+    if not success:
+        # 清理临时目录
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+        raise HTTPException(400, msg)
+
+    # 记录路径历史
+    config_mgr.add_path_history(req.path, "pull")
+
+    # 判断拉取结果：单文件 vs 目录
+    if os.path.isfile(local_path):
+        # 单文件直接下载
+        file_size = os.path.getsize(local_path)
+
+        def cleanup():
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
+
+        background_tasks.add_task(cleanup)
+        return FileResponse(
+            local_path,
+            filename=basename,
+            media_type='application/octet-stream',
+        )
+    elif os.path.isdir(local_path):
+        # 目录：先检查大小
+        total_size = 0
+        file_count = 0
+        for root, dirs, files in os.walk(local_path):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    total_size += os.path.getsize(fp)
+                    file_count += 1
+                except:
+                    pass
+                if total_size > _DIR_SIZE_THRESHOLD:
+                    # 清理并拒绝
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
+                    raise HTTPException(
+                        400,
+                        f"目录过大 ({total_size // (1024*1024)}MB，{file_count}+ 个文件)，请拉取具体子路径"
+                    )
+
+        # 打包为 zip
+        zip_basename = basename + '.zip'
+        zip_path = os.path.join(temp_dir, zip_basename)
+
+        try:
+            shutil.make_archive(
+                os.path.join(temp_dir, basename),
+                'zip',
+                temp_dir,
+                basename,
+            )
+        except Exception as e:
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
+            raise HTTPException(500, f"打包失败: {str(e)}")
+
+        def cleanup():
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
+
+        background_tasks.add_task(cleanup)
+        return FileResponse(
+            zip_path,
+            filename=zip_basename,
+            media_type='application/zip',
+        )
+    else:
+        # 不应该走到这里
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+        raise HTTPException(500, "拉取结果异常：既不是文件也不是目录")
 
 
 # ============================================================================
