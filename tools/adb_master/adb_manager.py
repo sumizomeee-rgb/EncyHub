@@ -5,6 +5,7 @@ Provides async ADB command execution and device management.
 
 import asyncio
 import os
+import sys
 import re
 from dataclasses import dataclass
 from typing import Optional, Callable, List
@@ -88,6 +89,9 @@ DeviceInfo = DeviceConnection
 class AdbManager:
     """Async ADB command manager with unified device identity tracking."""
     
+    # Windows-only subprocess flag to suppress console window
+    _SUBPROCESS_KWARGS = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+    
     def __init__(self):
         self.adb_path = get_adb_path()
         self._logcat_tasks: dict[str, asyncio.Task] = {}
@@ -118,7 +122,7 @@ class AdbManager:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                creationflags=0x08000000  # CREATE_NO_WINDOW on Windows
+                **self._SUBPROCESS_KWARGS
             )
             
             stdout, stderr = await asyncio.wait_for(
@@ -359,11 +363,11 @@ class AdbManager:
         try:
             # Windows ping with 1 packet and timeout
             result = subprocess.run(
-                ['ping', '-n', '1', '-w', str(int(timeout * 1000)), ip],
+                ['ping', '-n', '1', '-w', str(int(timeout * 1000)), ip] if sys.platform == 'win32' else ['ping', '-c', '1', '-W', str(int(timeout)), ip],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout + 1,
-                creationflags=0x08000000  # CREATE_NO_WINDOW
+                **({"creationflags": 0x08000000} if sys.platform == "win32" else {})
             )
             return result.returncode == 0
         except Exception:
@@ -512,7 +516,7 @@ class AdbManager:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                creationflags=0x08000000  # CREATE_NO_WINDOW
+                **self._SUBPROCESS_KWARGS
             )
             
             try:

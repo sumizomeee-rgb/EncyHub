@@ -30,22 +30,31 @@ def get_base_path() -> str:
 
 def get_adb_path() -> str:
     """
-    Get the path to adb.exe.
+    Get the path to adb executable.
     - PyInstaller: bundled in _MEIPASS
-    - EncyHub mode: EncyHub/assets/adb.exe
-    - Standalone: assets/adb.exe relative to base
+    - EncyHub mode: EncyHub/assets/adb (or adb.exe on Windows)
+    - Standalone: assets/adb relative to base
+    - Linux/PATH: fall back to 'adb' if no bundled binary found
     """
+    adb_name = 'adb.exe' if sys.platform == 'win32' else 'adb'
+
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, 'adb.exe')
+        return os.path.join(sys._MEIPASS, adb_name)
 
     # Check for EncyHub mode
     if os.environ.get("ENCYHUB_MODE"):
-        # EncyHub root is 3 levels up from tools/adb_master/
         encyhub_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        return os.path.join(encyhub_root, 'assets', 'adb.exe')
+        bundled = os.path.join(encyhub_root, 'assets', adb_name)
+        if os.path.isfile(bundled):
+            return bundled
+        # Fall back to system adb
+        return adb_name
 
     # Standalone mode
-    return os.path.join(get_base_path(), 'assets', 'adb.exe')
+    bundled = os.path.join(get_base_path(), 'assets', adb_name)
+    if os.path.isfile(bundled):
+        return bundled
+    return adb_name
 
 
 def get_devices_dir() -> str:
