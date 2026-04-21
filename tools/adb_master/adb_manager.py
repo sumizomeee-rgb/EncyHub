@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Callable, List
 from .path_utils import get_adb_path, get_logcat_filename
+from .wireless_debug_manager import WirelessDebugManager
 
 
 @dataclass
@@ -103,6 +104,8 @@ class AdbManager:
         
         # Reverse mapping: hardware_id -> list of active ADB serials
         self._active_connections: dict[str, list[str]] = {}
+
+        self.wireless = WirelessDebugManager(self._run_command, self.adb_path)
     
     async def _run_command(self, *args, timeout: float = 30.0) -> tuple[int, str, str]:
         """
@@ -490,6 +493,42 @@ class AdbManager:
             return True, f'Connected to {wifi_address}', wifi_address
         else:
             return False, f'Connection failed: {message}', None
+
+    async def reconnect_wireless_debug(
+        self, hw_id: str, last_ip: str, last_connect_port: int,
+    ) -> tuple[bool, str, bool, Optional[int]]:
+        """
+        Reconnect a wireless_debug device. Tries mDNS discovery then stored port.
+
+        Returns:
+            (success, message, needs_repair, used_port)
+        """
+        # Attempt 1: mDNS discovery for new connect port
+        scan = await self.wireless.scan_mdns_services()
+        if scan.mdns_available:
+            for svc in scan.connect_services:
+                if svc.ip == last_ip:
+                    ok, msg = await self.wireless.connect_device(svc.ip, svc.port)
+                    if ok:
+                        match, actual_id = await self.wireless.verify_device_identity(
+                            f'{svc.ip}:{svc.port}', hw_id,
+                        )
+                        if match:
+                            return True, f'mDNS 重连成功: {svc.ip}:{svc.port}', False, svc.port
+                        # Identity mismatch — already disconnected by verify
+                        return False, f'IP 已被其他设备占用 (实际: {actual_id})', True, None
+
+        # Attempt 2: stored port
+        ok, msg = await self.wireless.connect_device(last_ip, last_connect_port)
+        if ok:
+            match, actual_id = await self.wireless.verify_device_identity(
+                f'{last_ip}:{last_connect_port}', hw_id,
+            )
+            if match:
+                return True, f'已通过存储端口重连: {last_ip}:{last_connect_port}', False, last_connect_port
+            return False, f'IP 已被其他设备占用 (实际: {actual_id})', True, None
+
+        return False, '重连失败，设备可能已重启或关闭了无线调试，需要重新配对', True, None
     
     async def start_logcat(
         self,

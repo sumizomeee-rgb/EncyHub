@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, RefreshCw, Smartphone, Wifi, Usb, FileText, Upload, Download,
   X, Package, RotateCcw, WifiOff, ChevronDown, ChevronRight, FolderOpen,
-  Play, Square, Zap, Edit, Check, Monitor, Archive, Search
+  Play, Square, Zap, Edit, Check, Monitor, Archive, Search, Plus,
+  Link2, CheckCircle2, AlertCircle, Radio, Info
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
@@ -56,6 +57,17 @@ function AdbMaster() {
 
   // 弹窗状态
   const [showInstallModal, setShowInstallModal] = useState(false)
+
+  // 无线配对向导 State
+  const [showPairWizard, setShowPairWizard] = useState(false)
+  const [wizardStep, setWizardStep] = useState(0)
+  const [wizardData, setWizardData] = useState({ ip: '', pairPort: '', connectPort: '', deviceName: '' })
+  const [wizardLoading, setWizardLoading] = useState(false)
+  const [wizardError, setWizardError] = useState(null)
+  const [scanResults, setScanResults] = useState([])
+  const [scanWarning, setScanWarning] = useState(null)
+  const [pairCode, setPairCode] = useState('')
+  const [connectPortInput, setConnectPortInput] = useState('')
 
   // 表单状态 (从 localStorage 恢复)
   const [pushLocalPath, setPushLocalPath] = useState(() => localStorage.getItem('adb_pushLocalPath') || '')
@@ -457,6 +469,8 @@ function AdbMaster() {
       return { icon: '◉', label: 'WiFi', className: 'badge-wifi' }
     } else if (device.usb_connected) {
       return { icon: '⚡', label: 'USB', className: 'badge-usb' }
+    } else if (device.connection_mode === 'wireless_debug' && device.needs_repair) {
+      return { icon: '⚠', label: '离线 · 需配对', className: 'badge-pair' }
     } else if (device.has_known_wifi) {
       return { icon: '◌', label: '离线 · 可重连', className: 'badge-reconnect' }
     }
@@ -781,7 +795,12 @@ function AdbMaster() {
         toast.success(data.message || '重连成功')
         fetchDevices()
       } else {
-        toast.error(data.detail || '重连失败')
+        if (res.headers.get('X-Needs-Repair') === 'true') {
+          toast.warning('无法重连，设备需要重新配对')
+        } else {
+          toast.error(data.detail || '重连失败')
+        }
+        fetchDevices()
       }
     } catch (err) {
       toast.error('重连失败: ' + err.message)
@@ -804,6 +823,106 @@ function AdbMaster() {
       }
     } catch (err) {
       toast.error('断开失败: ' + err.message)
+    }
+  }
+
+  // ======== 无线配对向导 ========
+  const handleOpenPairWizard = (prefillIp = '') => {
+    setWizardStep(0)
+    setWizardData({ ip: prefillIp, pairPort: '', connectPort: '', deviceName: '' })
+    setWizardLoading(false)
+    setWizardError(null)
+    setScanResults([])
+    setScanWarning(null)
+    setPairCode('')
+    setConnectPortInput('')
+    setShowPairWizard(true)
+  }
+
+  const handleWizardScan = async () => {
+    setWizardLoading(true)
+    setWizardError(null)
+    setScanWarning(null)
+    try {
+      const res = await fetch('/api/adb_master/devices/scan-wireless', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setWizardError(data.detail || '扫描失败')
+        return
+      }
+      setScanResults(data.pairing_services || [])
+      if (data.warning) {
+        const mdnsMessages = {
+          timeout: '自动扫描不可用（mDNS 服务响应超时），请在下方手动输入设备信息',
+          unavailable: '自动扫描不可用（系统未启用 mDNS 服务），请在下方手动输入设备信息',
+          unknown: '自动扫描不可用，请在下方手动输入设备信息',
+        }
+        setScanWarning(mdnsMessages[data.warning] || data.warning)
+      }
+      if (!data.pairing_services?.length && !data.warning) {
+        setScanWarning('未发现开启无线调试的设备。请确认手机已开启「无线调试」并点击「使用配对码配对设备」，或在下方手动输入')
+      }
+    } catch (err) {
+      setWizardError('扫描失败: ' + err.message)
+    } finally {
+      setWizardLoading(false)
+    }
+  }
+
+  const handleWizardPair = async () => {
+    if (!wizardData.ip || !wizardData.pairPort || pairCode.length < 6) return
+    setWizardLoading(true)
+    setWizardError(null)
+    try {
+      const res = await fetch('/api/adb_master/devices/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: wizardData.ip, port: parseInt(wizardData.pairPort), code: pairCode }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setWizardError(data.detail || '配对失败')
+        return
+      }
+      if (data.connected) {
+        setWizardData(d => ({ ...d, connectPort: data.connect_port, deviceName: data.model || data.hardware_id || '' }))
+        setWizardStep(3)
+        fetchDevices()
+      } else {
+        setWizardData(d => ({ ...d, connectPort: data.connect_port || '' }))
+        setConnectPortInput(data.connect_port ? String(data.connect_port) : '')
+        setWizardStep(2)
+      }
+    } catch (err) {
+      setWizardError('配对失败: ' + err.message)
+    } finally {
+      setWizardLoading(false)
+    }
+  }
+
+  const handleWizardConnect = async (port) => {
+    const connectPort = port || connectPortInput
+    if (!wizardData.ip || !connectPort) return
+    setWizardLoading(true)
+    setWizardError(null)
+    try {
+      const res = await fetch('/api/adb_master/devices/wireless-connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: wizardData.ip, port: parseInt(connectPort) }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setWizardError(data.detail || '连接失败，请检查端口')
+        return
+      }
+      setWizardData(d => ({ ...d, deviceName: data.model || data.hardware_id || '' }))
+      setWizardStep(3)
+      fetchDevices()
+    } catch (err) {
+      setWizardError('连接失败: ' + err.message)
+    } finally {
+      setWizardLoading(false)
     }
   }
 
@@ -1135,19 +1254,35 @@ function AdbMaster() {
             <p className="text-[var(--coffee-muted)] max-w-md mx-auto">
               请连接 Android 设备并确保已启用 USB 调试模式
             </p>
+            <button
+              className="btn-primary mt-4 flex items-center gap-2 mx-auto"
+              onClick={() => handleOpenPairWizard()}
+            >
+              <Plus size={16} />
+              添加无线设备
+            </button>
           </div>
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
             {/* Device Discovery Hub */}
             <div className="xl:col-span-1">
               <div className="glass-card p-5 animate-fade-in">
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--caramel)] to-[var(--caramel-dark)] flex items-center justify-center">
-                    <Smartphone size={16} className="text-white" />
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--caramel)] to-[var(--caramel-dark)] flex items-center justify-center">
+                      <Smartphone size={16} className="text-white" />
+                    </div>
+                    <h2 className="font-display text-lg font-semibold text-[var(--coffee-deep)]">
+                      设备发现
+                    </h2>
                   </div>
-                  <h2 className="font-display text-lg font-semibold text-[var(--coffee-deep)]">
-                    设备发现
-                  </h2>
+                  <button
+                    className="btn-secondary flex items-center gap-1.5 text-sm py-1.5 px-3"
+                    onClick={() => handleOpenPairWizard()}
+                  >
+                    <Plus size={14} />
+                    添加设备
+                  </button>
                 </div>
                 <div className="space-y-2">
                   {devices.map(device => {
@@ -1173,6 +1308,7 @@ function AdbMaster() {
                                 badge.className === 'badge-dual' ? 'bg-[var(--amber-soft)]/30 text-[var(--amber)]' :
                                 badge.className === 'badge-wifi' ? 'bg-[var(--sky-soft)]/30 text-[var(--sky)]' :
                                 badge.className === 'badge-usb' ? 'bg-[var(--sage-soft)]/30 text-[var(--sage)]' :
+                                badge.className === 'badge-pair' ? 'bg-[var(--terracotta)]/10 text-[var(--terracotta)] border border-[var(--terracotta)]/30' :
                                 badge.className === 'badge-reconnect' ? 'bg-[var(--amber-soft)]/20 text-[var(--coffee-muted)] border border-dashed border-[var(--caramel-light)]' :
                                 'bg-[var(--cream-warm)] text-[var(--coffee-muted)]'
                               }`}>
@@ -1287,13 +1423,22 @@ function AdbMaster() {
                           WiFi 连接
                         </button>
                       )}
-                      {!selectedDevice.usb_connected && !selectedDevice.wifi_connected && selectedDevice.has_known_wifi && (
+                      {!selectedDevice.usb_connected && !selectedDevice.wifi_connected && selectedDevice.has_known_wifi && !selectedDevice.needs_repair && (
                         <button
                           className="btn-primary flex items-center gap-2"
                           onClick={handleReconnectWifi}
                         >
                           <Wifi size={16} />
                           重连 WiFi
+                        </button>
+                      )}
+                      {!selectedDevice.usb_connected && !selectedDevice.wifi_connected && selectedDevice.connection_mode === 'wireless_debug' && selectedDevice.needs_repair && (
+                        <button
+                          className="btn-danger flex items-center gap-2"
+                          onClick={() => handleOpenPairWizard(selectedDevice.wifi_ip)}
+                        >
+                          <Link2 size={16} />
+                          重新配对
                         </button>
                       )}
                       {selectedDevice.wifi_connected && (
@@ -2040,6 +2185,260 @@ function AdbMaster() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Wireless Pair Wizard Modal */}
+      {showPairWizard && (
+        <div className="modal-overlay" onClick={() => setShowPairWizard(false)}>
+          <div
+            className="glass-card p-6 w-[520px] animate-fade-in"
+            style={{ animation: 'slideUp 0.3s ease' }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[var(--sky)] to-[var(--sky-dark,var(--sky))] flex items-center justify-center">
+                  <Link2 size={20} className="text-white" />
+                </div>
+                <h3 className="font-display text-lg font-semibold">无线配对</h3>
+              </div>
+              <button
+                onClick={() => setShowPairWizard(false)}
+                className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Step indicator */}
+            <div className="flex items-center gap-2 mb-6">
+              {[0, 1, 2, 3].map(i => (
+                <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${
+                  i === wizardStep ? 'bg-[var(--caramel)] w-6' :
+                  i < wizardStep  ? 'bg-[var(--sage)] w-4' :
+                                    'bg-[var(--cream-warm)] w-4'
+                }`} />
+              ))}
+            </div>
+
+            {/* Step 0: Scan / Manual Input */}
+            {wizardStep === 0 && (
+              <div className="space-y-4">
+                <p className="text-sm text-[var(--coffee-light)]">
+                  请在手机上开启 <span className="font-medium">设置 → 开发者选项 → 无线调试</span>，然后扫描或手动输入设备信息。
+                </p>
+
+                <button
+                  className="btn-secondary w-full flex items-center justify-center gap-2 py-2.5"
+                  onClick={handleWizardScan}
+                  disabled={wizardLoading}
+                >
+                  {wizardLoading ? (
+                    <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> 扫描中...</>
+                  ) : (
+                    <><Radio size={16} /> 扫描局域网设备</>
+                  )}
+                </button>
+
+                {scanWarning && (
+                  <div className="p-3 rounded-lg bg-[var(--sky-soft)]/15 border border-[var(--sky-soft)]/30 flex items-start gap-2">
+                    <Info size={16} className="text-[var(--sky)] shrink-0 mt-0.5" />
+                    <span className="text-sm text-[var(--coffee-light)]">{scanWarning}</span>
+                  </div>
+                )}
+
+                {scanResults.length > 0 && (
+                  <div className="space-y-1.5">
+                    <label className="block text-xs text-[var(--coffee-muted)]">发现以下设备，点击选择：</label>
+                    {scanResults.map((svc, i) => (
+                      <div
+                        key={i}
+                        className={`p-3 rounded-lg cursor-pointer transition-all border-l-4 ${
+                          wizardData.ip === svc.ip && wizardData.pairPort === String(svc.port)
+                            ? 'bg-[var(--sky-soft)]/20 border-[var(--sky)]'
+                            : 'bg-[var(--cream-warm)]/50 border-transparent hover:border-[var(--sky-soft)]'
+                        }`}
+                        onClick={() => setWizardData(d => ({ ...d, ip: svc.ip, pairPort: String(svc.port) }))}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-sm text-[var(--coffee-deep)]">{svc.ip}:{svc.port}</span>
+                          <span className="text-xs text-[var(--coffee-muted)]">{svc.service_name}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="space-y-2.5 pt-2 border-t border-[var(--glass-border)]">
+                  <label className="block text-xs text-[var(--coffee-muted)]">
+                    {scanWarning ? '请输入手机上显示的信息' : '或手动输入'}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-[var(--coffee-muted)] mb-1">IP 地址</label>
+                      <input
+                        type="text"
+                        value={wizardData.ip}
+                        onChange={e => setWizardData(d => ({ ...d, ip: e.target.value }))}
+                        placeholder="如 10.101.0.38"
+                        className="font-mono text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-[var(--coffee-muted)] mb-1">配对端口</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={wizardData.pairPort}
+                        onChange={e => setWizardData(d => ({ ...d, pairPort: e.target.value.replace(/\D/g, '') }))}
+                        placeholder="如 37349"
+                        className="font-mono text-sm"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {wizardError && (
+                  <div className="p-3 rounded-lg bg-[var(--terracotta)]/10 border border-[var(--terracotta)]/20 flex items-start gap-2">
+                    <AlertCircle size={16} className="text-[var(--terracotta)] shrink-0 mt-0.5" />
+                    <span className="text-sm text-[var(--coffee-deep)]">{wizardError}</span>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-2">
+                  <button className="btn-secondary flex-1" onClick={() => setShowPairWizard(false)}>取消</button>
+                  <button
+                    className="btn-primary flex-1"
+                    onClick={() => setWizardStep(1)}
+                    disabled={!wizardData.ip || !wizardData.pairPort}
+                  >
+                    下一步
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 1: Pairing Code */}
+            {wizardStep === 1 && (
+              <div className="space-y-4">
+                <p className="text-sm text-[var(--coffee-light)]">
+                  请查看手机屏幕上 <span className="font-medium">无线调试 → 使用配对码配对设备</span> 中显示的 6 位配对码。
+                </p>
+                <div className="p-3 rounded-lg bg-[var(--cream-warm)]/50">
+                  <div className="text-xs text-[var(--coffee-muted)]">正在配对</div>
+                  <div className="font-mono text-sm text-[var(--coffee-deep)]">{wizardData.ip}:{wizardData.pairPort}</div>
+                </div>
+                <div>
+                  <label className="block text-xs text-[var(--coffee-muted)] mb-1">6 位配对码</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={pairCode}
+                    onChange={e => setPairCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="000000"
+                    className="font-mono text-2xl text-center tracking-[0.5em] py-3"
+                    autoFocus
+                  />
+                </div>
+
+                {wizardError && (
+                  <div className="p-3 rounded-lg bg-[var(--terracotta)]/10 border border-[var(--terracotta)]/20 flex items-start gap-2">
+                    <AlertCircle size={16} className="text-[var(--terracotta)] shrink-0 mt-0.5" />
+                    <span className="text-sm text-[var(--coffee-deep)]">{wizardError}</span>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-2">
+                  <button className="btn-secondary flex-1" onClick={() => { setWizardStep(0); setWizardError(null); setPairCode('') }}>
+                    上一步
+                  </button>
+                  <button
+                    className="btn-primary flex-1 flex items-center justify-center gap-2"
+                    onClick={handleWizardPair}
+                    disabled={pairCode.length < 6 || wizardLoading}
+                  >
+                    {wizardLoading ? (
+                      <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> 配对中...</>
+                    ) : (
+                      <><Link2 size={16} /> 配对</>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 2: Manual Connect (when auto-connect failed) */}
+            {wizardStep === 2 && (
+              <div className="space-y-4">
+                <div className="p-3 rounded-lg bg-[var(--sage)]/10 border border-[var(--sage)]/20 flex items-start gap-2">
+                  <CheckCircle2 size={16} className="text-[var(--sage)] shrink-0 mt-0.5" />
+                  <span className="text-sm text-[var(--coffee-deep)]">配对成功！但未能自动发现连接端口，请手动输入。</span>
+                </div>
+                <p className="text-sm text-[var(--coffee-light)]">
+                  在手机 <span className="font-medium">无线调试</span> 页面的 <span className="font-medium">IP 地址和端口</span> 处查看连接端口（注意：不是配对端口）。
+                </p>
+                <div>
+                  <label className="block text-xs text-[var(--coffee-muted)] mb-1">连接端口</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={connectPortInput}
+                    onChange={e => setConnectPortInput(e.target.value.replace(/\D/g, ''))}
+                    placeholder="35371"
+                    className="font-mono text-sm"
+                    autoFocus
+                  />
+                </div>
+
+                {wizardError && (
+                  <div className="p-3 rounded-lg bg-[var(--terracotta)]/10 border border-[var(--terracotta)]/20 flex items-start gap-2">
+                    <AlertCircle size={16} className="text-[var(--terracotta)] shrink-0 mt-0.5" />
+                    <span className="text-sm text-[var(--coffee-deep)]">{wizardError}</span>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-2">
+                  <button className="btn-secondary flex-1" onClick={() => setShowPairWizard(false)}>稍后连接</button>
+                  <button
+                    className="btn-primary flex-1 flex items-center justify-center gap-2"
+                    onClick={() => handleWizardConnect(connectPortInput)}
+                    disabled={!connectPortInput || wizardLoading}
+                  >
+                    {wizardLoading ? (
+                      <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> 连接中...</>
+                    ) : (
+                      <><Wifi size={16} /> 连接</>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Success */}
+            {wizardStep === 3 && (
+              <div className="space-y-4 text-center py-4">
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-[var(--sage)]/15 flex items-center justify-center">
+                  <CheckCircle2 size={32} className="text-[var(--sage)]" />
+                </div>
+                <div>
+                  <h4 className="font-display text-lg font-semibold text-[var(--coffee-deep)]">配对成功！</h4>
+                  <p className="text-sm text-[var(--coffee-muted)] mt-1">
+                    {wizardData.deviceName ? `${wizardData.deviceName} 已添加到设备列表` : '设备已添加到设备列表'}
+                  </p>
+                </div>
+                <button
+                  className="btn-primary mx-auto flex items-center gap-2"
+                  onClick={() => setShowPairWizard(false)}
+                >
+                  <Check size={16} />
+                  完成
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -91,6 +91,17 @@ class PathHistoryRequest(BaseModel):
     category: str = "push"
 
 
+class PairRequest(BaseModel):
+    ip: str
+    port: int
+    code: str
+
+
+class WirelessConnectRequest(BaseModel):
+    ip: str
+    port: int
+
+
 # ============================================================================
 # Devices API
 # ============================================================================
@@ -114,6 +125,7 @@ async def get_devices():
             )
 
         wifi_ip = dev.wifi_ip or config.get("last_wifi_ip", "")
+        conn_mode = config.get("connection_mode", "tcpip")
         result.append({
             "hardware_id": dev.hardware_id,
             "model": dev.model,
@@ -124,6 +136,8 @@ async def get_devices():
             "nickname": config.get("nickname", ""),
             "active_serial": dev.active_serial,
             "has_known_wifi": bool(config.get("last_wifi_ip")),
+            "connection_mode": conn_mode,
+            "needs_repair": config.get("needs_repair", False),
         })
         online_hw_ids.add(
             dev.hardware_id.replace(':', '_').replace('.', '_')
@@ -149,6 +163,8 @@ async def get_devices():
             "active_serial": None,
             "has_known_wifi": True,
             "offline": True,
+            "connection_mode": cfg.get("connection_mode", "tcpip"),
+            "needs_repair": cfg.get("needs_repair", False),
         })
 
     return {"devices": result}
@@ -221,8 +237,7 @@ async def connect_wifi(hw_id: str):
 async def reconnect_wifi(hw_id: str):
     """
     WiFi 快速重连（无需 USB）。
-    使用配置中保存的 WiFi IP 直接 adb connect。
-    前提：设备之前已成功连接过 WiFi（tcpip 模式未因重启失效）。
+    根据 connection_mode 选择 tcpip 或 wireless_debug 重连策略。
     """
     # 先检查是否在线设备中（可能已经通过其他方式连上了）
     devices = await adb_mgr.get_unified_devices()
@@ -236,12 +251,147 @@ async def reconnect_wifi(hw_id: str):
     if not last_ip:
         raise HTTPException(400, "无已知 WiFi IP，请先通过 USB 连接并建立 WiFi 连接")
 
-    # 直接用已知 IP 重连
+    # wireless_debug 模式：mDNS 发现 → 存储端口 → 需重新配对
+    if config.get("connection_mode") == "wireless_debug":
+        last_port = config.get("last_connect_port", 5555)
+        success, msg, needs_repair, used_port = await adb_mgr.reconnect_wireless_debug(
+            hw_id, last_ip, last_port,
+        )
+        if success:
+            config_mgr.set_device_config(hw_id, needs_repair=False, last_connect_port=used_port)
+            return {"message": msg}
+        else:
+            config_mgr.set_device_config(hw_id, needs_repair=needs_repair)
+            raise HTTPException(400, detail=msg, headers={"X-Needs-Repair": "true"} if needs_repair else None)
+
+    # tcpip 模式：直接用已知 IP 重连
     success, msg = await adb_mgr.connect_wifi(last_ip)
     if not success:
         raise HTTPException(400, f"重连失败: {msg}。可能设备已重启或 IP 已变更，请重新 USB 连接。")
 
     return {"message": f"WiFi 重连成功: {last_ip}:5555"}
+
+
+# ============================================================================
+# Wireless Debug (adb pair) API
+# ============================================================================
+
+@app.post("/devices/scan-wireless")
+async def scan_wireless_devices():
+    """扫描局域网中开启无线调试的设备（mDNS）"""
+    ok, version = await adb_mgr.wireless.check_adb_version()
+    if not ok:
+        raise HTTPException(400, f"需要 platform-tools ≥ 30 才能使用无线调试。当前版本: {version}")
+
+    scan = await adb_mgr.wireless.scan_mdns_services()
+    return {
+        "mdns_available": scan.mdns_available,
+        "pairing_services": [
+            {"service_name": s.service_name, "ip": s.ip, "port": s.port}
+            for s in scan.pairing_services
+        ],
+        "connect_services": [
+            {"service_name": s.service_name, "ip": s.ip, "port": s.port}
+            for s in scan.connect_services
+        ],
+        "warning": scan.error,
+    }
+
+
+@app.post("/devices/pair")
+async def pair_wireless_device(req: PairRequest):
+    """无线调试配对（adb pair）+ 自动连接"""
+    ok, version = await adb_mgr.wireless.check_adb_version()
+    if not ok:
+        raise HTTPException(400, f"需要 platform-tools ≥ 30。当前版本: {version}")
+
+    # Step 1: Pair
+    success, msg = await adb_mgr.wireless.pair_device(req.ip, req.port, req.code)
+    if not success:
+        raise HTTPException(400, msg)
+
+    # Step 2: Find connect port via mDNS
+    connect_port = await adb_mgr.wireless.find_connect_port_via_mdns(req.ip)
+
+    # Step 3: Auto-connect if port found
+    connected = False
+    connect_address = None
+    hardware_id = None
+    model = None
+
+    if connect_port:
+        ok, connect_msg = await adb_mgr.wireless.connect_device(req.ip, connect_port)
+        if ok:
+            connect_address = f"{req.ip}:{connect_port}"
+            connected = True
+
+    if connected:
+        # Verify identity and get hardware_id
+        valid, hw_id = await adb_mgr.wireless.verify_device_identity(connect_address)
+        if valid and hw_id:
+            hardware_id = hw_id
+            model = await adb_mgr.wireless.get_device_model(connect_address)
+
+            # Check for existing device (dedup by hardware_id)
+            existing = config_mgr.get_device_config(hw_id)
+            nickname = existing.get("nickname", "")
+
+            config_mgr.set_device_config(
+                hw_id,
+                connection_mode="wireless_debug",
+                last_wifi_ip=req.ip,
+                last_connect_port=connect_port,
+                last_model=model,
+                original_hardware_id=hw_id,
+                needs_repair=False,
+                **({"nickname": nickname} if nickname else {}),
+            )
+
+    return {
+        "paired": True,
+        "connected": connected,
+        "connect_port": connect_port,
+        "connect_address": connect_address,
+        "hardware_id": hardware_id,
+        "model": model,
+        "needs_manual_connect": not connected,
+        "message": "配对成功" + ("，已自动连接" if connected else "，请手动输入连接端口"),
+    }
+
+
+@app.post("/devices/wireless-connect")
+async def wireless_connect(req: WirelessConnectRequest):
+    """手动输入端口连接已配对的无线调试设备"""
+    ok, msg = await adb_mgr.wireless.connect_device(req.ip, req.port)
+    if not ok:
+        raise HTTPException(400, f"连接失败: {msg}")
+
+    serial = f"{req.ip}:{req.port}"
+    valid, hw_id = await adb_mgr.wireless.verify_device_identity(serial)
+    if not valid or not hw_id:
+        raise HTTPException(400, "连接成功但无法获取设备身份信息")
+
+    model = await adb_mgr.wireless.get_device_model(serial)
+    existing = config_mgr.get_device_config(hw_id)
+    nickname = existing.get("nickname", "")
+
+    config_mgr.set_device_config(
+        hw_id,
+        connection_mode="wireless_debug",
+        last_wifi_ip=req.ip,
+        last_connect_port=req.port,
+        last_model=model,
+        original_hardware_id=hw_id,
+        needs_repair=False,
+        **({"nickname": nickname} if nickname else {}),
+    )
+
+    return {
+        "connected": True,
+        "hardware_id": hw_id,
+        "model": model,
+        "message": f"已连接: {serial}",
+    }
 
 
 @app.post("/devices/{hw_id}/disconnect")
