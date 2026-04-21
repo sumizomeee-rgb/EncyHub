@@ -32,6 +32,7 @@ function AdbMaster() {
   const [pkgFilter, setPkgFilter] = useState('third_party')
   const [pkgSearch, setPkgSearch] = useState('')
   const [extractDir, setExtractDir] = useState(() => localStorage.getItem('adb_extractDir') || 'D:\\apk_backup')
+  const [extractDownloadId, setExtractDownloadId] = useState(null)
   const [extracting, setExtracting] = useState(false)
   const [extractProgress, setExtractProgress] = useState(null)
   const [packagesLoading, setPackagesLoading] = useState(false)
@@ -986,13 +987,19 @@ function AdbMaster() {
     if (!selectedDevice || selectedPkgs.size === 0) return
     setExtracting(true)
     setExtractProgress({ current: 0, total: selectedPkgs.size, currentPkg: '', percent: 0 })
-    localStorage.setItem('adb_extractDir', extractDir)
+    setExtractDownloadId(null)
+    if (isLocalhost) localStorage.setItem('adb_extractDir', extractDir)
+
+    const endpoint = isLocalhost ? 'extract-apks' : 'extract-apks-download'
+    const body = isLocalhost
+      ? { packages: [...selectedPkgs], local_dir: extractDir }
+      : { packages: [...selectedPkgs] }
 
     try {
-      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/extract-apks`, {
+      const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ packages: [...selectedPkgs], local_dir: extractDir }),
+        body: JSON.stringify(body),
       })
 
       const reader = res.body.getReader()
@@ -1030,6 +1037,7 @@ function AdbMaster() {
                 lastSpeed: evt.speed_bps ? formatSize(evt.speed_bps) + '/s' : null,
               }))
             } else if (evt.type === 'done') {
+              if (evt.download_id) setExtractDownloadId(evt.download_id)
               setExtractProgress({
                 done: true,
                 success_count: evt.success_count,
@@ -2002,32 +2010,37 @@ function AdbMaster() {
                         {/* 提取配置 + 操作按钮 */}
                         {packages.length > 0 && !extracting && !extractProgress?.done && (
                           <div className="pt-2 border-t border-[var(--glass-border)] space-y-2">
-                            <div>
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">保存到本地目录</label>
-                              <div className="flex gap-2">
-                                <input
-                                  type="text"
-                                  value={extractDir}
-                                  onChange={e => setExtractDir(e.target.value)}
-                                  placeholder="D:\apk_backup"
-                                  className="font-mono text-sm flex-1"
-                                />
-                                <button
-                                  className="btn-secondary p-2 shrink-0"
-                                  onClick={handleOpenExtractDir}
-                                  title="打开目录"
-                                >
-                                  <FolderOpen size={16} />
-                                </button>
+                            {isLocalhost && (
+                              <div>
+                                <label className="block text-xs text-[var(--coffee-muted)] mb-1">保存到本地目录</label>
+                                <div className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    value={extractDir}
+                                    onChange={e => setExtractDir(e.target.value)}
+                                    placeholder="D:\apk_backup"
+                                    className="font-mono text-sm flex-1"
+                                  />
+                                  <button
+                                    className="btn-secondary p-2 shrink-0"
+                                    onClick={handleOpenExtractDir}
+                                    title="打开目录"
+                                  >
+                                    <FolderOpen size={16} />
+                                  </button>
+                                </div>
                               </div>
-                            </div>
+                            )}
                             <button
                               className="btn-primary flex items-center gap-2"
                               onClick={handleExtract}
                               disabled={selectedPkgs.size === 0}
                             >
                               <Archive size={14} />
-                              开始提取 ({selectedPkgs.size} 个, ~{formatSize(selectedTotalSize)})
+                              {isLocalhost
+                                ? `开始提取 (${selectedPkgs.size} 个, ~${formatSize(selectedTotalSize)})`
+                                : `提取并下载 (${selectedPkgs.size} 个, ~${formatSize(selectedTotalSize)})`
+                              }
                             </button>
                           </div>
                         )}
@@ -2077,20 +2090,34 @@ function AdbMaster() {
                               </span>
                             </div>
                             <div className="flex gap-2">
-                              <button
-                                className="btn-primary flex items-center gap-2"
-                                onClick={handleOpenExtractDir}
-                              >
-                                <FolderOpen size={14} />
-                                打开输出目录
-                              </button>
+                              {isLocalhost ? (
+                                <button
+                                  className="btn-primary flex items-center gap-2"
+                                  onClick={handleOpenExtractDir}
+                                >
+                                  <FolderOpen size={14} />
+                                  打开输出目录
+                                </button>
+                              ) : extractDownloadId && (
+                                <a
+                                  href={`/api/adb_master/devices/extract-download/${extractDownloadId}`}
+                                  className="btn-primary flex items-center gap-2"
+                                  download
+                                >
+                                  <Download size={14} />
+                                  下载到本机
+                                </a>
+                              )}
                               <button
                                 className="btn-secondary flex items-center gap-2"
-                                onClick={() => setExtractProgress(null)}
+                                onClick={() => { setExtractProgress(null); setExtractDownloadId(null) }}
                               >
                                 继续提取
                               </button>
                             </div>
+                            {!isLocalhost && extractDownloadId && (
+                              <p className="text-xs text-[var(--coffee-muted)]">下载链接 30 分钟内有效</p>
+                            )}
                           </div>
                         )}
                       </div>

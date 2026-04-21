@@ -804,7 +804,8 @@ end`
               <div className="glass-card p-5 h-full animate-fade-in" style={{ animationDelay: '0.15s' }}>
                 {/* Tab Bar */}
                 <div className="flex items-center justify-between mb-2">
-                  <div ref={tabBarRef} className="flex items-center gap-1 bg-[var(--cream-warm)] rounded-lg p-1 overflow-x-auto scrollbar-hide">
+                  <div className="bg-[var(--cream-warm)] rounded-lg p-1 min-w-0 flex-1">
+                    <div ref={tabBarRef} className="flex items-center gap-1 px-2 overflow-x-auto scrollbar-hide" style={{ maskImage: 'linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent)', WebkitMaskImage: 'linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent)' }}>
                     {tabOrder.map(tabId => {
                       const meta = TAB_META[tabId]
                       if (!meta) return null
@@ -874,6 +875,7 @@ end`
                         </button>
                       )
                     })}
+                    </div>
                   </div>
                   {activeTab === 'lua_gm' && (
                     <button

@@ -812,7 +812,7 @@ _extract_cancel_events: dict[str, asyncio.Event] = {}
 
 class ExtractApksRequest(BaseModel):
     packages: list[str]
-    local_dir: str
+    local_dir: str = ""
 
 
 @app.get("/devices/{hw_id}/packages")
@@ -913,6 +913,119 @@ async def cancel_extract(hw_id: str):
         cancel_event.set()
         return {"message": "已发送取消信号"}
     return {"message": "没有正在进行的提取任务"}
+
+
+# 远程下载模式：临时文件映射 download_id -> {path, created_at}
+_extract_downloads: dict[str, dict] = {}
+
+
+@app.post("/devices/{hw_id}/extract-apks-download")
+async def extract_apks_download(hw_id: str, req: ExtractApksRequest):
+    """
+    远程模式：提取 APK 到临时目录，通过 SSE 返回进度。
+    完成后返回 download_id，用于 GET /devices/extract-download/{id} 下载。
+    """
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(404, "设备不存在或离线")
+
+    serial = dev.active_serial
+    if not req.packages:
+        raise HTTPException(400, "packages 不能为空")
+
+    download_id = uuid.uuid4().hex[:12]
+    temp_dir = os.path.join(DATA_DIR, "temp", "extract_download", download_id)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    all_packages = await adb_mgr.list_packages(serial, third_party_only=False)
+    pkg_map = {p["package"]: p for p in all_packages}
+
+    cancel_event = asyncio.Event()
+    _extract_cancel_events[hw_id] = cancel_event
+
+    async def generate():
+        total = len(req.packages)
+        success_count = 0
+        fail_count = 0
+        extracted_files = []
+
+        for i, pkg_name in enumerate(req.packages):
+            if cancel_event.is_set():
+                yield f"data: {json.dumps({'type': 'cancelled', 'current': i, 'total': total}, ensure_ascii=False)}\n\n"
+                break
+
+            pkg_info = pkg_map.get(pkg_name)
+            if not pkg_info or not pkg_info["apk_path"]:
+                fail_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'package': pkg_name, 'status': 'failed', 'error': '找不到 APK 路径', 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+                continue
+
+            yield f"data: {json.dumps({'type': 'start', 'package': pkg_name, 'expected_size': pkg_info['size_bytes'], 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+
+            local_path = os.path.join(temp_dir, f"{pkg_name}.apk")
+            start_time = time.time()
+
+            result = await adb_mgr.extract_apk(
+                serial, pkg_info["apk_path"], local_path, cancel_event
+            )
+
+            elapsed = time.time() - start_time
+            speed = result["size_bytes"] / elapsed if elapsed > 0 else 0
+
+            if result["success"]:
+                success_count += 1
+                extracted_files.append(local_path)
+                yield f"data: {json.dumps({'type': 'item', 'package': pkg_name, 'status': 'done', 'size_bytes': result['size_bytes'], 'speed_bps': int(speed), 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+            elif result["error"] == "cancelled":
+                yield f"data: {json.dumps({'type': 'cancelled', 'current': i, 'total': total}, ensure_ascii=False)}\n\n"
+                break
+            else:
+                fail_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'package': pkg_name, 'status': 'failed', 'error': result['error'], 'current': i + 1, 'total': total}, ensure_ascii=False)}\n\n"
+
+        if success_count > 0:
+            if success_count == 1:
+                final_path = extracted_files[0]
+            else:
+                zip_path = os.path.join(temp_dir, "apks.zip")
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for fp in extracted_files:
+                        zf.write(fp, os.path.basename(fp))
+                final_path = zip_path
+
+            _extract_downloads[download_id] = {
+                "path": final_path,
+                "created_at": time.time(),
+            }
+
+            # 30 分钟后清理
+            async def cleanup_later():
+                await asyncio.sleep(1800)
+                _extract_downloads.pop(download_id, None)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            asyncio.create_task(cleanup_later())
+
+        yield f"data: {json.dumps({'type': 'done', 'success_count': success_count, 'fail_count': fail_count, 'total': total, 'download_id': download_id if success_count > 0 else None}, ensure_ascii=False)}\n\n"
+        _extract_cancel_events.pop(hw_id, None)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/devices/extract-download/{download_id}")
+async def get_extract_download(download_id: str, background_tasks: BackgroundTasks):
+    """下载已提取的 APK 文件"""
+    entry = _extract_downloads.get(download_id)
+    if not entry or not os.path.exists(entry["path"]):
+        raise HTTPException(404, "下载链接已过期或不存在")
+
+    file_path = entry["path"]
+    filename = os.path.basename(file_path)
+    return FileResponse(
+        file_path,
+        filename=filename,
+        media_type='application/octet-stream',
+    )
 
 
 # ============================================================================
