@@ -104,6 +104,15 @@ async def get_devices():
 
     for dev in devices:
         config = config_mgr.get_device_config(dev.hardware_id)
+
+        if dev.wifi_address and dev.wifi_ip and config.get("last_wifi_ip") != dev.wifi_ip:
+            config_mgr.set_device_config(
+                dev.hardware_id,
+                last_wifi_ip=dev.wifi_ip,
+                last_model=dev.model,
+                original_hardware_id=dev.hardware_id,
+            )
+
         wifi_ip = dev.wifi_ip or config.get("last_wifi_ip", "")
         result.append({
             "hardware_id": dev.hardware_id,
