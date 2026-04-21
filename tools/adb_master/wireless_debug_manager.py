@@ -54,15 +54,20 @@ class WirelessDebugManager:
     async def check_mdns_available(self) -> tuple[bool, str]:
         returncode, stdout, stderr = await self._run('mdns', 'check', timeout=10.0)
         output = (stdout + stderr).strip()
-        if returncode == 0 and 'mdns daemon' in output.lower():
-            return True, output
         if 'running' in output.lower() and 'not' not in output.lower():
             return True, output
+        if returncode == 0 and 'mdns daemon' in output.lower():
+            return True, output
+        # adb 35+ has built-in mDNS that works even when "mdns check" reports
+        # daemon unavailable — fall back to testing "mdns services" directly
+        if 'timed out' not in output.lower():
+            rc2, out2, err2 = await self._run('mdns', 'services', timeout=10.0)
+            combined = (out2 + err2).strip().lower()
+            if rc2 == 0 and 'timed out' not in combined and 'error' not in combined:
+                return True, 'builtin'
         if 'timed out' in output.lower():
             return False, 'timeout'
-        if 'unavailable' in output.lower():
-            return False, 'unavailable'
-        return False, 'unknown'
+        return False, 'unavailable'
 
     async def scan_mdns_services(self) -> WirelessScanResult:
         available, msg = await self.check_mdns_available()
