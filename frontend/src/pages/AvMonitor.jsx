@@ -6,7 +6,69 @@ import {
 import { copyText } from '../utils/clipboard'
 
 // ============================================================
-// SliderWithDebounce
+// VideoSlider — custom slider for precise video seeking
+// ============================================================
+function VideoSlider({ value, max, onSeek, onPreview, disabled, className }) {
+  const trackRef = useRef(null)
+  const dragging = useRef(false)
+
+  const clamp = (v) => Math.max(0, Math.min(v, max || 1))
+  const valFromEvent = (e) => {
+    const rect = trackRef.current.getBoundingClientRect()
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left
+    return clamp((x / rect.width) * (max || 1))
+  }
+  const pctPos = max > 0 ? `${(clamp(value) / max) * 100}%` : '0%'
+
+  useEffect(() => {
+    if (!dragging.current) return
+    const onMove = (e) => {
+      e.preventDefault()
+      const v = valFromEvent(e)
+      onPreview?.(v)
+    }
+    const onUp = (e) => {
+      dragging.current = false
+      const v = valFromEvent(e)
+      onSeek?.(v)
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('touchend', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('touchend', onUp)
+    }
+  })
+
+  const startDrag = (e) => {
+    if (disabled) return
+    dragging.current = true
+    document.body.style.userSelect = 'none'
+    const v = valFromEvent(e)
+    onPreview?.(v)
+  }
+
+  return (
+    <div ref={trackRef} className={`relative h-4 flex items-center cursor-pointer ${disabled ? 'opacity-40 pointer-events-none' : ''} ${className || ''}`}
+      onMouseDown={startDrag} onTouchStart={startDrag}>
+      {/* track bg */}
+      <div className="absolute left-0 right-0 h-1.5 rounded-full bg-[var(--glass-border)]" />
+      {/* filled */}
+      <div className="absolute left-0 h-1.5 rounded-full bg-[var(--caramel)]" style={{ width: pctPos }} />
+      {/* thumb */}
+      <div className="absolute h-3 w-3 rounded-full bg-[var(--caramel)] border-2 border-white shadow-sm -translate-x-1/2"
+        style={{ left: pctPos }} />
+    </div>
+  )
+}
+
+// ============================================================
+// SliderWithDebounce (for audio volume etc.)
 // ============================================================
 function SliderWithDebounce({ value, min = 0, max = 1, step = 0.01, onChange, disabled, className }) {
   const [local, setLocal] = useState(value ?? 0)
@@ -21,7 +83,7 @@ function SliderWithDebounce({ value, min = 0, max = 1, step = 0.01, onChange, di
         if (timerRef.current) clearTimeout(timerRef.current)
         timerRef.current = setTimeout(() => onChange(v), 120)
       }}
-      className={`h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--caramel)] disabled:opacity-40 disabled:cursor-not-allowed ${className || ''}`}
+      className={`h-2 rounded-full cursor-pointer accent-[var(--caramel)] disabled:opacity-40 disabled:cursor-not-allowed ${className || ''}`}
     />
   )
 }
@@ -376,10 +438,11 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
 
   const [leftWidth, setLeftWidth] = useState(200)
   const [moreInfoExpanded, setMoreInfoExpanded] = useState(false)
-  const [speedLocal, setSpeedLocal] = useState(1)
+  const [speedLocal, setSpeedLocal] = useState('1')
   const [editingTime, setEditingTime] = useState(false)
   const [timeInput, setTimeInput] = useState('')
   const [displayTime, setDisplayTime] = useState(0)
+  const [previewTime, setPreviewTime] = useState(null)
   const isDragging = useRef(false)
   const anchorRef = useRef({ time: 0, ts: 0, speed: 1, playing: false, total: 0 })
   const rafRef = useRef(null)
@@ -388,7 +451,7 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
   const player = players.find(p => p.id === selectedPlayer)
 
   useEffect(() => {
-    if (player?.speed != null) setSpeedLocal(player.speed)
+    if (player?.speed != null) setSpeedLocal(String(player.speed))
   }, [player?.speed])
 
   // Sync anchor when snapshot arrives
@@ -514,81 +577,97 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
           onMouseDown={e => { e.preventDefault(); isDragging.current = true }} />
 
         {/* Right: Player detail */}
-        <div className="flex-1 min-w-0 overflow-y-auto p-3 space-y-2.5 text-xs">
+        <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-3 space-y-2.5 text-xs">
           {!selectedPlayer || !player ? (
             <div className="flex items-center justify-center h-40 text-[var(--coffee-muted)]">
               点击左侧选择播放器
             </div>
           ) : (
             <>
-              {/* Status + progress */}
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <VideoStatusBadge status={player.status} />
-                  <span className="font-semibold text-[var(--coffee-deep)] truncate">{player.name || player.id}</span>
-                </div>
-                <div className="relative">
-                  <div className="flex justify-between text-[var(--coffee-muted)] mb-0.5 font-mono text-[10px]">
-                    {editingTime ? (
-                      <input
-                        type="text"
-                        value={timeInput}
-                        onChange={e => setTimeInput(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') handleTimeSubmit()
-                          if (e.key === 'Escape') { setEditingTime(false); setTimeInput('') }
-                        }}
-                        onBlur={handleTimeSubmit}
-                        placeholder="0:00"
-                        className="w-12 bg-transparent border-b border-[var(--caramel)] focus:outline-none font-mono text-[10px] text-[var(--coffee-deep)]"
-                        autoFocus
-                      />
-                    ) : (
-                      <span className="cursor-pointer hover:text-[var(--coffee-deep)] transition-colors"
-                        onClick={() => { setEditingTime(true); setTimeInput(fmtTime(displayTime)) }}
-                        title="点击跳转">
-                        {fmtTime(displayTime)}
-                      </span>
-                    )}
-                    <span>{fmtTime(player.totalTime)}</span>
-                  </div>
-                  <SliderWithDebounce
-                    value={displayTime}
-                    min={0}
-                    max={player.totalTime || 1}
-                    step={0.1}
-                    onChange={v => videoCmd('video_seek', { time: v })}
-                    disabled={!player.totalTime}
-                    className="w-full"
-                  />
-                </div>
+              {/* Header: status + name */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <VideoStatusBadge status={player.status} />
+                <span className="font-semibold text-[var(--coffee-deep)] truncate">{player.name || player.id}</span>
               </div>
 
-              {/* Controls + Speed (one line) */}
-              <div className="flex items-center gap-1.5">
-                {[
-                  ['video_play',   <Play size={10} />,   '播放',  player.status === 'Playing' && !player.isPaused],
-                  ...(player.isPaused
-                    ? [['video_resume', <Play size={10} />, '继续', true]]
-                    : [['video_pause', <Pause size={10} />, '暂停', false]]),
-                  ['video_stop',   <Square size={10} />, '停止',  player.status === 'Stop'],
-                ].map(([action, icon, label, isActive]) => (
-                  <button key={action} onClick={() => videoCmd(action)}
-                    className={`flex items-center gap-1 px-2 py-1 rounded transition-colors ${isActive
-                      ? 'bg-[var(--caramel)]/25 text-[var(--coffee-deep)] font-semibold ring-1 ring-[var(--caramel)]/40'
-                      : 'bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:bg-[var(--caramel)]/15 hover:text-[var(--coffee-deep)]'}`}>
-                    {icon}{label}
+              {/* Player control bar — single compact row */}
+              <div className="flex items-center gap-1.5 h-6">
+                {/* Play / Pause toggle */}
+                {(player.status === 'Playing' && !player.isPaused) ? (
+                  <button onClick={() => videoCmd('video_pause')} title="暂停"
+                    className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-[var(--coffee-deep)] bg-[var(--cream-warm)] hover:bg-[var(--caramel)]/15 transition-colors">
+                    <Pause size={10} />
                   </button>
-                ))}
-                <div className="ml-auto relative">
-                  <select value={speedLocal} onChange={e => { const v = parseFloat(e.target.value); setSpeedLocal(v); videoCmd('video_speed', { speed: v }) }}
-                    className="appearance-none h-5 leading-5 bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:bg-[var(--caramel)]/15 hover:text-[var(--coffee-deep)] px-1.5 pr-4 rounded text-[10px] font-mono cursor-pointer focus:outline-none focus:bg-[var(--caramel)]/15">
-                    {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0].map(s => (
-                      <option key={s} value={s}>{s.toFixed(1)}x</option>
-                    ))}
-                  </select>
-                  <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[8px] text-[var(--coffee-muted)]">▾</span>
-                </div>
+                ) : (
+                  <button onClick={() => videoCmd(player.isPaused ? 'video_resume' : 'video_play')} title={player.isPaused ? '继续' : '播放'}
+                    className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-[var(--coffee-deep)] bg-[var(--cream-warm)] hover:bg-[var(--caramel)]/15 transition-colors">
+                    <Play size={10} />
+                  </button>
+                )}
+                {/* Stop */}
+                <button onClick={() => videoCmd('video_stop')} title="停止"
+                  className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-[var(--coffee-muted)] bg-[var(--cream-warm)] hover:bg-[var(--caramel)]/15 hover:text-[var(--coffee-deep)] transition-colors">
+                  <Square size={8} />
+                </button>
+                {/* Replay */}
+                <button onClick={() => videoCmd('video_replay')} title="重播"
+                  className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-[var(--coffee-muted)] bg-[var(--cream-warm)] hover:bg-[var(--caramel)]/15 hover:text-[var(--coffee-deep)] transition-colors">
+                  <RotateCw size={10} />
+                </button>
+
+                {/* Current time (click to edit in-place) */}
+                <span className="relative font-mono flex-shrink-0 inline-block"
+                  style={{ minWidth: '3.2em', fontSize: 10, lineHeight: '16px' }}>
+                  <span className={`${editingTime ? 'invisible' : ''} text-[var(--coffee-muted)] cursor-pointer hover:text-[var(--coffee-deep)] transition-colors`}
+                    onClick={() => { setEditingTime(true); setTimeInput(fmtTime(previewTime ?? displayTime)) }}
+                    title="点击跳转">
+                    {fmtTime(previewTime ?? displayTime)}
+                  </span>
+                  {editingTime && (
+                    <input
+                      type="text"
+                      value={timeInput}
+                      onChange={e => setTimeInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') handleTimeSubmit()
+                        if (e.key === 'Escape') { setEditingTime(false); setTimeInput('') }
+                      }}
+                      onBlur={handleTimeSubmit}
+                      placeholder="秒/m:ss"
+                      className="absolute inset-0 w-full h-full bg-transparent border-b border-[var(--caramel)] focus:outline-none font-mono text-[var(--coffee-deep)] text-center"
+                      style={{ padding: 0, margin: 0, fontSize: 10, lineHeight: '16px' }}
+                      autoFocus
+                    />
+                  )}
+                </span>
+
+                {/* Progress slider */}
+                <VideoSlider
+                  value={previewTime ?? displayTime}
+                  max={player.totalTime || 1}
+                  onPreview={v => setPreviewTime(v)}
+                  onSeek={v => {
+                    setPreviewTime(null)
+                    videoCmd('video_seek', { time: v })
+                  }}
+                  disabled={!player.totalTime}
+                  className="flex-1"
+                />
+
+                {/* Total time */}
+                <span className="font-mono text-[var(--coffee-muted)] flex-shrink-0"
+                  style={{ fontSize: 10, lineHeight: '16px' }}>
+                  {fmtTime(player.totalTime)}
+                </span>
+
+                {/* Speed selector */}
+                <select value={speedLocal} onChange={e => { setSpeedLocal(e.target.value); videoCmd('video_speed', { speed: parseFloat(e.target.value) }) }}
+                  className="h-5 bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:bg-[var(--caramel)]/15 hover:text-[var(--coffee-deep)] rounded font-mono cursor-pointer focus:outline-none flex-shrink-0"
+                  style={{ padding: '0 2px', border: 'none', fontSize: 10, width: 46 }}>
+                  {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0].map(s => (
+                    <option key={s} value={String(s)}>{s % 1 === 0 ? s.toFixed(1) : String(s)}x</option>
+                  ))}
+                </select>
               </div>
 
               {/* More info (collapsible) */}
@@ -609,7 +688,16 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
                     <InfoRow label="Resolution" value={player.width && player.height ? `${player.width}x${player.height}` : null} />
                     <InfoRow label="FrameRate" value={player.frameRate != null ? `${player.frameRate} fps` : null} />
                     <InfoRow label="TotalFrames" value={player.totalFrames} />
-                    <InfoRow label="Url" value={player.url ? `…/${player.url.split(/[/\\]/).pop()}` : null} />
+                    <div className="col-span-2 flex items-center gap-1 pt-1 text-[10px]">
+                      <span className="text-[var(--coffee-muted)] flex-shrink-0">Url:</span>
+                      {player.url ? (
+                        <button className={`flex items-center gap-1 transition-colors ${copiedFile === 'video_url' ? 'text-[#7D9B76]' : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'}`}
+                          onClick={() => handleCopy(player.url, 'video_url')} title={player.url}>
+                          {copiedFile === 'video_url' ? <Check size={10} /> : <Copy size={10} />}
+                          <span className="truncate max-w-[280px]">…/{player.url.split(/[/\\]/).pop()}</span>
+                        </button>
+                      ) : <span className="text-[var(--coffee-deep)]">--</span>}
+                    </div>
                     <InfoRow label="字幕轨" value={player.numSubtitleChannels != null
                       ? `${player.numSubtitleChannels} 条${player.subtitleChannel != null ? ` · 当前: ${player.subtitleChannel === -1 ? '关闭' : `#${player.subtitleChannel}`}` : ''}`
                       : null} />
@@ -632,7 +720,7 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
         <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--glass-border)]">
           <span className="font-semibold text-[var(--coffee-deep)]">事件日志</span>
           <span className="text-[var(--coffee-muted)] text-[10px]">({eventLog.length})</span>
-          <button onClick={() => sendCmd('toggle_video_log', { enabled: true })}
+          <button onClick={() => sendCmd('toggle_video_log', { enabled: !videoSnap?.logEnabled })}
             className={`ml-1 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors ${
               videoSnap?.logEnabled
                 ? 'bg-[var(--sage)]/15 text-[var(--sage)] border border-[var(--sage)]/30'
@@ -842,9 +930,8 @@ export default function AvMonitor({ clients, selectedClient, active }) {
   const videoCmd = useCallback((action, params = {}) => {
     if (!selectedPlayer) return
     sendCmd(action, { playerId: selectedPlayer, ...params })
-    // Request immediate snapshot after state-changing actions
-    if (['video_play','video_pause','video_resume','video_stop'].includes(action)) {
-      setTimeout(() => sendCmd('snapshot'), 200)
+    if (['video_play','video_pause','video_resume','video_stop','video_seek','video_replay'].includes(action)) {
+      setTimeout(() => sendCmd('snapshot'), 300)
     }
   }, [sendCmd, selectedPlayer])
 

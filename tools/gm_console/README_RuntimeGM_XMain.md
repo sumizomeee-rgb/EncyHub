@@ -2436,6 +2436,8 @@ local function StartRuntimeGM()
     LuaAvMonitor._videoPushInterval = 0.5  -- 有活跃视频时的推送间隔（秒）
     LuaAvMonitor._lastPushTime    = -9999
     LuaAvMonitor._pendingEvents   = {}    -- 视频事件队列（每帧采集，随 snapshot 一起发送）
+    LuaAvMonitor._videoLogEnabled = false
+    LuaAvMonitor._videoLogCallback = nil
     LuaAvMonitor._isActive        = false -- 前端订阅时为 true，超时或 stop 命令后归 false
     LuaAvMonitor._lastActivateTime = -9999
     LuaAvMonitor._activeTimeout   = 30.0  -- 30s 内没有 start/snapshot 心跳则自动停止
@@ -2632,7 +2634,7 @@ local function StartRuntimeGM()
         end)
         -- 视频日志监听状态
         pcall(function()
-            video.logEnabled = CS.XVideoManager.IsLogVideoStatusEventInfo or false
+            video.logEnabled = LuaAvMonitor._videoLogEnabled
         end)
         -- 附带已积累的事件
         video.events = LuaAvMonitor._pendingEvents
@@ -2769,19 +2771,67 @@ local function StartRuntimeGM()
         elseif action == "toggle_video_log" then
             pcall(function()
                 local enabled = packet.enabled
-                local curStatus = CS.XVideoManager.IsLogVideoStatusEventInfo or false
-                local curAction = CS.XVideoManager.IsLogVideoActionEventInfo or false
-                if enabled and not curStatus then
-                    CS.XVideoManager.SetIsLogVideoStatusEventInfo()
-                end
-                if enabled and not curAction then
-                    CS.XVideoManager.SetIsLogVideoActionEventInfo()
-                end
-                if not enabled and curStatus then
-                    CS.XVideoManager.SetIsLogVideoStatusEventInfo()
-                end
-                if not enabled and curAction then
-                    CS.XVideoManager.SetIsLogVideoActionEventInfo()
+                if enabled and not LuaAvMonitor._videoLogEnabled then
+                    local statusEvents = {
+                        "EVENT_VIDEO_PLAYER_STATUS_STOP",
+                        "EVENT_VIDEO_PLAYER_STATUS_PREPARE",
+                        "EVENT_VIDEO_PLAYER_STATUS_READY",
+                        "EVENT_VIDEO_PLAYER_STATUS_PLAYING",
+                        "EVENT_VIDEO_PLAYER_STATUS_PLAYEND",
+                        "EVENT_VIDEO_PLAYER_STATUS_STOPPROCESSING",
+                        "EVENT_VIDEO_PLAYER_STATUS_ERROR",
+                    }
+                    local actionEvents = {
+                        "EVENT_VIDEO_ACTION_PREPARE",
+                        "EVENT_VIDEO_ACTION_PLAY",
+                        "EVENT_VIDEO_ACTION_STOP",
+                        "EVENT_VIDEO_ACTION_PAUSE",
+                        "EVENT_VIDEO_ACTION_RESUME",
+                        "EVENT_VIDEO_ACTION_DISABLE",
+                        "EVENT_VIDEO_ACTION_DESTROY",
+                    }
+                    LuaAvMonitor._videoLogCallback = function(evt, ...)
+                        local evType = evt:find("ACTION") and "ACTION" or "STATUS"
+                        local shortName = evt:gsub("EVENT_VIDEO_PLAYER_STATUS_", ""):gsub("EVENT_VIDEO_ACTION_", "")
+                        local msg = shortName
+                        local args = {...}
+                        pcall(function()
+                            if args[1] and type(args[1]) == "userdata" then
+                                local p = args[1]
+                                msg = shortName .. " | " .. tostring(p.Url or "")
+                            end
+                        end)
+                        LuaAvMonitor._pendingEvents[#LuaAvMonitor._pendingEvents + 1] = {
+                            type = evType,
+                            msg  = msg,
+                            time = _av_fmtClock(),
+                        }
+                    end
+                    local mgr = CS.XGameEventManager.Instance
+                    for _, ev in ipairs(statusEvents) do
+                        pcall(function() mgr:RegisterEvent(ev, LuaAvMonitor._videoLogCallback) end)
+                    end
+                    for _, ev in ipairs(actionEvents) do
+                        pcall(function() mgr:RegisterEvent(ev, LuaAvMonitor._videoLogCallback) end)
+                    end
+                    LuaAvMonitor._videoLogEnabled = true
+                elseif not enabled and LuaAvMonitor._videoLogEnabled and LuaAvMonitor._videoLogCallback then
+                    local allEvents = {
+                        "EVENT_VIDEO_PLAYER_STATUS_STOP", "EVENT_VIDEO_PLAYER_STATUS_PREPARE",
+                        "EVENT_VIDEO_PLAYER_STATUS_READY", "EVENT_VIDEO_PLAYER_STATUS_PLAYING",
+                        "EVENT_VIDEO_PLAYER_STATUS_PLAYEND", "EVENT_VIDEO_PLAYER_STATUS_STOPPROCESSING",
+                        "EVENT_VIDEO_PLAYER_STATUS_ERROR",
+                        "EVENT_VIDEO_ACTION_PREPARE", "EVENT_VIDEO_ACTION_PLAY",
+                        "EVENT_VIDEO_ACTION_STOP", "EVENT_VIDEO_ACTION_PAUSE",
+                        "EVENT_VIDEO_ACTION_RESUME", "EVENT_VIDEO_ACTION_DISABLE",
+                        "EVENT_VIDEO_ACTION_DESTROY",
+                    }
+                    local mgr = CS.XGameEventManager.Instance
+                    for _, ev in ipairs(allEvents) do
+                        pcall(function() mgr:RemoveEvent(ev, LuaAvMonitor._videoLogCallback) end)
+                    end
+                    LuaAvMonitor._videoLogCallback = nil
+                    LuaAvMonitor._videoLogEnabled = false
                 end
             end)
 
@@ -2796,8 +2846,9 @@ local function StartRuntimeGM()
                     elseif action == "video_stop"   then p:Stop()
                     elseif action == "video_pause"  then p:Pause()
                     elseif action == "video_resume" then p:Resume()
+                    elseif action == "video_replay" then p:RePlay()
                     elseif action == "video_seek"   then
-                        p:SetSeekPositionByTimeSecond(tonumber(packet.time) or 0)
+                        p:PlayAtTime(tonumber(packet.time) or 0)
                     elseif action == "video_speed"  then
                         p:SetSpeed(tonumber(packet.speed) or 1)
                     end
