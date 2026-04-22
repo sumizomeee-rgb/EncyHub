@@ -16,6 +16,11 @@
     },
     "14261ebb442282d2": {
       "nickname": "本机Mumu"
+    },
+    "4DGYP7KFVKEYHAKZ": {
+      "last_wifi_ip": "10.101.21.55",
+      "last_model": "PFTM10",
+      "original_hardware_id": "4DGYP7KFVKEYHAKZ"
     }
   },
   "path_history": {
@@ -27,6 +32,7 @@
     ],
     "push": [
       "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
+      "/storage/emulated/0/Android/data/com.kurogame.haru.nearme.gamecenter/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/",

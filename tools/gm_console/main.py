@@ -227,6 +227,11 @@ class ExecRequest(BaseModel):
     cmd: str
 
 
+class ExecWaitRequest(BaseModel):
+    cmd: str
+    timeout: float = 10.0
+
+
 class ExecGmRequest(BaseModel):
     gm_id: Any
     value: Any = None
@@ -282,6 +287,14 @@ async def exec_lua(client_id: str, req: ExecRequest):
     if not success:
         raise HTTPException(400, msg)
     return {"message": msg}
+
+
+@app.post("/clients/{client_id}/exec-wait")
+async def exec_lua_wait(client_id: str, req: ExecWaitRequest):
+    """执行 Lua 命令并等待结果返回"""
+    timeout = min(max(req.timeout, 1.0), 60.0)
+    success, logs, error = await server_mgr.exec_wait(client_id, req.cmd, timeout)
+    return {"success": success, "logs": logs, "error": error}
 
 
 @app.post("/clients/{client_id}/exec-gm")

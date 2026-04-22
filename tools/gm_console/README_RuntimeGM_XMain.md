@@ -17,6 +17,7 @@
   - iOS: 仅支持手动输入 key 查询（无法枚举），支持收藏和最近记录
 - **Log 截获**: 远程查看 `print()` 输出
 - **TCP 心跳保活**: 每 15 秒发送 PING，防止 NAT/防火墙超时断开连接
+- **断线自动重连**: 超过 45 秒无响应自动断开并每 3 秒重试，服务端重启后无需重启游戏
 
 ## 使用方法
 
@@ -48,6 +49,8 @@ local function StartRuntimeGM()
     RuntimeGMClient.SocketLibrary = nil
     RuntimeGMClient.HeartbeatTimer = 0
     RuntimeGMClient.HeartbeatInterval = 15  -- 每15秒发送一次心跳
+    RuntimeGMClient.LastRecvTime = 0
+    RuntimeGMClient.RecvTimeout = 45  -- 超过45秒没收到任何数据则判定断线（3次心跳周期）
 
     -- 安全加载 socket 库
     local function loadSocketLibrary()
@@ -213,6 +216,7 @@ local function StartRuntimeGM()
             origin_print("[RuntimeGM] 连接成功！")
             tcp:settimeout(0)
             RuntimeGMClient.Socket = tcp
+            pcall(function() RuntimeGMClient.LastRecvTime = CS.UnityEngine.Time.realtimeSinceStartup end)
             RuntimeGMClient.Send({
                 type = "HELLO",
                 pid = RuntimeGMClient.DeviceInfo.pid,
@@ -2061,6 +2065,12 @@ local function StartRuntimeGM()
             RuntimeGMClient.HeartbeatTimer = now
             RuntimeGMClient.Send({ type = "PING" })
         end
+        -- 心跳超时检测：长时间未收到任何数据则主动断开触发重连
+        if RuntimeGMClient.LastRecvTime > 0 and now - RuntimeGMClient.LastRecvTime > RuntimeGMClient.RecvTimeout then
+            origin_print("[RuntimeGM] 心跳超时（" .. RuntimeGMClient.RecvTimeout .. "s 无响应），断开重连...")
+            RuntimeGMClient.Close()
+            return
+        end
         local maxLoops = 5
         local loops = 0
         while loops < maxLoops do
@@ -2087,6 +2097,7 @@ local function StartRuntimeGM()
                 elseif err == "timeout" then break
                 else break end
             else
+                RuntimeGMClient.LastRecvTime = now
                 RuntimeGMClient.ProcessPacket(line)
             end
         end
@@ -2823,7 +2834,8 @@ end
 
 -- 初始化并启动 RuntimeGM
 local ok, gmClient = pcall(StartRuntimeGM)
-if ok and gmClient then
+local isOpen = true
+if isOpen and ok and gmClient then
     -- 如果同事是在真机/其他电脑运行，这里的 localhost 可能需要改成你的 IP
     gmClient.Start("10.101.0.8", 12581)
 else

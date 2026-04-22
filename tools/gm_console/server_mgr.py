@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Tuple
 
 import psutil
 
@@ -74,6 +74,7 @@ class ServerMgr:
         self.on_player_prefs_data = None    # Callback for PLAYER_PREFS_RESP
         self.on_av_monitor_data = None      # Callback for AV_MONITOR_RESP
         self.on_proto_call_resp = None      # Callback for PROTO_CALL_RESP
+        self._pending_execs: Dict[int, dict] = {}
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -243,7 +244,10 @@ class ServerMgr:
         print(f"[ServerMgr] 收到数据包: cid={cid}, type={t}")
 
         if t == "PING":
-            # 心跳保活 — 静默处理，不打印日志
+            try:
+                c.writer.write((json.dumps({"type": "PONG"}) + "\n").encode())
+            except Exception:
+                pass
             return
         elif t == "HELLO":
             c.device = pkt.get("device", "Unknown")
@@ -252,7 +256,26 @@ class ServerMgr:
             if self.on_update:
                 self.on_update()
         elif t == "LOG":
-            self._add_log(pkt.get("level", "info"), pkt.get("msg", ""), cid)
+            level = pkt.get("level", "info")
+            msg = pkt.get("msg", "")
+            ref_id = pkt.get("ref_id")
+            self._add_log(level, msg, cid)
+            if ref_id is not None and ref_id in self._pending_execs:
+                pe = self._pending_execs[ref_id]
+                if level == "error":
+                    pe["logs"].append({"level": level, "msg": msg})
+                    pe["error"] = msg
+                    pe["done"] = True
+                    pe["event"].set()
+                elif level == "info" and msg == "Success":
+                    pe["done"] = True
+                    pe["event"].set()
+                else:
+                    pe["logs"].append({"level": level, "msg": msg})
+            elif ref_id is None:
+                for pe in self._pending_execs.values():
+                    if pe.get("client_id") == cid and not pe["done"]:
+                        pe["logs"].append({"level": level, "msg": msg})
         elif t == "GM_LIST":
             c.gm_tree = pkt.get("data", [])
             print(f"[ServerMgr] GM_LIST: {len(c.gm_tree)} 个节点")
@@ -360,6 +383,39 @@ class ServerMgr:
                 if self.on_update:
                     self.on_update()
             return False, str(e)
+
+    async def exec_wait(self, client_id: str, cmd: str, timeout: float = 10.0) -> Tuple[bool, List[dict], Optional[str]]:
+        """发送 Lua 并等待执行完成，返回 (success, logs, error)"""
+        client = self.clients.get(client_id)
+        if not client:
+            return False, [], f"客户端 {client_id} 不存在"
+
+        cmd_id = self.cmd_id
+        pe = {"event": asyncio.Event(), "logs": [], "done": False, "error": None, "client_id": client_id}
+        self._pending_execs[cmd_id] = pe
+
+        try:
+            data = json.dumps({"type": "EXEC", "id": cmd_id, "cmd": cmd}, ensure_ascii=False) + "\n"
+            client.writer.write(data.encode())
+            await client.writer.drain()
+            self.cmd_id += 1
+        except Exception as e:
+            del self._pending_execs[cmd_id]
+            if client_id in self.clients:
+                self.clients.pop(client_id)
+                self._add_log("warning", f"客户端断开（发送失败）: {client_id}", client_id)
+                if self.on_update:
+                    self.on_update()
+            return False, [], str(e)
+
+        try:
+            await asyncio.wait_for(pe["event"].wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            del self._pending_execs[cmd_id]
+            return False, pe["logs"], "timeout"
+
+        del self._pending_execs[cmd_id]
+        return pe["error"] is None, pe["logs"], pe["error"]
 
     async def send_gm_to_port(self, port: Optional[int], gm_id: str, val: Any = None) -> tuple[bool, str]:
         """发送 GM 指令到指定端口"""
