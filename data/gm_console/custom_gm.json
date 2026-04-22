@@ -48,8 +48,16 @@
     "cmd": "local origin = XDataCenter.FunctionEventManager.CheckFuncDisable()\nXDataCenter.FunctionEventManager.ChangeFuncDisable(true)\nXLoginManager.DoDisconnect()\nXDataCenter.FunctionEventManager.ChangeFuncDisable(origin)\nXMVCA:SetOneKeyReLogin()\nXLoginManager.Login(function(errCode)\n    if errCode and errCode ~= XCode.Success then\n        XLog.Error(\"[GM] 重登失败, errCode: \" .. tostring(errCode))\n        return\n    end\n    XLuaUiManager.RunMain()\nend)"
   },
   {
-    "name": "战斗胜利(单机版)",
-    "cmd": "local function findGm(nodes, name)\n    for _, n in ipairs(nodes or {}) do\n        if n.name == name then return n.id end\n        local id = findGm(n.children, name)\n        if id then return id end\n    end\nend\nlocal id = findGm(RuntimeGMClient.GMStructure, \"战斗胜利(单机版)\")\nif id and RuntimeGMClient.GMCallbacks[id] then\n    local ok, err = pcall(RuntimeGMClient.GMCallbacks[id])\n    if ok then print(\"[GM] 已触发战斗胜利\")\n    else print(\"[GM] 执行失败: \" .. tostring(err)) end\nelse\n    print(\"[GM] 未找到GM按钮(需先加载GM列表)\")\nend"
+    "name": "副本胜利",
+    "cmd": "local fight = CS.XFight.Instance\nif not fight or not CS.XFight.IsRunning then\n    print(\"[GM] 当前不在战斗中\")\n    return\nend\nfight.Result:SetFightWin(CS.XFightResultState.Win)\nfight:Settle()\nfight.AutoExitFight = true\nfight:Exit(fight.IsReplay)\nprint(\"[GM] 已触发副本胜利\")"
+  },
+  {
+    "name": "3星副本胜利",
+    "cmd": "local fight = CS.XFight.Instance\nif not fight or not CS.XFight.IsRunning then\n    print(\"[GM] 当前不在战斗中\")\n    return\nend\nfight.Result:AddStar(1)\nfight.Result:AddStar(2)\nfight.Result:AddStar(3)\nfight.Result:SetFightWin(CS.XFightResultState.Win)\nfight:Settle()\nfight.AutoExitFight = true\nfight:Exit(fight.IsReplay)\nprint(\"[GM] 已触发3星副本胜利\")"
+  },
+  {
+    "name": "副本失败",
+    "cmd": "local fight = CS.XFight.Instance\nif not fight or not CS.XFight.IsRunning then\n    print(\"[GM] 当前不在战斗中\")\n    return\nend\nfight.Result:SetFightWin(CS.XFightResultState.Loss)\nfight:Settle()\nfight.AutoExitFight = true\nfight:Exit(fight.IsReplay)\nprint(\"[GM] 已触发副本失败\")"
   },
   {
     "name": "关闭所有弹窗(切换)",
