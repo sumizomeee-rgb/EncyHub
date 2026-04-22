@@ -911,7 +911,7 @@ function ProtoCard({ card, clients, selectedClient, presets, isFirst, isLast, on
                                 }
                                 onUpdateFieldStates(newFs)
                             } : undefined}
-                            onAddField={!card.detail ? (parentPath, name, fieldType, directPath, directType) => {
+                            onAddField={(parentPath, name, fieldType, directPath, directType) => {
                                 if (directPath) {
                                     const isTable = directType === 'table'
                                     const newFs = {
@@ -923,7 +923,7 @@ function ProtoCard({ card, clients, selectedClient, presets, isFirst, isLast, on
                                         },
                                     }
                                     onUpdateFieldStates(newFs)
-                                } else {
+                                } else if (!card.detail) {
                                     const childPath = parentPath ? `${parentPath}.${name}` : name
                                     const isTable = fieldType === 'table'
                                     const newFs = {
@@ -936,8 +936,7 @@ function ProtoCard({ card, clients, selectedClient, presets, isFirst, isLast, on
                                     }
                                     onUpdateFieldStates(newFs)
                                 }
-                                onUpdateFieldStates(newFs)
-                            } : undefined}
+                            }}
                         />
                     </div>
                     {/* 添加字段按钮 — 仅降级模式（顶层） */}
@@ -1304,7 +1303,7 @@ function FieldForm({ fields, fieldStates, path, onChange, onRemoveField, onTypeC
                 const hasSubFields = effectiveSubFields && effectiveSubFields.length > 0
                 const isArrayIndex = /^\[\d+\]$/.test(field.name)
                 const isExpanded = isNonPrimitive && state.mode === 'table'
-                const isArrayParent = hasSubFields && effectiveSubFields.every(f => /^\[\d+\]$/.test(f.name))
+                const isArrayParent = isGenericList || (hasSubFields && effectiveSubFields.every(f => /^\[\d+\]$/.test(f.name)))
 
                 return (
                     <div key={field.name + idx}>
@@ -1360,13 +1359,18 @@ function FieldForm({ fields, fieldStates, path, onChange, onRemoveField, onTypeC
                             <div className="flex items-center gap-1 flex-shrink-0">
                                 {isNonPrimitive && isExpanded && isArrayParent && onAddField && (
                                     <button onClick={() => {
-                                        const maxIdx = effectiveSubFields.reduce((max, f) => {
+                                        const subs = effectiveSubFields || []
+                                        const maxIdx = subs.reduce((max, f) => {
                                             const m = f.name.match(/^\[(\d+)\]$/)
                                             return m ? Math.max(max, parseInt(m[1])) : max
                                         }, -1)
                                         const nextName = `[${maxIdx + 1}]`
-                                        const firstChild = effectiveSubFields[0]
-                                        const childType = firstChild?.isPrimitive ? (firstChild.type || 'string') : 'table'
+                                        const firstChild = subs[0]
+                                        const elType = field.genericInfo?.elementType
+                                        const elIsPrimitive = field.genericInfo?.isPrimitive
+                                        const childType = firstChild
+                                            ? (firstChild.isPrimitive ? (firstChild.type || 'string') : 'table')
+                                            : (elIsPrimitive ? (elType || 'string') : 'table')
                                         const childPath = `${fullPath}${nextName}`
                                         const isTable = childType === 'table'
                                         onAddField(null, null, null, childPath, isTable ? 'table' : childType)
@@ -1376,7 +1380,7 @@ function FieldForm({ fields, fieldStates, path, onChange, onRemoveField, onTypeC
                                         <Plus size={10} />
                                     </button>
                                 )}
-                                {isNonPrimitive && isExpanded && !isArrayParent && onAddField && (
+                                {isNonPrimitive && isExpanded && !isArrayParent && onAddField && onTypeChange && (
                                     <AddFieldInline onAdd={(name, fieldType) => onAddField(fullPath, name, fieldType)}
                                         existingKeys={new Set(hasSubFields ? effectiveSubFields.map(f => f.name) : [])} />
                                 )}
