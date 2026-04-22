@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  Play, Square, RotateCw, ChevronDown, ChevronRight,
+  Play, Pause, Square, RotateCw, ChevronDown, ChevronRight,
   Copy, Check, Loader2, Film, Music, Lock, VolumeX
 } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
@@ -311,7 +311,7 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
           <span className="font-semibold text-[var(--coffee-deep)]">CRI 资源指标</span>
           {audioSnap?.criStats && (
             <span className="ml-2 text-[var(--coffee-muted)]">
-              Binds: {audioSnap.criStats.binds} &nbsp;/&nbsp; Loaders: {audioSnap.criStats.loaders}
+              Binds: {audioSnap.criStats.bindsCur ?? '?'}/{audioSnap.criStats.bindsLimit ?? '?'} &nbsp;/&nbsp; Loaders: {audioSnap.criStats.loadersCur ?? '?'}/{audioSnap.criStats.loadersLimit ?? '?'}
             </span>
           )}
         </button>
@@ -334,12 +334,55 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
 // VideoTab
 // ============================================================
 function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, eventFilter, setEventFilter,
-  seekInput, setSeekInput, handleSeek, videoCmd }) {
+  videoCmd, sendCmd, handleCopy, copiedFile }) {
+
+  const videoStatusStyle = (status) => {
+    if (status === 'Playing')           return { label: 'Playing',   color: '#7D9B76', bg: 'rgba(125,155,118,0.15)', active: true }
+    if (status === 'ReadyForRendering') return { label: 'Rendering', color: '#7D9B76', bg: 'rgba(125,155,118,0.15)', active: true }
+    if (status === 'Prep' || status === 'WaitPrep' || status === 'Dechead')
+                                        return { label: status,      color: '#D4A574', bg: 'rgba(212,165,116,0.15)', active: false }
+    if (status === 'Ready')             return { label: 'Ready',     color: '#7BA3C9', bg: 'rgba(123,163,201,0.15)', active: false }
+    if (status === 'Error')             return { label: 'Error',     color: '#C1666B', bg: 'rgba(193,102,107,0.15)', active: false }
+    if (status === 'PlayEnd')           return { label: 'PlayEnd',   color: '#E8A317', bg: 'rgba(232,163,23,0.15)',  active: false }
+    if (status === 'StopProcessing')    return { label: 'Stopping',  color: '#A89B91', bg: 'rgba(168,155,145,0.15)', active: false }
+    return { label: status || 'Stop',    color: '#A89B91', bg: 'rgba(168,155,145,0.15)', active: false }
+  }
+
+  function VideoStatusBadge({ status, mini }) {
+    const cfg = videoStatusStyle(status)
+    if (mini) {
+      return (
+        <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold flex-shrink-0 whitespace-nowrap"
+          style={{ color: cfg.color }}>
+          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+            background: cfg.color,
+            ...(cfg.active ? { animation: 'pulse-success 2s ease-in-out infinite' } : {})
+          }} />
+          {cfg.label}
+        </span>
+      )
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold flex-shrink-0"
+        style={{ background: cfg.bg, color: cfg.color }}>
+        <span className="w-1.5 h-1.5 rounded-full" style={{
+          background: cfg.color,
+          ...(cfg.active ? { boxShadow: `0 0 0 3px ${cfg.bg}`, animation: 'pulse-success 2s ease-in-out infinite' } : {})
+        }} />
+        {cfg.label}
+      </span>
+    )
+  }
 
   const [leftWidth, setLeftWidth] = useState(200)
   const [moreInfoExpanded, setMoreInfoExpanded] = useState(false)
   const [speedLocal, setSpeedLocal] = useState(1)
+  const [editingTime, setEditingTime] = useState(false)
+  const [timeInput, setTimeInput] = useState('')
+  const [displayTime, setDisplayTime] = useState(0)
   const isDragging = useRef(false)
+  const anchorRef = useRef({ time: 0, ts: 0, speed: 1, playing: false, total: 0 })
+  const rafRef = useRef(null)
 
   const players = videoSnap?.players || []
   const player = players.find(p => p.id === selectedPlayer)
@@ -348,9 +391,44 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
     if (player?.speed != null) setSpeedLocal(player.speed)
   }, [player?.speed])
 
+  // Sync anchor when snapshot arrives
+  useEffect(() => {
+    if (!player) return
+    const isPlaying = player.status === 'Playing' && !player.isPaused
+    anchorRef.current = {
+      time: player.currentTime ?? 0,
+      ts: performance.now(),
+      speed: player.speed ?? 1,
+      playing: isPlaying,
+      total: player.totalTime ?? 0,
+    }
+    if (!isPlaying) setDisplayTime(player.currentTime ?? 0)
+  }, [player?.currentTime, player?.status, player?.isPaused, player?.speed])
+
+  // rAF loop for smooth interpolation while playing
+  useEffect(() => {
+    let lastUpdate = 0
+    const tick = (now) => {
+      const a = anchorRef.current
+      if (a.playing && a.total > 0) {
+        if (now - lastUpdate > 250) {
+          const elapsed = (performance.now() - a.ts) / 1000
+          const t = Math.min(a.time + a.speed * elapsed, a.total)
+          setDisplayTime(t)
+          lastUpdate = now
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
+  }, [])
+
   const sortedPlayers = [...players].sort((a, b) => {
-    if (a.status === 'Playing' && b.status !== 'Playing') return -1
-    if (b.status === 'Playing' && a.status !== 'Playing') return 1
+    const aActive = videoStatusStyle(a.status).active
+    const bActive = videoStatusStyle(b.status).active
+    if (aActive && !bActive) return -1
+    if (bActive && !aActive) return 1
     return 0
   })
 
@@ -362,7 +440,29 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
     return `${m}:${sec}.${ds}`
   }
 
-  const progress = player?.totalTime > 0 ? (player.currentTime / player.totalTime) * 100 : 0
+  // Parse user-friendly time input: "MM:SS", "MM:SS.s", "SS.s", or plain seconds
+  const parseTimeInput = (str) => {
+    const trimmed = str.trim()
+    if (!trimmed) return NaN
+    // MM:SS.s or MM:SS
+    if (trimmed.includes(':')) {
+      const parts = trimmed.split(':')
+      if (parts.length !== 2) return NaN
+      const mm = parseFloat(parts[0])
+      const ss = parseFloat(parts[1])
+      if (isNaN(mm) || isNaN(ss)) return NaN
+      return mm * 60 + ss
+    }
+    // Plain seconds
+    return parseFloat(trimmed)
+  }
+
+  const handleTimeSubmit = () => {
+    const t = parseTimeInput(timeInput)
+    if (!isNaN(t) && t >= 0) videoCmd('video_seek', { time: t })
+    setEditingTime(false)
+    setTimeInput('')
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -385,28 +485,27 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
           <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5 text-xs">
             {sortedPlayers.length === 0 ? (
               <div className="text-center text-[var(--coffee-muted)] py-6">暂无播放器</div>
-            ) : sortedPlayers.map(p => (
+            ) : sortedPlayers.map(p => {
+              const vs = videoStatusStyle(p.status)
+              return (
               <button key={p.id} onClick={() => setSelectedPlayer(p.id)}
                 className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-left transition-colors ${selectedPlayer === p.id
                   ? 'bg-[var(--caramel)]/15 text-[var(--coffee-deep)]'
                   : 'hover:bg-[var(--cream-warm)]/60 text-[var(--coffee-deep)]'}`}>
-                <Film size={11} className={`flex-shrink-0 ${p.status === 'Playing' ? 'text-[var(--sage)]' : 'text-[var(--coffee-muted)] opacity-40'}`} />
+                <Film size={11} className="flex-shrink-0" style={{ color: vs.active ? vs.color : '#A89B91', opacity: vs.active ? 1 : 0.4 }} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium text-[11px] flex items-center gap-1">
+                  <div className="truncate font-medium text-[11px]">
                     {p.name || p.id}
-                    {p.status === 'Playing' && (
-                      <span className="inline-flex items-center gap-0.5 px-1 py-px rounded text-[8px] font-semibold bg-[var(--sage)]/15 text-[var(--sage)]">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
-                        LIVE
-                      </span>
-                    )}
                   </div>
-                  <div className={`text-[10px] ${p.status === 'Playing' ? 'text-[var(--sage)]' : 'text-[var(--coffee-muted)]'}`}>
-                    {p.status}
+                  <div className="flex items-center gap-1.5 text-[10px]">
+                    <VideoStatusBadge status={p.status} mini />
+                    <span className="text-[var(--coffee-muted)]">
+                      {fmtTime(p.currentTime)}{p.totalTime > 0 ? ` / ${fmtTime(p.totalTime)}` : ''}
+                    </span>
                   </div>
                 </div>
               </button>
-            ))}
+            )})}
           </div>
         </div>
 
@@ -425,63 +524,71 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
               {/* Status + progress */}
               <div className="space-y-2">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0 ${player.status === 'Playing'
-                    ? 'bg-[var(--sage)]/20 text-[var(--sage)]'
-                    : player.status === 'Paused' ? 'bg-[var(--amber)]/20 text-[var(--amber)]'
-                    : 'bg-[var(--cream-warm)] text-[var(--coffee-muted)]'}`}>
-                    {player.status}
-                  </span>
+                  <VideoStatusBadge status={player.status} />
                   <span className="font-semibold text-[var(--coffee-deep)] truncate">{player.name || player.id}</span>
                 </div>
-                <div>
+                <div className="relative">
                   <div className="flex justify-between text-[var(--coffee-muted)] mb-0.5 font-mono text-[10px]">
-                    <span>{fmtTime(player.currentTime)}</span>
+                    {editingTime ? (
+                      <input
+                        type="text"
+                        value={timeInput}
+                        onChange={e => setTimeInput(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') handleTimeSubmit()
+                          if (e.key === 'Escape') { setEditingTime(false); setTimeInput('') }
+                        }}
+                        onBlur={handleTimeSubmit}
+                        placeholder="0:00"
+                        className="w-12 bg-transparent border-b border-[var(--caramel)] focus:outline-none font-mono text-[10px] text-[var(--coffee-deep)]"
+                        autoFocus
+                      />
+                    ) : (
+                      <span className="cursor-pointer hover:text-[var(--coffee-deep)] transition-colors"
+                        onClick={() => { setEditingTime(true); setTimeInput(fmtTime(displayTime)) }}
+                        title="点击跳转">
+                        {fmtTime(displayTime)}
+                      </span>
+                    )}
                     <span>{fmtTime(player.totalTime)}</span>
                   </div>
-                  <div className="h-1.5 rounded-full bg-[var(--glass-border)] overflow-hidden">
-                    <div className="h-full bg-[var(--caramel)] rounded-full transition-all duration-300"
-                      style={{ width: `${progress}%` }} />
-                  </div>
+                  <SliderWithDebounce
+                    value={displayTime}
+                    min={0}
+                    max={player.totalTime || 1}
+                    step={0.1}
+                    onChange={v => videoCmd('video_seek', { time: v })}
+                    disabled={!player.totalTime}
+                    className="w-full"
+                  />
                 </div>
               </div>
 
-              {/* Controls */}
-              <div className="flex gap-1.5 flex-wrap">
+              {/* Controls + Speed (one line) */}
+              <div className="flex items-center gap-1.5">
                 {[
-                  ['video_play',   <Play size={10} />,   '播放',  'bg-[var(--sage)]/15 hover:bg-[var(--sage)]/25'],
-                  ['video_stop',   <Square size={10} />, '停止',  'bg-[var(--terracotta)]/10 hover:bg-[var(--terracotta)]/20'],
-                  ['video_pause',  null,                 '暂停',  'bg-[var(--cream-warm)] hover:bg-[var(--caramel)]/15'],
-                  ['video_resume', null,                 '继续',  'bg-[var(--cream-warm)] hover:bg-[var(--caramel)]/15'],
-                ].map(([action, icon, label, cls]) => (
+                  ['video_play',   <Play size={10} />,   '播放',  player.status === 'Playing' && !player.isPaused],
+                  ...(player.isPaused
+                    ? [['video_resume', <Play size={10} />, '继续', true]]
+                    : [['video_pause', <Pause size={10} />, '暂停', false]]),
+                  ['video_stop',   <Square size={10} />, '停止',  player.status === 'Stop'],
+                ].map(([action, icon, label, isActive]) => (
                   <button key={action} onClick={() => videoCmd(action)}
-                    className={`flex items-center gap-1 px-2 py-1 rounded text-[var(--coffee-deep)] transition-colors ${cls}`}>
+                    className={`flex items-center gap-1 px-2 py-1 rounded transition-colors ${isActive
+                      ? 'bg-[var(--caramel)]/25 text-[var(--coffee-deep)] font-semibold ring-1 ring-[var(--caramel)]/40'
+                      : 'bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:bg-[var(--caramel)]/15 hover:text-[var(--coffee-deep)]'}`}>
                     {icon}{label}
                   </button>
                 ))}
-              </div>
-
-              {/* Seek */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-[var(--coffee-muted)] flex-shrink-0">跳转 (s)</span>
-                <input type="number" value={seekInput} onChange={e => setSeekInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSeek()}
-                  step="0.1" placeholder="0.0"
-                  className="w-20 px-2 py-0.5 rounded border border-[var(--glass-border)] bg-white/60 focus:outline-none focus:border-[var(--caramel)] font-mono text-center appearance-none"
-                />
-                <button onClick={handleSeek}
-                  className="px-2 py-0.5 rounded bg-[var(--caramel)] text-white hover:opacity-90 transition-opacity">
-                  跳转
-                </button>
-              </div>
-
-              {/* Speed */}
-              <div className="flex items-center gap-2">
-                <span className="text-[var(--coffee-muted)] flex-shrink-0">速度</span>
-                <SliderWithDebounce className="flex-1" value={speedLocal} min={0.1} max={3} step={0.1}
-                  onChange={v => { setSpeedLocal(v); videoCmd('video_speed', { speed: v }) }} />
-                <span className="font-mono text-[var(--coffee-deep)] w-8 text-right flex-shrink-0">
-                  {speedLocal.toFixed(1)}x
-                </span>
+                <div className="ml-auto relative">
+                  <select value={speedLocal} onChange={e => { const v = parseFloat(e.target.value); setSpeedLocal(v); videoCmd('video_speed', { speed: v }) }}
+                    className="appearance-none h-5 leading-5 bg-[var(--cream-warm)] text-[var(--coffee-muted)] hover:bg-[var(--caramel)]/15 hover:text-[var(--coffee-deep)] px-1.5 pr-4 rounded text-[10px] font-mono cursor-pointer focus:outline-none focus:bg-[var(--caramel)]/15">
+                    {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0].map(s => (
+                      <option key={s} value={s}>{s.toFixed(1)}x</option>
+                    ))}
+                  </select>
+                  <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[8px] text-[var(--coffee-muted)]">▾</span>
+                </div>
               </div>
 
               {/* More info (collapsible) */}
@@ -493,13 +600,22 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
                 </button>
                 {moreInfoExpanded && (
                   <div className="px-3 pb-2 grid grid-cols-2 gap-x-4 border-t border-[var(--glass-border)]">
-                    <InfoRow label="Movie" value={player.movieName} />
-                    <InfoRow label="Loop" value={player.isLoop != null ? (player.isLoop ? 'Yes' : 'No') : null} />
+                    <InfoRow label="Status" value={player.status} />
+                    <InfoRow label="IsPaused" value={player.isPaused != null ? (player.isPaused ? 'Yes' : 'No') : null} />
                     <InfoRow label="Speed" value={player.speed != null ? `${player.speed}x` : null} />
-                    <InfoRow label="FrameRate" value={player.frameRate} />
+                    <InfoRow label="Loop" value={player.isLoop != null ? (player.isLoop ? 'Yes' : 'No') : null} />
+                    <InfoRow label="Movie" value={player.movieName} />
+                    <InfoRow label="VideoId" value={player.videoConfigId} />
+                    <InfoRow label="Resolution" value={player.width && player.height ? `${player.width}x${player.height}` : null} />
+                    <InfoRow label="FrameRate" value={player.frameRate != null ? `${player.frameRate} fps` : null} />
                     <InfoRow label="TotalFrames" value={player.totalFrames} />
-                    <InfoRow label="Width" value={player.width} />
-                    <InfoRow label="Height" value={player.height} />
+                    <InfoRow label="Url" value={player.url ? `…/${player.url.split(/[/\\]/).pop()}` : null} />
+                    <InfoRow label="字幕轨" value={player.numSubtitleChannels != null
+                      ? `${player.numSubtitleChannels} 条${player.subtitleChannel != null ? ` · 当前: ${player.subtitleChannel === -1 ? '关闭' : `#${player.subtitleChannel}`}` : ''}`
+                      : null} />
+                    <InfoRow label="音频轨" value={player.numAudioStreams != null
+                      ? `${player.numAudioStreams} 条${player.subAudioTrack != null ? ` · 当前: #${player.subAudioTrack}` : ''}`
+                      : null} />
                     <InfoRow label="RetainMusic" value={player.retainMusic != null ? (player.retainMusic ? 'Yes' : 'No') : null} />
                     <InfoRow label="RetainSound" value={player.retainSound != null ? (player.retainSound ? 'Yes' : 'No') : null} />
                     <InfoRow label="RetainCv" value={player.retainCv != null ? (player.retainCv ? 'Yes' : 'No') : null} />
@@ -516,6 +632,13 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
         <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--glass-border)]">
           <span className="font-semibold text-[var(--coffee-deep)]">事件日志</span>
           <span className="text-[var(--coffee-muted)] text-[10px]">({eventLog.length})</span>
+          <button onClick={() => sendCmd('toggle_video_log', { enabled: true })}
+            className={`ml-1 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors ${
+              videoSnap?.logEnabled
+                ? 'bg-[var(--sage)]/15 text-[var(--sage)] border border-[var(--sage)]/30'
+                : 'bg-[var(--cream-warm)] text-[var(--coffee-muted)] border border-[var(--glass-border)] hover:text-[var(--coffee-deep)]'}`}>
+            {videoSnap?.logEnabled ? '监听中' : '开启监听'}
+          </button>
           <div className="ml-auto flex gap-1">
             {[['all', '全部'], ['STATUS', 'Status'], ['ACTION', 'Action']].map(([v, l]) => (
               <button key={v} onClick={() => setEventFilter(v)}
@@ -570,7 +693,6 @@ export default function AvMonitor({ clients, selectedClient, active }) {
   const [selectedPlayer, setSelectedPlayer] = useState(null)
   const [eventLog, setEventLog] = useState([])
   const [eventFilter, setEventFilter] = useState('all')
-  const [seekInput, setSeekInput] = useState('')
 
   const wsRef = useRef(null)
   const listenersRef = useRef({})
@@ -610,16 +732,18 @@ export default function AvMonitor({ clients, selectedClient, active }) {
           if (msg.type === 'snapshot') {
             if (!activeRef.current || !autoRefreshRef.current) return
             const now = Date.now()
-            if (now - lastUpdateRef.current < refreshIntervalRef.current * 1000) return
-            lastUpdateRef.current = now
             const data = msg.data || {}
-            if (data.audio) setAudioSnap(data.audio)
+            // Video updates bypass throttle (game side already rate-limits)
             if (data.video) {
               setVideoSnap(data.video)
               if (data.video.events?.length) {
                 setEventLog(prev => [...prev, ...data.video.events].slice(-200))
               }
             }
+            // Audio updates follow user-configured refresh interval
+            if (now - lastUpdateRef.current < refreshIntervalRef.current * 1000) return
+            lastUpdateRef.current = now
+            if (data.audio) setAudioSnap(data.audio)
           } else {
             const cb = listenersRef.current[msg.type]
             if (cb) { cb(msg.data); delete listenersRef.current[msg.type] }
@@ -718,12 +842,11 @@ export default function AvMonitor({ clients, selectedClient, active }) {
   const videoCmd = useCallback((action, params = {}) => {
     if (!selectedPlayer) return
     sendCmd(action, { playerId: selectedPlayer, ...params })
+    // Request immediate snapshot after state-changing actions
+    if (['video_play','video_pause','video_resume','video_stop'].includes(action)) {
+      setTimeout(() => sendCmd('snapshot'), 200)
+    }
   }, [sendCmd, selectedPlayer])
-
-  const handleSeek = useCallback(() => {
-    const t = parseFloat(seekInput)
-    if (!isNaN(t)) videoCmd('video_seek', { time: t })
-  }, [videoCmd, seekInput])
 
   const filteredLog = eventFilter === 'all' ? eventLog : eventLog.filter(e => e.type === eventFilter)
 
@@ -808,10 +931,10 @@ export default function AvMonitor({ clients, selectedClient, active }) {
             eventLog={filteredLog}
             eventFilter={eventFilter}
             setEventFilter={setEventFilter}
-            seekInput={seekInput}
-            setSeekInput={setSeekInput}
-            handleSeek={handleSeek}
             videoCmd={videoCmd}
+            sendCmd={sendCmd}
+            handleCopy={handleCopy}
+            copiedFile={copiedFile}
           />
         )}
       </div>

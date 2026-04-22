@@ -2432,7 +2432,8 @@ local function StartRuntimeGM()
     -- ================================================================
     -- 注意：local LuaAvMonitor = {} 已在 RuntimeGMClient.Update() 之前前向声明，此处直接赋值
 
-    LuaAvMonitor._pushInterval    = 2.0   -- 推送间隔（秒），snapshot 命令会立即触发
+    LuaAvMonitor._pushInterval    = 2.0   -- 音频默认推送间隔（秒），snapshot 命令会立即触发
+    LuaAvMonitor._videoPushInterval = 0.5  -- 有活跃视频时的推送间隔（秒）
     LuaAvMonitor._lastPushTime    = -9999
     LuaAvMonitor._pendingEvents   = {}    -- 视频事件队列（每帧采集，随 snapshot 一起发送）
     LuaAvMonitor._isActive        = false -- 前端订阅时为 true，超时或 stop 命令后归 false
@@ -2517,20 +2518,25 @@ local function StartRuntimeGM()
             -- 活跃音频列表
             local activeList = {}
             pcall(function()
-                local list = CS.XAudioManager.AudioInfoList
+                local list = CS.XAudioManager.GetAudioInfoList()
                 if list then
                     for i = 0, list.Count - 1 do
                         local info = list[i]
                         if info then
+                            local status = "Unknown"
+                            if info.Playing then status = "Playing"
+                            elseif info.Pausing then status = "Paused" end
+                            local vol = 1.0
+                            pcall(function() vol = info.Source and info.Source.volume or 1.0 end)
                             activeList[#activeList + 1] = {
                                 id       = i,
-                                cueId    = info.Id,
-                                name     = info.Name or tostring(info.Id),
-                                playType = info.PlayType and tostring(info.PlayType) or "Unknown",
-                                acbPath  = info.AcbPath or info.acbPath,
-                                awbPath  = info.AwbPath or info.awbPath,
-                                status   = info.Status and tostring(info.Status) or "Playing",
-                                volume   = info.Volume or 1.0,
+                                cueId    = info.CueId,
+                                name     = info.CueName or tostring(info.CueId),
+                                playType = info.CueTemplate and tostring(info.CueTemplate.PlayType) or "Unknown",
+                                acbPath  = info.AcbFile,
+                                awbPath  = info.AwbFile,
+                                status   = status,
+                                volume   = vol,
                             }
                         end
                     end
@@ -2553,8 +2559,16 @@ local function StartRuntimeGM()
             -- CRI 资源统计
             local criStats = {}
             pcall(function()
-                criStats.binds   = CS.CriWare.CriAtomEx.GetNumBinders()
-                criStats.loaders = CS.CriWare.CriAtomExAcb.GetNumLoaders()
+                local ok1, cur1, max1, limit1 = CS.CriWare.CriFs.GetNumBinds()
+                criStats.bindsCur   = cur1
+                criStats.bindsMax   = max1
+                criStats.bindsLimit = limit1
+            end)
+            pcall(function()
+                local ok2, cur2, max2, limit2 = CS.CriWare.CriFs.GetNumUsedLoaders()
+                criStats.loadersCur   = cur2
+                criStats.loadersMax   = max2
+                criStats.loadersLimit = limit2
             end)
             audio.criStats = criStats
         end)
@@ -2572,23 +2586,37 @@ local function StartRuntimeGM()
                 if p then
                     local pi = { id = tostring(i) }
                     pcall(function() pi.name       = tostring(p) end)
-                    pcall(function() pi.status     = tostring(p.status) end)
-                    pcall(function() pi.currentTime = p:GetCurrentTime() end)
-                    pcall(function() pi.totalTime  = p:GetCurMovieLength() end)
-                    pcall(function() pi.isLoop     = p.isLoop end)
-                    pcall(function() pi.speed      = p.speed end)
                     pcall(function()
-                        local mi = p.movieInfo
-                        if mi then
-                            pi.movieName   = mi.moviePath or mi.MoviePath
-                            pi.width       = mi.width     or mi.Width
-                            pi.height      = mi.height    or mi.Height
-                            pi.frameRate   = mi.frameRate or mi.FrameRate
-                            pi.totalFrames = mi.totalFrames or mi.TotalFrames
+                        local player = p.VideoPlayerInst and p.VideoPlayerInst.player
+                        if player then
+                            local raw = tostring(player.status)
+                            pi.status = raw:match("^(%a+)") or raw
                         end
                     end)
                     pcall(function()
-                        local ctrl = p.VideoPlayControl
+                        local paused = p:IsPaused()
+                        pi.isPaused = (paused == true)
+                    end)
+                    pcall(function() pi.currentTime = p:GetCurrentTime() end)
+                    pcall(function() pi.totalTime  = p:GetCurMovieLength() end)
+                    pcall(function() pi.isLoop     = p.IsLooping end)
+                    pcall(function() pi.speed      = p.PlaybackSpeed end)
+                    pcall(function()
+                        local mi = p.VideoPlayerInst.player.movieInfo
+                        if mi then
+                            pi.movieName           = mi.moviePath
+                            pi.width               = mi.width
+                            pi.height              = mi.height
+                            pi.frameRate           = mi.framerateN / mi.framerateD
+                            pi.totalFrames         = mi.totalFrames
+                            pi.numSubtitleChannels = mi.numSubtitleChannels
+                            pi.numAudioStreams     = mi.numAudioStreams
+                        end
+                    end)
+                    pcall(function() pi.subtitleChannel = p.SubtitleIndex end)
+                    pcall(function() pi.subAudioTrack   = p.AudioIndex end)
+                    pcall(function()
+                        local ctrl = p.VideoPlayingControl
                         if ctrl then
                             local v = ctrl.value__
                             pi.retainMusic = (v % 2)              == 1
@@ -2596,9 +2624,15 @@ local function StartRuntimeGM()
                             pi.retainCv    = (math.floor(v / 4) % 2) == 1
                         end
                     end)
+                    pcall(function() pi.url          = p.Url end)
+                    pcall(function() pi.videoConfigId = p.VideoId end)
                     video.players[#video.players + 1] = pi
                 end
             end
+        end)
+        -- 视频日志监听状态
+        pcall(function()
+            video.logEnabled = CS.XVideoManager.IsLogVideoStatusEventInfo or false
         end)
         -- 附带已积累的事件
         video.events = LuaAvMonitor._pendingEvents
@@ -2615,11 +2649,26 @@ local function StartRuntimeGM()
             LuaAvMonitor._isActive = false
             return
         end
-        if now - LuaAvMonitor._lastPushTime < LuaAvMonitor._pushInterval then return end
+        -- 有活跃视频时使用更短的推送间隔
+        local interval = LuaAvMonitor._pushInterval
+        if LuaAvMonitor._hasActiveVideo then
+            interval = LuaAvMonitor._videoPushInterval
+        end
+        if now - LuaAvMonitor._lastPushTime < interval then return end
         LuaAvMonitor._lastPushTime = now
+        local video = _av_collectVideo()
+        LuaAvMonitor._hasActiveVideo = false
+        if video and video.players then
+            for _, pi in ipairs(video.players) do
+                if pi.status == "Playing" or pi.status == "ReadyForRendering" then
+                    LuaAvMonitor._hasActiveVideo = true
+                    break
+                end
+            end
+        end
         _av_sendResp("snapshot", {
             audio = _av_collectAudio(),
-            video = _av_collectVideo(),
+            video = video,
         })
     end
 
@@ -2716,6 +2765,25 @@ local function StartRuntimeGM()
 
         elseif action == "reload_sound" then
             pcall(function() CS.XAudioManager.ReloadSound() end)
+
+        elseif action == "toggle_video_log" then
+            pcall(function()
+                local enabled = packet.enabled
+                local curStatus = CS.XVideoManager.IsLogVideoStatusEventInfo or false
+                local curAction = CS.XVideoManager.IsLogVideoActionEventInfo or false
+                if enabled and not curStatus then
+                    CS.XVideoManager.SetIsLogVideoStatusEventInfo()
+                end
+                if enabled and not curAction then
+                    CS.XVideoManager.SetIsLogVideoActionEventInfo()
+                end
+                if not enabled and curStatus then
+                    CS.XVideoManager.SetIsLogVideoStatusEventInfo()
+                end
+                if not enabled and curAction then
+                    CS.XVideoManager.SetIsLogVideoActionEventInfo()
+                end
+            end)
 
         else
             -- 视频控制命令
