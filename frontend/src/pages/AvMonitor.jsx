@@ -392,7 +392,15 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
                   : 'hover:bg-[var(--cream-warm)]/60 text-[var(--coffee-deep)]'}`}>
                 <Film size={11} className={`flex-shrink-0 ${p.status === 'Playing' ? 'text-[var(--sage)]' : 'text-[var(--coffee-muted)] opacity-40'}`} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium text-[11px]">{p.name || p.id}</div>
+                  <div className="truncate font-medium text-[11px] flex items-center gap-1">
+                    {p.name || p.id}
+                    {p.status === 'Playing' && (
+                      <span className="inline-flex items-center gap-0.5 px-1 py-px rounded text-[8px] font-semibold bg-[var(--sage)]/15 text-[var(--sage)]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
+                        LIVE
+                      </span>
+                    )}
+                  </div>
                   <div className={`text-[10px] ${p.status === 'Playing' ? 'text-[var(--sage)]' : 'text-[var(--coffee-muted)]'}`}>
                     {p.status}
                   </div>
