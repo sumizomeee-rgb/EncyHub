@@ -77,7 +77,10 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
                         const instanceId = msg.data.instanceId
                         const now = Date.now()
                         const lastMap = lastUpdateMapRef.current
-                        if (now - (lastMap[instanceId] || 0) < refreshIntervalRef.current * 1000) return
+                        const isPlaying = msg.data.playState === 'Playing'
+                        // Playing snapshots bypass throttle (game side already rate-limits;
+                        // we need frequent anchor sync for smooth interpolation)
+                        if (!isPlaying && now - (lastMap[instanceId] || 0) < refreshIntervalRef.current * 1000) return
                         lastMap[instanceId] = now
                         setSnapshots(prev => ({ ...prev, [instanceId]: msg.data }))
                         const snapId = msg.data.instanceId
@@ -261,6 +264,59 @@ export default function TimelineMonitor({ clients, selectedClient, broadcastMode
 // 监控卡片
 // ============================================================================
 function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRemove, onRefresh, onControl, onMuteTrack, onInvokeSignal, onScrub }) {
+    // --- Anchor-based interpolation (same pattern as AvMonitor VideoTab) ---
+    const [displayTime, setDisplayTime] = useState(0)
+    const anchorRef = useRef({ time: 0, ts: 0, speed: 1, playing: false, total: 0 })
+    const rafRef = useRef(null)
+
+    // Sync anchor when snapshot arrives
+    useEffect(() => {
+        if (!snapshot) return
+        const isPlaying = snapshot.playState === 'Playing'
+        anchorRef.current = {
+            time: snapshot.currentTime ?? 0,
+            ts: performance.now(),
+            speed: snapshot.speed ?? 1,
+            playing: isPlaying,
+            total: snapshot.duration ?? 0,
+        }
+        if (!isPlaying) setDisplayTime(snapshot.currentTime ?? 0)
+    }, [snapshot?.currentTime, snapshot?.playState, snapshot?.speed, snapshot?.duration])
+
+    // rAF loop for smooth interpolation while playing
+    useEffect(() => {
+        let lastUpdate = 0
+        const tick = (now) => {
+            const a = anchorRef.current
+            if (a.playing && a.total > 0) {
+                if (now - lastUpdate > 250) {
+                    const elapsed = (performance.now() - a.ts) / 1000
+                    const t = Math.min(a.time + a.speed * elapsed, a.total)
+                    setDisplayTime(t)
+                    lastUpdate = now
+                }
+            }
+            rafRef.current = requestAnimationFrame(tick)
+        }
+        rafRef.current = requestAnimationFrame(tick)
+        return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
+    }, [])
+
+    // Seek helper: update anchor immediately so slider doesn't snap back
+    const handleScrub = useCallback((time) => {
+        setDisplayTime(time)
+        anchorRef.current = { ...anchorRef.current, time, ts: performance.now() }
+        onScrub(time)
+    }, [onScrub])
+
+    const handleControl = useCallback((cmd, value) => {
+        if (cmd === 'set_time') {
+            setDisplayTime(value)
+            anchorRef.current = { ...anchorRef.current, time: value, ts: performance.now() }
+        }
+        onControl(cmd, value)
+    }, [onControl])
+
     if (!snapshot) {
         return (
             <div className="rounded-lg border border-[var(--glass-border)] bg-white/30 p-3">
@@ -302,15 +358,15 @@ function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRe
             {!isCollapsed && (
                 <>
                     {/* Timeline View */}
-                    <TimelineView snapshot={snapshot} onScrub={onScrub} onMuteTrack={onMuteTrack} />
+                    <TimelineView snapshot={snapshot} displayTime={displayTime} onScrub={handleScrub} onMuteTrack={onMuteTrack} />
 
                     {/* Control Bar */}
-                    <ControlBar snapshot={snapshot} onControl={onControl} />
+                    <ControlBar snapshot={snapshot} displayTime={displayTime} onControl={handleControl} />
 
                     {/* Events Panel */}
                     {snapshot.events && snapshot.events.length > 0 && (
                         <EventPanel events={snapshot.events} onInvoke={onInvokeSignal}
-                            onJump={(time) => onControl('set_time', time)} />
+                            onJump={(time) => handleControl('set_time', time)} />
                     )}
                 </>
             )}
@@ -321,11 +377,11 @@ function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRe
 // ============================================================================
 // 时间轴可视化
 // ============================================================================
-function TimelineView({ snapshot, onScrub, onMuteTrack }) {
+function TimelineView({ snapshot, displayTime, onScrub, onMuteTrack }) {
     const contentRef = useRef(null)
     const tracks = snapshot.tracks || []
     const dur = snapshot.duration || 1
-    const current = snapshot.currentTime || 0
+    const current = displayTime ?? snapshot.currentTime ?? 0
     const headerW = 130
     const rulerH = 22
     const trackH = 32
@@ -448,11 +504,11 @@ function lightenColor(hex, amount) {
 // ============================================================================
 // 控制栏
 // ============================================================================
-function ControlBar({ snapshot, onControl }) {
+function ControlBar({ snapshot, displayTime, onControl }) {
     const [speed, setSpeed] = useState(1)
     const isPlaying = snapshot.playState === 'Playing'
     const dur = snapshot.duration || 0
-    const cur = snapshot.currentTime || 0
+    const cur = displayTime ?? snapshot.currentTime ?? 0
 
     // 同步速度
     useEffect(() => {
