@@ -522,7 +522,11 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
 
   const handleTimeSubmit = () => {
     const t = parseTimeInput(timeInput)
-    if (!isNaN(t) && t >= 0) videoCmd('video_seek', { time: t })
+    if (!isNaN(t) && t >= 0) {
+      setDisplayTime(t)
+      anchorRef.current = { ...anchorRef.current, time: t, ts: performance.now() }
+      videoCmd('video_seek', { time: t })
+    }
     setEditingTime(false)
     setTimeInput('')
   }
@@ -648,6 +652,8 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
                   onPreview={v => setPreviewTime(v)}
                   onSeek={v => {
                     setPreviewTime(null)
+                    setDisplayTime(v)
+                    anchorRef.current = { ...anchorRef.current, time: v, ts: performance.now() }
                     videoCmd('video_seek', { time: v })
                   }}
                   disabled={!player.totalTime}
