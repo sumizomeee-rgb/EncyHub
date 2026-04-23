@@ -91,6 +91,66 @@ function SliderWithDebounce({ value, min = 0, max = 1, step = 0.01, onChange, di
 function pct(v) { return v != null ? `${Math.round(v * 100)}%` : '--' }
 
 // ============================================================
+// VolumeSlider — custom slider for volume (0-1)
+// ============================================================
+function VolumeSlider({ value, onChange, disabled, readOnly, className }) {
+  const trackRef = useRef(null)
+  const dragging = useRef(false)
+
+  const clamp = (v) => Math.max(0, Math.min(1, v))
+  const valFromEvent = (e) => {
+    const rect = trackRef.current.getBoundingClientRect()
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left
+    return clamp(x / rect.width)
+  }
+  const pctPos = `${(clamp(value ?? 0)) * 100}%`
+
+  useEffect(() => {
+    if (!dragging.current) return
+    const onMove = (e) => {
+      e.preventDefault()
+      onChange?.(valFromEvent(e))
+    }
+    const onUp = (e) => {
+      dragging.current = false
+      onChange?.(valFromEvent(e))
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('touchend', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('touchend', onUp)
+    }
+  })
+
+  const startDrag = (e) => {
+    if (disabled || readOnly) return
+    dragging.current = true
+    document.body.style.userSelect = 'none'
+    onChange?.(valFromEvent(e))
+  }
+
+  return (
+    <div ref={trackRef}
+      className={`relative h-3 flex items-center ${readOnly || disabled ? 'opacity-50 pointer-events-none' : 'cursor-pointer'} ${className || ''}`}
+      onMouseDown={startDrag} onTouchStart={startDrag}>
+      <div className="absolute left-0 right-0 h-1.5 rounded-full bg-[var(--glass-border)]" />
+      <div className={`absolute left-0 h-1.5 rounded-full ${readOnly ? 'bg-[var(--coffee-muted)]/40' : 'bg-[var(--caramel)]'}`}
+        style={{ width: pctPos }} />
+      {!readOnly && (
+        <div className="absolute h-2.5 w-2.5 rounded-full bg-[var(--caramel)] border-2 border-white shadow-sm -translate-x-1/2"
+          style={{ left: pctPos }} />
+      )}
+    </div>
+  )
+}
+
+// ============================================================
 // VolumeRow
 // ============================================================
 function VolumeRow({ label, value, readOnly, aisacMuted, onAisacToggle, onChange }) {
@@ -98,14 +158,7 @@ function VolumeRow({ label, value, readOnly, aisacMuted, onAisacToggle, onChange
     <div className="flex items-center gap-2 mb-1.5">
       <span className="w-20 flex-shrink-0 text-[var(--coffee-muted)]">{label}</span>
       <div className="flex-1 flex items-center gap-2">
-        {readOnly ? (
-          <div className="flex-1 relative h-1.5 rounded-full overflow-hidden bg-[var(--glass-border)]">
-            <div className="absolute left-0 top-0 h-full bg-[var(--coffee-muted)]/40 rounded-full"
-              style={{ width: `${(value ?? 0) * 100}%` }} />
-          </div>
-        ) : (
-          <SliderWithDebounce className="flex-1" value={value ?? 0} onChange={onChange} />
-        )}
+        <VolumeSlider className="flex-1" value={value ?? 0} onChange={onChange} readOnly={readOnly} />
         <span className={`w-9 text-right font-mono text-[10px] flex-shrink-0 ${readOnly ? 'text-[var(--coffee-muted)] opacity-60' : 'text-[var(--coffee-deep)]'}`}>
           {pct(value)}{readOnly && <Lock size={8} className="inline ml-0.5 opacity-60" />}
         </span>
@@ -135,7 +188,7 @@ function InfoRow({ label, value }) {
 // ============================================================
 // AudioTab
 // ============================================================
-function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
+function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedAudio,
   cueQuery, setCueQuery, cueResult, cueLoading, criExpanded, setCriExpanded,
   handleCopy, setCatVol, setSecVol, toggleMasterMute, toggleAisacMute,
   toggleDebugFlag, queryCue, sendCmd }) {
@@ -155,17 +208,23 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
     ['aisacLog', 'Aisac Log'],
   ]
 
+  const playTypeBadge = (pt) => {
+    if (pt === 'Music') return 'bg-[var(--caramel)]/20 text-[var(--caramel)]'
+    if (pt === 'SFX') return 'bg-blue-100 text-blue-600'
+    return 'bg-purple-100 text-purple-600'
+  }
+
   return (
     <div className="space-y-3">
-      {/* BGM Card */}
+      {/* 1. BGM Card (with quick actions) */}
       <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
         <div className="flex items-center gap-1.5 mb-2 font-semibold text-[var(--coffee-deep)]">
           <Music size={12} />当前 BGM
         </div>
-        {!bgm ? (
+        {!bgm || (!bgm.name && !bgm.cueId) ? (
           <div className="text-[var(--coffee-muted)]">-- 无播放 --</div>
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium text-[var(--coffee-deep)] truncate max-w-[200px]">{bgm.name || '--'}</span>
               <span className="text-[var(--coffee-muted)]">CueId: <span className="font-mono text-[var(--coffee-deep)]">{bgm.cueId ?? '--'}</span></span>
@@ -193,22 +252,35 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
             )}
           </div>
         )}
+        {/* BGM actions — integrated into card */}
+        <div className="flex gap-1.5 mt-2 pt-2 border-t border-[var(--glass-border)]">
+          <button onClick={() => sendCmd('play_bgm')}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--sage)]/15 text-[var(--coffee-deep)] hover:bg-[var(--sage)]/25 transition-colors">
+            <Play size={10} />播放
+          </button>
+          <button onClick={() => sendCmd('stop_bgm')}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--terracotta)]/10 text-[var(--coffee-deep)] hover:bg-[var(--terracotta)]/20 transition-colors">
+            <Square size={10} />停止
+          </button>
+          <button onClick={() => sendCmd('reload_sound')}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--cream-warm)] text-[var(--coffee-deep)] hover:bg-[var(--caramel)]/15 transition-colors">
+            <RotateCw size={10} />重载
+          </button>
+        </div>
       </section>
 
-      {/* Volume Mixer */}
+      {/* 2. Volume Mixer */}
       <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
         <div className="font-semibold text-[var(--coffee-deep)] mb-2">音量调节</div>
 
-        {/* Master Mute — prominent full-width */}
         <button onClick={toggleMasterMute}
           className={`w-full mb-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${audioSnap?.masterMute
             ? 'bg-[var(--terracotta)] text-white'
             : 'bg-[var(--cream-warm)] text-[var(--coffee-deep)] hover:bg-[var(--caramel)]/15'}`}>
           <VolumeX size={12} />
-          {audioSnap?.masterMute ? 'Master Mute: ON (DSP Snapshot 已生效)' : 'Master Mute: OFF — 点击静音'}
+          {audioSnap?.masterMute ? 'Master Mute: ON' : 'Master Mute: OFF — 点击静音'}
         </button>
 
-        {/* Category volumes */}
         <div className="text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide mb-1.5">
           分类音量 (Category) <span className="normal-case font-normal">· Aisac Mute ⇒</span>
         </div>
@@ -221,7 +293,6 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
           />
         ))}
 
-        {/* Second / Aisac volumes */}
         <div className="text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide mt-3 mb-1.5">
           Aisac / 二次音量 (Second)
         </div>
@@ -232,7 +303,6 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
           />
         ))}
 
-        {/* Source volumes — read-only */}
         <div className="text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide mt-3 mb-1.5 flex items-center gap-1">
           <Lock size={9} />Source 音量 (只读)
         </div>
@@ -240,7 +310,7 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
         <VolumeRow label="Default Src" value={vols?.source?.default} readOnly />
       </section>
 
-      {/* Active Audio List */}
+      {/* 3. Active Audio List */}
       <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
         <div className="font-semibold text-[var(--coffee-deep)] mb-2">
           活跃音频列表
@@ -255,10 +325,7 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
                 <button className="w-full flex items-center gap-2 px-2 py-1.5 text-left"
                   onClick={() => setExpandedAudio(expandedAudio === i ? null : i)}>
                   {expandedAudio === i ? <ChevronDown size={10} className="flex-shrink-0" /> : <ChevronRight size={10} className="flex-shrink-0" />}
-                  <span className={`text-[10px] px-1 rounded flex-shrink-0 ${
-                    item.playType === 'Music' ? 'bg-[var(--caramel)]/20 text-[var(--caramel)]'
-                    : item.playType === 'SFX' ? 'bg-blue-100 text-blue-600'
-                    : 'bg-purple-100 text-purple-600'}`}>
+                  <span className={`text-[10px] px-1 rounded flex-shrink-0 ${playTypeBadge(item.playType)}`}>
                     {item.playType}
                   </span>
                   <span className="font-medium truncate text-[var(--coffee-deep)]">{item.name}</span>
@@ -268,29 +335,75 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
                   </span>
                 </button>
                 {expandedAudio === i && (
-                  <div className="px-3 pb-2 pt-1 space-y-1 border-t border-[var(--glass-border)] text-[var(--coffee-muted)]">
-                    <div className="flex gap-2">
-                      <span className="w-10 flex-shrink-0">CueId</span>
-                      <span className="font-mono text-[var(--coffee-deep)]">{item.cueId ?? '--'}</span>
-                    </div>
-                    {item.acbPath && (
-                      <div className="flex items-center gap-1">
-                        <span className="w-10 flex-shrink-0">ACB</span>
-                        <button className={`flex items-center gap-1 transition-colors ${copiedFile === `acb_${i}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`}
-                          onClick={() => handleCopy(item.acbPath.split(/[/\\]/).pop(), `acb_${i}`)} title={item.acbPath}>
-                          {copiedFile === `acb_${i}` ? <Check size={10} /> : <Copy size={10} />}
-                          <span>…/{item.acbPath.split(/[/\\]/).pop()}</span>
-                        </button>
+                  <div className="px-3 pb-2 pt-1 border-t border-[var(--glass-border)] text-[var(--coffee-muted)]">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                      <div className="flex gap-2">
+                        <span className="w-14 flex-shrink-0">CueId</span>
+                        <span className="font-mono text-[var(--coffee-deep)]">{item.cueId ?? '--'}</span>
                       </div>
-                    )}
-                    {item.awbPath && (
-                      <div className="flex items-center gap-1">
-                        <span className="w-10 flex-shrink-0">AWB</span>
-                        <button className={`flex items-center gap-1 transition-colors ${copiedFile === `awb_${i}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`}
-                          onClick={() => handleCopy(item.awbPath.split(/[/\\]/).pop(), `awb_${i}`)} title={item.awbPath}>
-                          {copiedFile === `awb_${i}` ? <Check size={10} /> : <Copy size={10} />}
-                          <span>…/{item.awbPath.split(/[/\\]/).pop()}</span>
-                        </button>
+                      <div className="flex gap-2">
+                        <span className="w-14 flex-shrink-0">Volume</span>
+                        <span className="font-mono text-[var(--coffee-deep)]">{pct(item.volume)}</span>
+                      </div>
+                      {item.duration != null && (
+                        <div className="flex gap-2">
+                          <span className="w-14 flex-shrink-0">Duration</span>
+                          <span className="font-mono text-[var(--coffee-deep)]">{item.duration}ms</span>
+                        </div>
+                      )}
+                      {item.time != null && item.time >= 0 && (
+                        <div className="flex gap-2">
+                          <span className="w-14 flex-shrink-0">Time</span>
+                          <span className="font-mono text-[var(--coffee-deep)]">{item.time}ms</span>
+                        </div>
+                      )}
+                      {item.startTime != null && item.startTime >= 0 && (
+                        <div className="flex gap-2">
+                          <span className="w-14 flex-shrink-0">Start</span>
+                          <span className="font-mono text-[var(--coffee-deep)]">{item.startTime}s</span>
+                        </div>
+                      )}
+                      {item.endTime != null && item.endTime >= 0 && (
+                        <div className="flex gap-2">
+                          <span className="w-14 flex-shrink-0">End</span>
+                          <span className="font-mono text-[var(--coffee-deep)]">{item.endTime}s</span>
+                        </div>
+                      )}
+                      {item.lastFor != null && item.lastFor >= 0 && (
+                        <div className="flex gap-2">
+                          <span className="w-14 flex-shrink-0">LastFor</span>
+                          <span className="font-mono text-[var(--coffee-deep)]">{item.lastFor}s</span>
+                        </div>
+                      )}
+                      {item.sourceName && (
+                        <div className="flex gap-2 col-span-2">
+                          <span className="w-14 flex-shrink-0">Source</span>
+                          <span className="font-mono text-[var(--coffee-deep)] truncate">{item.sourceName}</span>
+                        </div>
+                      )}
+                    </div>
+                    {(item.acbPath || item.awbPath) && (
+                      <div className="mt-1 pt-1 border-t border-[var(--glass-border)] space-y-0.5">
+                        {item.acbPath && (
+                          <div className="flex items-center gap-1">
+                            <span className="w-14 flex-shrink-0">ACB</span>
+                            <button className={`flex items-center gap-1 transition-colors ${copiedFile === `acb_${i}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`}
+                              onClick={() => handleCopy(item.acbPath.split(/[/\\]/).pop(), `acb_${i}`)} title={item.acbPath}>
+                              {copiedFile === `acb_${i}` ? <Check size={10} /> : <Copy size={10} />}
+                              <span className="truncate">…/{item.acbPath.split(/[/\\]/).pop()}</span>
+                            </button>
+                          </div>
+                        )}
+                        {item.awbPath && (
+                          <div className="flex items-center gap-1">
+                            <span className="w-14 flex-shrink-0">AWB</span>
+                            <button className={`flex items-center gap-1 transition-colors ${copiedFile === `awb_${i}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`}
+                              onClick={() => handleCopy(item.awbPath.split(/[/\\]/).pop(), `awb_${i}`)} title={item.awbPath}>
+                              {copiedFile === `awb_${i}` ? <Check size={10} /> : <Copy size={10} />}
+                              <span className="truncate">…/{item.awbPath.split(/[/\\]/).pop()}</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -301,7 +414,39 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
         )}
       </section>
 
-      {/* CueId Query */}
+      {/* 4. Audio Play Log */}
+      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 text-xs overflow-hidden">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--glass-border)]">
+          <span className="font-semibold text-[var(--coffee-deep)]">播放日志</span>
+          <span className="text-[var(--coffee-muted)] text-[10px]">({audioLog?.length ?? 0})</span>
+        </div>
+        <div className="max-h-40 overflow-y-auto">
+          {!audioLog?.length ? (
+            <div className="px-3 py-3 text-[var(--coffee-muted)] text-center">活跃列表变化时自动记录</div>
+          ) : (
+            <div className="divide-y divide-[var(--glass-border)]">
+              {audioLog.map((entry, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-1 hover:bg-[var(--cream-warm)]/30">
+                  <span className="font-mono text-[10px] text-[var(--coffee-muted)] flex-shrink-0">{entry.time}</span>
+                  <span className={`text-[10px] font-semibold flex-shrink-0 ${entry.action === 'Play' ? 'text-[var(--sage)]' : 'text-[var(--terracotta)]'}`}>
+                    {entry.action === 'Play' ? '▶' : '■'}
+                  </span>
+                  <span className="truncate text-[var(--coffee-deep)]">{entry.name}</span>
+                  <button className="font-mono text-[10px] text-[var(--caramel)] hover:text-[var(--coffee-deep)] flex-shrink-0 cursor-pointer transition-colors"
+                    onClick={() => sendCmd('play_cue', { cueId: entry.cueId })} title="点击播放">
+                    ▶{entry.cueId}
+                  </button>
+                  <span className={`text-[10px] px-1 rounded flex-shrink-0 ml-auto ${playTypeBadge(entry.playType)}`}>
+                    {entry.playType}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* 5. CueId Query */}
       <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
         <div className="font-semibold text-[var(--coffee-deep)] mb-2">CueId 精确查询</div>
         <div className="flex gap-1.5">
@@ -330,7 +475,7 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
         )}
       </section>
 
-      {/* Debug Flags */}
+      {/* 6. Debug Flags */}
       <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
         <div className="font-semibold text-[var(--coffee-deep)] mb-2">Debug 开关</div>
         <div className="grid grid-cols-2 gap-1.5">
@@ -346,26 +491,7 @@ function AudioTab({ audioSnap, copiedFile, expandedAudio, setExpandedAudio,
         </div>
       </section>
 
-      {/* Quick Actions */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
-        <div className="font-semibold text-[var(--coffee-deep)] mb-2">快捷操作</div>
-        <div className="flex gap-2 flex-wrap">
-          <button onClick={() => sendCmd('play_bgm')}
-            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--sage)]/15 text-[var(--coffee-deep)] hover:bg-[var(--sage)]/25 transition-colors">
-            <Play size={11} />播放 BGM
-          </button>
-          <button onClick={() => sendCmd('stop_bgm')}
-            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--terracotta)]/10 text-[var(--coffee-deep)] hover:bg-[var(--terracotta)]/20 transition-colors">
-            <Square size={11} />停止 BGM
-          </button>
-          <button onClick={() => sendCmd('reload_sound')}
-            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--cream-warm)] text-[var(--coffee-deep)] hover:bg-[var(--caramel)]/15 transition-colors">
-            <RotateCw size={11} />重载音频
-          </button>
-        </div>
-      </section>
-
-      {/* CRI Stats (collapsible) */}
+      {/* 7. CRI Stats (collapsible) */}
       <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 text-xs overflow-hidden">
         <button className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-[var(--cream-warm)]/50 transition-colors"
           onClick={() => setCriExpanded(v => !v)}>
@@ -788,6 +914,10 @@ export default function AvMonitor({ clients, selectedClient, active }) {
   const [eventLog, setEventLog] = useState([])
   const [eventFilter, setEventFilter] = useState('all')
 
+  // Audio play log (derived from activeList diffs)
+  const [audioLog, setAudioLog] = useState([])
+  const prevActiveRef = useRef(null)
+
   const wsRef = useRef(null)
   const listenersRef = useRef({})
   const activeRef = useRef(active)
@@ -837,7 +967,30 @@ export default function AvMonitor({ clients, selectedClient, active }) {
             // Audio updates follow user-configured refresh interval
             if (now - lastUpdateRef.current < refreshIntervalRef.current * 1000) return
             lastUpdateRef.current = now
-            if (data.audio) setAudioSnap(data.audio)
+            if (data.audio) {
+              // Diff activeList for audio play log
+              const curList = data.audio.activeList || []
+              const prevList = prevActiveRef.current
+              if (prevList) {
+                const prevIds = new Set(prevList.map(a => `${a.cueId}:${a.name}`))
+                const curIds = new Set(curList.map(a => `${a.cueId}:${a.name}`))
+                const now = new Date().toLocaleTimeString('en-GB', { hour12: false })
+                const newEntries = []
+                for (const a of curList) {
+                  if (!prevIds.has(`${a.cueId}:${a.name}`)) {
+                    newEntries.push({ time: now, action: 'Play', name: a.name, cueId: a.cueId, playType: a.playType })
+                  }
+                }
+                for (const a of prevList) {
+                  if (!curIds.has(`${a.cueId}:${a.name}`)) {
+                    newEntries.push({ time: now, action: 'Stop', name: a.name, cueId: a.cueId, playType: a.playType })
+                  }
+                }
+                if (newEntries.length) setAudioLog(prev => [...newEntries, ...prev].slice(0, 100))
+              }
+              prevActiveRef.current = curList
+              setAudioSnap(data.audio)
+            }
           } else {
             const cb = listenersRef.current[msg.type]
             if (cb) { cb(msg.data); delete listenersRef.current[msg.type] }
@@ -998,6 +1151,7 @@ export default function AvMonitor({ clients, selectedClient, active }) {
         {subTab === 'audio' ? (
           <AudioTab
             audioSnap={audioSnap}
+            audioLog={audioLog}
             copiedFile={copiedFile}
             expandedAudio={expandedAudio}
             setExpandedAudio={setExpandedAudio}

@@ -2530,7 +2530,7 @@ local function StartRuntimeGM()
                             elseif info.Pausing then status = "Paused" end
                             local vol = 1.0
                             pcall(function() vol = info.Source and info.Source.volume or 1.0 end)
-                            activeList[#activeList + 1] = {
+                            local entry = {
                                 id       = i,
                                 cueId    = info.CueId,
                                 name     = info.CueName or tostring(info.CueId),
@@ -2540,6 +2540,17 @@ local function StartRuntimeGM()
                                 status   = status,
                                 volume   = vol,
                             }
+                            pcall(function() entry.duration  = info.Duration end)
+                            pcall(function() entry.time      = info.Time end)
+                            pcall(function() entry.startTime = info.StartTime end)
+                            pcall(function() entry.endTime   = info.EndTime end)
+                            pcall(function() entry.lastFor   = info.LastFor end)
+                            pcall(function()
+                                if info.Source and info.Source.gameObject then
+                                    entry.sourceName = info.Source.gameObject.name
+                                end
+                            end)
+                            activeList[#activeList + 1] = entry
                         end
                     end
                 end
@@ -2759,6 +2770,16 @@ local function StartRuntimeGM()
             pcall(function()
                 if packet.cueId then
                     CS.XLuaAudioManager.PlayAudioByType(tonumber(packet.cueId), CS.XAudioManager.PlayType.Music)
+                end
+            end)
+
+        elseif action == "play_cue" then
+            pcall(function()
+                local cid = tonumber(packet.cueId)
+                if cid then
+                    local tpl = CS.XAudioManager.GetCueTemplate(cid)
+                    local typeId = tpl.PlayType
+                    CS.XLuaAudioManager.PlayAudioByType(typeId, cid)
                 end
             end)
 
