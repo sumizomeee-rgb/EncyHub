@@ -545,14 +545,14 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
   // ==========================================================================
   const renderFileTable = (files, compact = false, fileSharedMap = {}) => (
     <div className={`${compact ? '' : 'mt-2'}`}>
-      <table className="w-full text-xs">
+      <table className={`w-full text-xs ${compact ? 'table-fixed' : ''}`}>
         <thead>
           <tr className="text-[var(--coffee-muted)] text-[10px]">
-            <th className="text-center py-1 font-medium w-8">状态</th>
-            <th className="text-left py-1 font-medium">文件名</th>
-            <th className="text-right py-1 font-medium w-16">大小</th>
-            <th className="text-left py-1 font-medium w-20 pl-2">sha1</th>
-            <th className="text-center py-1 font-medium w-16">共享</th>
+            <th className={`text-center py-1 font-medium whitespace-nowrap ${compact ? 'w-5' : 'w-8'}`}>状态</th>
+            <th className="text-left py-1 font-medium whitespace-nowrap">文件名</th>
+            <th className={`text-right py-1 font-medium whitespace-nowrap ${compact ? 'w-12' : 'w-16'}`}>大小</th>
+            <th className={`text-left py-1 font-medium whitespace-nowrap ${compact ? 'w-14 pl-1' : 'w-20 pl-2'}`}>sha1</th>
+            <th className={`text-center py-1 font-medium whitespace-nowrap ${compact ? 'w-10' : 'w-16'}`}>共享</th>
           </tr>
         </thead>
         <tbody>
@@ -564,17 +564,17 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
                   onClick={() => { copyText(`${f.name}  ${f.asset || ''}  ${formatSize(f.size)}  ${f.sha1 || ''}`); setCopiedFile('row_' + i + '_' + f.name); setTimeout(() => setCopiedFile(null), 800) }}>
                   <span className={`inline-block w-2 h-2 rounded-full transition-colors ${copiedFile === 'row_' + i + '_' + f.name ? 'bg-[var(--sky)]' : f.exists ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]'}`} />
                 </td>
-                <td className="py-1 font-mono max-w-[200px] cursor-pointer transition-colors hover:text-[var(--sky)] truncate"
+                <td className={`py-1 font-mono cursor-pointer transition-colors hover:text-[var(--sky)] truncate overflow-hidden ${compact ? '' : 'max-w-[200px]'}`}
                   title={`${f.asset || f.name}\n${f.name}\n点击复制路径`}
                   onClick={() => { copyText(f.asset || f.name); setCopiedFile(f.asset || f.name); setTimeout(() => setCopiedFile(null), 800) }}>
                   {copiedFile === (f.asset || f.name) ? '已复制 ✓' : (() => { const p = f.asset || f.name; const idx = p.lastIndexOf('/'); return idx < 0 ? p : <><span className="text-[var(--coffee-muted)] opacity-50">…/</span><span style={{ color: 'var(--coffee-deep)' }}>{p.slice(idx + 1)}</span></> })()}
                 </td>
-                <td className="py-1 text-right text-[var(--coffee-muted)]">{formatSize(f.size)}</td>
-                <td className="py-1 pl-2 font-mono truncate max-w-[80px] cursor-pointer transition-colors hover:text-[var(--sky)]"
+                <td className="py-1 text-right text-[var(--coffee-muted)] whitespace-nowrap">{formatSize(f.size)}</td>
+                <td className={`py-1 font-mono truncate cursor-pointer transition-colors hover:text-[var(--sky)] overflow-hidden ${compact ? 'pl-1' : 'pl-2 max-w-[80px]'}`}
                   style={{ color: copiedSha1 === f.sha1 ? 'var(--sage)' : 'var(--coffee-muted)' }}
                   title={`${f.sha1}\n点击复制`}
                   onClick={() => { copyText(f.sha1); setCopiedSha1(f.sha1); setTimeout(() => setCopiedSha1(null), 800) }}>
-                  {copiedSha1 === f.sha1 ? '已复制 ✓' : `${f.sha1?.substring(0, 8)}...`}
+                  {copiedSha1 === f.sha1 ? '已复制 ✓' : (compact ? f.sha1?.substring(0, 6) : `${f.sha1?.substring(0, 8)}...`)}
                 </td>
                 <td className="py-1 text-center">
                   <SharedBadge count={refCount} type="Res" ids={fileSharedMap[f.name]} onJump={jumpToRes} />
