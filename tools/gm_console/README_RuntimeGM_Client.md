@@ -78,14 +78,16 @@ local function StartRuntimeGM()
         local info = {
             platform = "Unknown",
             device = "Unknown",
-            pid = 0
+            pid = 0,
+            packageName = "",
+            persistentDataPath = ""
         }
 
-        pcall(function()
-            info.platform = CS.UnityEngine.Application.platform:ToString()
-            info.device = CS.UnityEngine.SystemInfo.deviceModel
-            info.pid = CS.System.Diagnostics.Process.GetCurrentProcess().Id
-        end)
+        pcall(function() info.platform = CS.UnityEngine.Application.platform:ToString() end)
+        pcall(function() info.packageName = CS.UnityEngine.Application.identifier end)
+        pcall(function() info.persistentDataPath = CS.UnityEngine.Application.persistentDataPath end)
+        pcall(function() info.device = CS.UnityEngine.SystemInfo.deviceModel end)
+        pcall(function() info.pid = CS.System.Diagnostics.Process.GetCurrentProcess().Id end)
 
         return info
     end
@@ -227,7 +229,9 @@ local function StartRuntimeGM()
                 type = "HELLO",
                 pid = RuntimeGMClient.DeviceInfo.pid,
                 device = RuntimeGMClient.DeviceInfo.device,
-                platform = RuntimeGMClient.DeviceInfo.platform
+                platform = RuntimeGMClient.DeviceInfo.platform,
+                packageName = RuntimeGMClient.DeviceInfo.packageName,
+                persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath
             })
         else
             -- 这里会打印具体的错误原因，比如 "connection refused" 或 "timeout"

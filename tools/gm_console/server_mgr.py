@@ -22,6 +22,9 @@ class Client:
     writer: asyncio.StreamWriter
     device: str = "Unknown"
     platform: str = "Unknown"
+    pid: int = 0
+    package_name: str = ""
+    persistent_data_path: str = ""
     gm_tree: List[Any] = field(default_factory=list)
     ui_states: Dict[str, Any] = field(default_factory=dict)
 
@@ -31,6 +34,9 @@ class Client:
             "port": self.port,
             "device": self.device,
             "platform": self.platform,
+            "pid": self.pid,
+            "packageName": self.package_name,
+            "persistentDataPath": self.persistent_data_path,
             "gm_tree": self.gm_tree,
         }
 
@@ -253,7 +259,13 @@ class ServerMgr:
         elif t == "HELLO":
             c.device = pkt.get("device", "Unknown")
             c.platform = pkt.get("platform", "Unknown")
-            print(f"[ServerMgr] HELLO: device={c.device}, platform={c.platform}")
+            c.pid = pkt.get("pid", 0) or 0
+            c.package_name = pkt.get("packageName", "") or pkt.get("package_name", "") or ""
+            c.persistent_data_path = pkt.get("persistentDataPath", "") or pkt.get("persistent_data_path", "") or ""
+            print(
+                f"[ServerMgr] HELLO: device={c.device}, platform={c.platform}, "
+                f"package={c.package_name or '-'}"
+            )
             if self.on_update:
                 self.on_update()
         elif t == "LOG":
