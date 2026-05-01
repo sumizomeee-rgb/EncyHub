@@ -8,7 +8,7 @@
 
 **Tech Stack:** Lua (XLua) / Python (FastAPI + asyncio) / React + Tailwind CSS
 
-**Spec:** `E:\Such_Proj\Other\EncyHub\requirement_doc\25_施工方案书_LuaUiInspector_Web端实现.md`
+**Spec:** `E:\Such_Proj\Other\EncyHub\doc\25_施工方案书_LuaUiInspector_Web端实现.md`
 
 ---
 
