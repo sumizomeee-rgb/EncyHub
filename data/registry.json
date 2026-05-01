@@ -6,7 +6,7 @@
     "enabled": false,
     "port": null,
     "pid": null,
-    "last_started": "2026-04-21 09:20:29"
+    "last_started": "2026-04-28 19:08:27"
   },
   "flow_svn": {
     "tool_id": "flow_svn",
@@ -22,8 +22,8 @@
     "display_name": "GM Console",
     "description": "游戏 GM 控制台",
     "enabled": true,
-    "port": 13131,
-    "pid": 81336,
-    "last_started": "2026-04-22 19:34:45"
+    "port": 14074,
+    "pid": 55052,
+    "last_started": "2026-05-01 12:20:20"
   }
 }
