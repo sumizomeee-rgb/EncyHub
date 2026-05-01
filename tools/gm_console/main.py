@@ -188,6 +188,20 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_proto_call_resp = on_proto_call_resp
 
+    # --- Table Monitor ---
+    def on_table_monitor_data(client_id, pkt):
+        data = pkt.get("data", {})
+        if pkt.get("error"):
+            data = {**data, "error": pkt.get("error")}
+        asyncio.create_task(broadcast_table_monitor_event({
+            "type": pkt.get("action", "unknown"),
+            "client_id": client_id,
+            "data": data,
+            "error": pkt.get("error"),
+        }))
+
+    server_mgr.on_table_monitor_data = on_table_monitor_data
+
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
     if success:
@@ -653,6 +667,45 @@ async def websocket_av_monitor(websocket: WebSocket):
     finally:
         if websocket in av_monitor_ws_connections:
             av_monitor_ws_connections.remove(websocket)
+
+
+# === Table Monitor API ===
+
+table_monitor_ws_connections: list = []
+
+async def broadcast_table_monitor_event(data: dict):
+    dead = []
+    for ws in table_monitor_ws_connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        table_monitor_ws_connections.remove(ws)
+
+@app.post("/table_monitor/{client_id}/command")
+async def table_monitor_command(client_id: str, request: Request):
+    body = await request.json()
+    action = body.pop("action", "")
+    if not action:
+        raise HTTPException(400, "Missing action")
+    await server_mgr.send_table_monitor_request(client_id, action, body)
+    return {"status": "requested"}
+
+@app.websocket("/ws/table_monitor")
+async def websocket_table_monitor(websocket: WebSocket):
+    await websocket.accept()
+    table_monitor_ws_connections.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in table_monitor_ws_connections:
+            table_monitor_ws_connections.remove(websocket)
 
 
 # === Proto Requester API ===

@@ -74,6 +74,7 @@ class ServerMgr:
         self.on_player_prefs_data = None    # Callback for PLAYER_PREFS_RESP
         self.on_av_monitor_data = None      # Callback for AV_MONITOR_RESP
         self.on_proto_call_resp = None      # Callback for PROTO_CALL_RESP
+        self.on_table_monitor_data = None   # Callback for TABLE_MONITOR_RESP
         self._pending_execs: Dict[int, dict] = {}
 
     def _kill_port_holder(self, port: int):
@@ -324,6 +325,11 @@ class ServerMgr:
             print(f"[ServerMgr] PROTO_CALL_RESP: protocol={protocol}, code={code}")
             if self.on_proto_call_resp:
                 self.on_proto_call_resp(cid, pkt)
+        elif t == "TABLE_MONITOR_RESP":
+            action = pkt.get("action", "?")
+            print(f"[ServerMgr] TABLE_MONITOR_RESP: action={action}, error={pkt.get('error', 'none')}")
+            if self.on_table_monitor_data:
+                self.on_table_monitor_data(cid, pkt)
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -676,6 +682,20 @@ class ServerMgr:
             await c.writer.drain()
         except Exception as e:
             self._add_log("error", f"Send SUBPKG_MONITOR failed: {e}", client_id)
+
+    async def send_table_monitor_request(self, client_id: str, action: str, params: dict):
+        """发送 Table Monitor 命令到客户端"""
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        pkt = {"type": "TABLE_MONITOR", "action": action}
+        pkt.update(params)
+        msg = json.dumps(pkt, ensure_ascii=False) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send TABLE_MONITOR failed: {e}", client_id)
 
     async def shutdown(self):
         """关闭所有连接并清理端口"""

@@ -5,7 +5,7 @@ import {
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity,
   PanelLeftClose, PanelLeftOpen, Package, Database, Zap, Settings,
-  Film, Video, Clock
+  Film, Video, Clock, Table2
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
@@ -16,6 +16,7 @@ import SubPackageMonitor from './SubPackageMonitor'
 import PlayerPrefsViewer from './PlayerPrefsViewer'
 import AvMonitor from './AvMonitor'
 import ProtoRequester from './ProtoRequester'
+import TableViewer from './TableViewer'
 
 // Tab 配置
 const TAB_META = {
@@ -29,8 +30,9 @@ const TAB_META = {
   player_prefs:  { label: 'PlayerPrefs', icon: Database },
   av_monitor:    { label: 'AV Monitor', icon: Video },
   proto:         { label: 'Proto',    icon: Zap },
+  table_monitor: { label: 'Table',    icon: Table2 },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor', 'proto']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor', 'proto', 'table_monitor']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -1212,6 +1214,15 @@ end`
                     selectedClient={selectedClient}
                     active={activeTab === 'proto'}
                     haruRootInfo={haruRootInfo}
+                  />
+                </div>
+
+                <div style={{ display: activeTab === 'table_monitor' ? 'contents' : 'none' }}>
+                  <TableViewer
+                    clients={clients}
+                    selectedClient={selectedClient}
+                    broadcastMode={broadcastMode}
+                    active={activeTab === 'table_monitor'}
                   />
                 </div>
               </div>
