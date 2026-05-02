@@ -22,8 +22,8 @@
     "display_name": "GM Console",
     "description": "游戏 GM 控制台",
     "enabled": true,
-    "port": 14074,
-    "pid": 55052,
-    "last_started": "2026-05-01 12:20:20"
+    "port": 12070,
+    "pid": 146620,
+    "last_started": "2026-05-01 17:04:10"
   }
 }

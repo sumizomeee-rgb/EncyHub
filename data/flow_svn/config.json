@@ -11,10 +11,22 @@
       "template_id": "",
       "schedule_time": "09:00",
       "enabled": true,
-      "last_run": "2026-05-01T09:10:53.451541",
+      "last_run": "2026-05-02T09:09:32.466010",
       "last_status": "success",
-      "last_log": "[2026-05-01 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nU    Res\\Assets\\Editor\\Builder\\Shader\\XShaderBuilder.cs\nU    Res\\Assets\\Editor\\Builder\\XBuilder.cs\nD    Res\\Assets\\Editor\\CharacterPrefabEditor\\Validation\nD    Res\\Assets\\Editor\\CharacterPrefabEditor\\Validation.meta\nD    Res\\Assets\\Editor\\CharacterPrefabEditor\\GUI\\IClosableTabPageLifecycle.cs\nD    Res\\Assets\\Editor\\CharacterPrefabEditor\\GUI\\IClosableTabPageLifecycle.cs.meta\nD    Res\\Assets\\Editor\\CharacterPrefabEditor\\GUI\\ClosableTabView.cs.meta\nD    Res\\Assets\\Editor\\CharacterPrefabEditor\\GUI\\ClosableTabView.cs\nU    Res\\Assets\\Editor\\CharacterPrefabEditor\\GUI\\CharacterEditingEntry.cs\nU    Res\\Assets\\Editor\\CharacterPrefabEditor\\GUI\\CharacterListPanelView.cs\nU    Res\\Assets\\Editor\\CharacterPrefabEditor\\GUI\\CharacterPrefabEditorWindow.cs\nA    Res\\Assets",
+      "last_log": "[2026-05-02 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nU    Dev\\Client\\Assets\\Resources\\XBuildInfoConfig.asset\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionCN\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionEN\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionJP\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionKR\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionTW\nD    Product\\Bin\\Client\\Win\\Debug\\CN_com.kurogame.haru.internal.debug_1.0.0_1777574934_1449893_Kuro.version\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\Assembly-CSharp.dll\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\Haru.EngienCore.dll\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\Haru.RenderPIpeline.Runtime.dll\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\com.h",
       "execution_history": [
+        {
+          "time": "2026-05-02T09:09:32.466010",
+          "status": "success",
+          "duration": 570.3316442966461,
+          "message": "[2026-05-02 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-05-02T09:00:02.134365",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
         {
           "time": "2026-05-01T09:10:53.451541",
           "status": "success",
@@ -122,21 +134,9 @@
           "status": "running",
           "duration": 0,
           "message": "任务开始执行"
-        },
-        {
-          "time": "2026-04-22T09:14:31.771165",
-          "status": "success",
-          "duration": 869.4273369312286,
-          "message": "[2026-04-22 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
-        },
-        {
-          "time": "2026-04-22T09:00:02.343828",
-          "status": "running",
-          "duration": 0,
-          "message": "任务开始执行"
         }
       ],
-      "total_runs": 58
+      "total_runs": 59
     }
   ],
   "templates": []
