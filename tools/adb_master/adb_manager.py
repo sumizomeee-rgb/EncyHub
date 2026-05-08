@@ -662,15 +662,15 @@ class AdbManager:
         
         return success, output.strip()
     
-    async def get_current_app_package(self, serial: str) -> Optional[str]:
+    async def get_current_app_package(self, serial: str) -> tuple[Optional[str], Optional[str]]:
         """
-        Get the package name of the currently focused app.
+        Get the package name and activity of the currently focused app.
         
         Args:
             serial: Device serial
             
         Returns:
-            Package name or None if not found
+            Tuple of (package_name, activity_name) or (None, None) if not found
         """
         # Try mCurrentFocus (works on most devices)
         returncode, stdout, stderr = await self._run_command(
@@ -678,12 +678,11 @@ class AdbManager:
         )
         
         if returncode == 0:
-            # Look for "mCurrentFocus=Window{... u0 com.example.package/...}"
+            # Look for "mCurrentFocus=Window{... u0 com.example.package/com.example.MainActivity}"
             # Pattern: mCurrentFocus=Window{<token> <user> <package>/<activity>}
-            # Capture <package>
-            match = re.search(r'mCurrentFocus=Window\{.*?\s+(?:u\d+\s+)?([a-zA-Z0-9_.]+)/', stdout)
+            match = re.search(r'mCurrentFocus=Window\{.*?\s+(?:u\d+\s+)?([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)', stdout)
             if match:
-                return match.group(1)
+                return match.group(1), match.group(2)
         
         # Fallback: mResumedActivity
         returncode, stdout, stderr = await self._run_command(
@@ -691,12 +690,12 @@ class AdbManager:
         )
         
         if returncode == 0:
-            # Look for "ResumedActivity: ActivityRecord{... u0 com.example.package/...}"
-            match = re.search(r'ResumedActivity:.*?\s+(?:u\d+\s+)?([a-zA-Z0-9_.]+)/', stdout)
+            # Look for "ResumedActivity: ActivityRecord{... u0 com.example.package/com.example.MainActivity}"
+            match = re.search(r'ResumedActivity:.*?\s+(?:u\d+\s+)?([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)', stdout)
             if match:
-                return match.group(1)
+                return match.group(1), match.group(2)
                 
-        return None
+        return None, None
 
     async def stop_app(self, serial: str, package_name: str) -> bool:
         """
@@ -749,7 +748,7 @@ class AdbManager:
         Returns:
             Tuple of (success, message, package_name)
         """
-        package = await self.get_current_app_package(serial)
+        package, _activity = await self.get_current_app_package(serial)
         
         if not package:
             return False, "No active app found (Launcher or Unknown)", None

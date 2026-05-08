@@ -749,6 +749,18 @@ async def restart_app(hw_id: str):
     return {"message": msg}
 
 
+@app.get("/devices/{hw_id}/foreground-app")
+async def get_foreground_app(hw_id: str):
+    """获取设备当前前台应用包名和 Activity"""
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        return {"package": None, "activity": None}
+
+    package, activity = await adb_mgr.get_current_app_package(dev.active_serial)
+    return {"package": package, "activity": activity}
+
+
 # ============================================================================
 # Path History API
 # ============================================================================

@@ -16,6 +16,7 @@ function AdbMaster() {
   const [selectedDevice, setSelectedDevice] = useState(null)
   const [logcat, setLogcat] = useState([])
   const [logcatRunning, setLogcatRunning] = useState(false)
+  const [foregroundApp, setForegroundApp] = useState(null)
   const wsRef = useRef(null)
   const logcatEndRef = useRef(null)
   const logcatContainerRef = useRef(null)
@@ -161,6 +162,28 @@ function AdbMaster() {
   }
 
   useEffect(() => { document.title = 'ADB Master - EncyHub' }, [])
+
+  // 前台应用轮询
+  useEffect(() => {
+    setForegroundApp(null)
+    if (!selectedDevice || !selectedDevice.active_serial) return
+
+    let cancelled = false
+    const poll = async () => {
+      if (document.hidden) return
+      try {
+        const res = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/foreground-app`)
+        if (res.ok && !cancelled) {
+          const data = await res.json()
+          setForegroundApp(data.package ? data : null)
+        }
+      } catch {}
+    }
+
+    poll()
+    const interval = setInterval(poll, 5000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [selectedDevice?.hardware_id, selectedDevice?.active_serial])
 
   useEffect(() => {
     fetchDevices()
@@ -1402,8 +1425,11 @@ function AdbMaster() {
                             </button>
                           </div>
                         )}
-                        <p className="text-xs text-[var(--coffee-muted)] font-mono">
+                        <p className="text-xs text-[var(--coffee-muted)] font-mono flex items-center gap-2">
                           {selectedDevice.hardware_id}
+                          {foregroundApp && (
+                            <span className="text-[var(--sage)]">{foregroundApp.package}</span>
+                          )}
                         </p>
                       </div>
                     </div>
