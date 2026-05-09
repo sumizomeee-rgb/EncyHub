@@ -98,7 +98,7 @@ class iOSDeviceManager:
                 'DeviceColor': vals.get('DeviceColor', ''),
             }
         except Exception as e:
-            return {'error': str(e)}
+            return {'error': str(e) or f'设备连接失败 ({type(e).__name__})'}
 
     # ── App Management ──
 
@@ -128,7 +128,7 @@ class iOSDeviceManager:
             result.sort(key=lambda x: x['name'].lower())
             return result
         except Exception as e:
-            return [{'error': str(e)}]
+            return [{'error': str(e) or f'操作失败 ({type(e).__name__})'}]
 
     async def uninstall_app(self, udid: str, bundle_id: str) -> tuple[bool, str]:
         return await asyncio.to_thread(self._uninstall_app_sync, udid, bundle_id)
@@ -189,7 +189,7 @@ class iOSDeviceManager:
                         })
                 return result
         except Exception as e:
-            return [{'error': str(e)}]
+            return [{'error': str(e) or f'操作失败 ({type(e).__name__})'}]
 
     async def afc_push(self, udid: str, local_path: str, remote_path: str) -> tuple[bool, str]:
         return await asyncio.to_thread(self._afc_push_sync, udid, local_path, remote_path)
@@ -271,7 +271,7 @@ class iOSDeviceManager:
                         })
                 return result
         except Exception as e:
-            return [{'error': str(e)}]
+            return [{'error': str(e) or f'操作失败 ({type(e).__name__})'}]
 
     async def app_afc_push(self, udid: str, bundle_id: str, local_path: str, remote_path: str) -> tuple[bool, str]:
         return await asyncio.to_thread(self._app_afc_push_sync, udid, bundle_id, local_path, remote_path)
