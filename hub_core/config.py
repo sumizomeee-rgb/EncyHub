@@ -24,7 +24,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 为每个工具创建独立的日志目录
-TOOL_IDS = ["adb_master", "flow_svn", "gm_console"]
+TOOL_IDS = ["adb_master", "flow_svn", "gm_console", "ios_master"]
 for tool_id in TOOL_IDS:
     (LOGS_DIR / tool_id).mkdir(parents=True, exist_ok=True)
 
@@ -32,8 +32,10 @@ for tool_id in TOOL_IDS:
 def get_tool_log_path(tool_id: str) -> Path:
     """获取工具日志文件路径（带时间戳）"""
     from datetime import datetime
+    tool_log_dir = LOGS_DIR / tool_id
+    tool_log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return LOGS_DIR / tool_id / f"{timestamp}.log"
+    return tool_log_dir / f"{timestamp}.log"
 
 
 def find_free_port() -> int:
