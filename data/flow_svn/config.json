@@ -11,10 +11,70 @@
       "template_id": "",
       "schedule_time": "09:00",
       "enabled": true,
-      "last_run": "2026-05-02T09:09:32.466010",
-      "last_status": "success",
-      "last_log": "[2026-05-02 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\nU    Dev\\Client\\Assets\\Resources\\XBuildInfoConfig.asset\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionCN\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionEN\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionJP\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionKR\nU    Dev\\Client\\BuildCache\\win\\LastExportAssetRevisionTW\nD    Product\\Bin\\Client\\Win\\Debug\\CN_com.kurogame.haru.internal.debug_1.0.0_1777574934_1449893_Kuro.version\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\Assembly-CSharp.dll\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\Haru.EngienCore.dll\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\Haru.RenderPIpeline.Runtime.dll\nU    Product\\Bin\\Client\\Win\\Debug\\Application_Data\\Managed\\com.h",
+      "last_run": "2026-05-09T09:05:04.955045",
+      "last_status": "failed",
+      "last_log": "[2026-05-09 09:00:03] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n--- SVN Output Start ---\nUpdating '.':\n\nERROR: SVN update timed out after 300 seconds of silence",
       "execution_history": [
+        {
+          "time": "2026-05-09T09:05:04.955045",
+          "status": "failed",
+          "duration": 301.9094309806824,
+          "message": "[2026-05-09 09:00:03] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-05-09T09:00:03.045614",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
+        {
+          "time": "2026-05-08T09:08:26.791907",
+          "status": "success",
+          "duration": 504.8346583843231,
+          "message": "[2026-05-08 09:00:01] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-05-08T09:00:01.957249",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
+        {
+          "time": "2026-05-07T09:14:27.146345",
+          "status": "success",
+          "duration": 865.1461431980133,
+          "message": "[2026-05-07 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-05-07T09:00:02.000202",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
+        {
+          "time": "2026-05-06T09:06:57.964626",
+          "status": "success",
+          "duration": 415.9885311126709,
+          "message": "[2026-05-06 09:00:01] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-05-06T09:00:01.976095",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
+        {
+          "time": "2026-05-03T09:09:01.419500",
+          "status": "failed",
+          "duration": 539.3277633190155,
+          "message": "[2026-05-03 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
+        },
+        {
+          "time": "2026-05-03T09:00:02.091737",
+          "status": "running",
+          "duration": 0,
+          "message": "任务开始执行"
+        },
         {
           "time": "2026-05-02T09:09:32.466010",
           "status": "success",
@@ -74,69 +134,9 @@
           "status": "running",
           "duration": 0,
           "message": "任务开始执行"
-        },
-        {
-          "time": "2026-04-27T09:04:14.716116",
-          "status": "success",
-          "duration": 253.02702832221985,
-          "message": "[2026-04-27 09:00:01] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
-        },
-        {
-          "time": "2026-04-27T09:00:01.689088",
-          "status": "running",
-          "duration": 0,
-          "message": "任务开始执行"
-        },
-        {
-          "time": "2026-04-26T09:04:23.761617",
-          "status": "success",
-          "duration": 261.3149435520172,
-          "message": "[2026-04-26 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
-        },
-        {
-          "time": "2026-04-26T09:00:02.446674",
-          "status": "running",
-          "duration": 0,
-          "message": "任务开始执行"
-        },
-        {
-          "time": "2026-04-25T09:16:52.267040",
-          "status": "success",
-          "duration": 1009.8352828025818,
-          "message": "[2026-04-25 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
-        },
-        {
-          "time": "2026-04-25T09:00:02.431758",
-          "status": "running",
-          "duration": 0,
-          "message": "任务开始执行"
-        },
-        {
-          "time": "2026-04-24T09:05:04.304826",
-          "status": "failed",
-          "duration": 301.88506603240967,
-          "message": "[2026-04-24 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
-        },
-        {
-          "time": "2026-04-24T09:00:02.419761",
-          "status": "running",
-          "duration": 0,
-          "message": "任务开始执行"
-        },
-        {
-          "time": "2026-04-23T09:12:43.295076",
-          "status": "success",
-          "duration": 760.9484357833862,
-          "message": "[2026-04-23 09:00:02] Starting SVN update (Streaming)\nWorking directory: F:\\HaruTrunk\nTimeouts: Idle=300s, Max=7200s\nSVN working copy root found: F:\\HaruTrunk\nExecuting: svn update --non-interactive\n-"
-        },
-        {
-          "time": "2026-04-23T09:00:02.346640",
-          "status": "running",
-          "duration": 0,
-          "message": "任务开始执行"
         }
       ],
-      "total_runs": 59
+      "total_runs": 64
     }
   ],
   "templates": []

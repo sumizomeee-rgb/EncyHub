@@ -21,19 +21,24 @@
       "last_wifi_ip": "10.101.21.55",
       "last_model": "PFTM10",
       "original_hardware_id": "4DGYP7KFVKEYHAKZ"
+    },
+    "3B15AN021UV00000": {
+      "last_wifi_ip": "10.101.21.39",
+      "last_model": "PLJ110",
+      "original_hardware_id": "3B15AN021UV00000"
     }
   },
   "path_history": {
     "pull": [
-      "/storage/emulated/0/Android/data/com.kurogame.haru.bilibili/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru/files/log",
+      "/storage/emulated/0/Android/data/com.kurogame.haru.bilibili/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/log"
     ],
     "push": [
-      "/storage/emulated/0/Android/data/com.kurogame.haru.bilibili/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
+      "/storage/emulated/0/Android/data/com.kurogame.haru.bilibili/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.nearme.gamecenter/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug430/files/",
