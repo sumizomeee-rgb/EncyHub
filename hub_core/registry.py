@@ -46,6 +46,11 @@ DEFAULT_TOOLS = {
         display_name="GM Console",
         description="游戏 GM 控制台",
     ),
+    "ios_master": ToolInfo(
+        tool_id="ios_master",
+        display_name="iOS Master",
+        description="iOS 设备管理工具",
+    ),
 }
 
 
