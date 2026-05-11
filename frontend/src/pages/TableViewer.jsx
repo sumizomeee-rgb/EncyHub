@@ -128,6 +128,7 @@ export default function TableViewer({ clients, selectedClient, broadcastMode, ac
       return
     }
 
+    let closed = false
     const capturedClientId = clientId
     const sendCmd = (action, params = {}) => {
       fetch(`${API}/table_monitor/${capturedClientId}/command`, {
@@ -137,32 +138,42 @@ export default function TableViewer({ clients, selectedClient, broadcastMode, ac
       }).catch(() => {})
     }
 
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${proto}//${window.location.host}/api/gm_console/ws/table_monitor`)
-    wsRef.current = ws
+    const connect = () => {
+      if (closed) return
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const ws = new WebSocket(`${proto}//${window.location.host}/api/gm_console/ws/table_monitor`)
+      wsRef.current = ws
+      let hb = null
 
-    ws.onopen = () => {
-      setWsConnected(true)
-      sendCmd('start')
-      sendCmd('list_tables')
+      ws.onopen = () => {
+        setWsConnected(true)
+        sendCmd('start')
+        sendCmd('list_tables')
+        hb = setInterval(() => { if (ws.readyState === 1) ws.send('ping') }, 30000)
+      }
+      ws.onmessage = (e) => {
+        if (!activeRef.current) return
+        try {
+          const msg = JSON.parse(e.data)
+          handleWsMessage(msg)
+        } catch {}
+      }
+      ws.onclose = () => {
+        if (hb) clearInterval(hb)
+        setWsConnected(false)
+        wsRef.current = null
+        if (!closed) setTimeout(connect, 2000)
+      }
+      ws.onerror = () => { ws.close() }
     }
-    ws.onmessage = (e) => {
-      if (!activeRef.current) return
-      try {
-        const msg = JSON.parse(e.data)
-        handleWsMessage(msg)
-      } catch {}
-    }
-    ws.onclose = () => { setWsConnected(false); wsRef.current = null }
-    ws.onerror = () => { ws.close() }
 
-    const hb = setInterval(() => { if (ws.readyState === 1) ws.send('ping') }, 30000)
+    connect()
 
     return () => {
-      clearInterval(hb)
+      closed = true
       if (dataSearchTimerRef.current) clearTimeout(dataSearchTimerRef.current)
       sendCmd('stop')
-      ws.close()
+      wsRef.current?.close()
       wsRef.current = null
     }
   }, [clientId, active])
