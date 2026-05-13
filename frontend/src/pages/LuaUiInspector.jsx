@@ -1003,8 +1003,8 @@ function FieldRow({ field, catColor, expanded, canExpand = true, showAddr, selec
                                         {onPinToMonitor && (
                                             <button onClick={(e) => { e.stopPropagation(); onPinToMonitor(fieldPath, c.index, c.typeName) }}
                                                 className="px-0.5 py-0.5 rounded-r bg-black/5 hover:bg-[var(--caramel)]/15 text-[var(--coffee-muted)] opacity-40 hover:opacity-100 hover:text-[var(--caramel)] text-[9px]"
-                                                title={`发送 ${c.typeName} 到 C# Monitor`}>
-                                                📌
+                                                title={`在 Hierarchy 中定位 ${c.typeName}`}>
+                                                🎯
                                             </button>
                                         )}
                                     </span>

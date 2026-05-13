@@ -11,7 +11,7 @@ import { useToast } from '../components/Toast'
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
-import CsComponentMonitor from './CsComponentMonitor'
+import Hierarchy from './Hierarchy'
 import SubPackageMonitor from './SubPackageMonitor'
 import PlayerPrefsViewer from './PlayerPrefsViewer'
 import AvMonitor from './AvMonitor'
@@ -24,7 +24,7 @@ const TAB_META = {
   custom_gm:     { label: '自定义',    icon: Layers,   gridSlider: true },
   lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
   timeline:      { label: 'Timeline',  icon: Clock },
-  cs_monitor:    { label: 'C# Monitor', icon: Activity },
+  cs_monitor:    { label: 'Hierarchy', icon: Activity },
   animator:      { label: 'Animator',  icon: Film },
   subpkg_monitor:{ label: '分包监控',  icon: Package },
   player_prefs:  { label: 'PlayerPrefs', icon: Database },
@@ -67,7 +67,7 @@ function GmConsole() {
   const [wsStatus, setWsStatus] = useState('connecting')
   const [activeTab, setActiveTab] = useState('lua_gm')
   const [luaUiContext, setLuaUiContext] = useState(null) // null=普通模式, "UIName"=LuaUI上下文模式
-  const [pendingCsPin, setPendingCsPin] = useState(null) // 从 Inspector 联动到 CsMonitor 的待 pin 数据
+  const [pendingLocate, setPendingLocate] = useState(null) // 从 LuaUiInspector 联动到 Hierarchy 的 Locate 载荷
   const [haruRootInfo, setHaruRootInfo] = useState({ haruroot: '', valid: false, protocolCount: 0 })
   const [tabOrder, setTabOrder] = useState(loadTabOrder)
   const dragTabRef = useRef(null)
@@ -1156,8 +1156,8 @@ end`
                     broadcastMode={broadcastMode}
                     luaUiContext={luaUiContext}
                     onBindConsole={(uiName) => setLuaUiContext(uiName)}
-                    onPinToMonitor={(pinData) => {
-                      setPendingCsPin(pinData)
+                    onPinToMonitor={(locateData) => {
+                      setPendingLocate(locateData)
                       setActiveTab('cs_monitor')
                     }}
                     active={activeTab === 'lua_inspector'}
@@ -1174,11 +1174,11 @@ end`
                 </div>
 
                 <div style={{ display: activeTab === 'cs_monitor' ? 'contents' : 'none' }}>
-                  <CsComponentMonitor
+                  <Hierarchy
                     clients={clients}
                     selectedClient={selectedClient}
-                    pendingPin={pendingCsPin}
-                    onPendingPinConsumed={() => setPendingCsPin(null)}
+                    pendingLocate={pendingLocate}
+                    onPendingLocateConsumed={() => setPendingLocate(null)}
                     active={activeTab === 'cs_monitor'}
                   />
                 </div>

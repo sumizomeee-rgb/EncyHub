@@ -1277,11 +1277,20 @@ local function StartRuntimeGM()
                 if not valOk then valOk, val = pcall(function() return prop:GetValue(comp) end) end
                 if not valOk then valOk, val = pcall(function() return prop:GetValue(comp, nil) end) end
                 if not valOk then result._debug.failed = result._debug.failed + 1; return end
-                local serialized, valueType = inspectorSerializePropValue(val, propTypeName)
-                result.properties[#result.properties + 1] = {
+                local serialized, valueType, extra = inspectorSerializePropValue(val, propTypeName)
+                local entry = {
                     name = pName, typeName = propTypeName, valueType = valueType,
-                    value = serialized, editable = prop.CanWrite and valueType ~= "readonly",
+                    value = serialized, editable = prop.CanWrite and valueType ~= "readonly" and valueType ~= "collection" and valueType ~= "ref",
                 }
+                if valueType == "collection" and extra then
+                    entry.count = extra.count
+                    entry.collectionKind = extra.kind
+                elseif valueType == "ref" and extra then
+                    entry.instanceId = extra.instanceId
+                    entry.refKind = extra.refKind
+                    entry.actualType = extra.actualType
+                end
+                result.properties[#result.properties + 1] = entry
             end)
         end
 
@@ -1299,11 +1308,20 @@ local function StartRuntimeGM()
                 local valOk, val = pcall(function() return comp[fName] end)
                 if not valOk then valOk, val = pcall(function() return fld:GetValue(comp) end) end
                 if not valOk then return end
-                local serialized, valueType = inspectorSerializePropValue(val, fTypeName)
-                result.properties[#result.properties + 1] = {
+                local serialized, valueType, extra = inspectorSerializePropValue(val, fTypeName)
+                local entry = {
                     name = fName, typeName = fTypeName, valueType = valueType,
-                    value = serialized, editable = (not fld.IsInitOnly) and valueType ~= "readonly", isField = true,
+                    value = serialized, editable = (not fld.IsInitOnly) and valueType ~= "readonly" and valueType ~= "collection" and valueType ~= "ref", isField = true,
                 }
+                if valueType == "collection" and extra then
+                    entry.count = extra.count
+                    entry.collectionKind = extra.kind
+                elseif valueType == "ref" and extra then
+                    entry.instanceId = extra.instanceId
+                    entry.refKind = extra.refKind
+                    entry.actualType = extra.actualType
+                end
+                result.properties[#result.properties + 1] = entry
             end)
         end
 
@@ -1469,63 +1487,429 @@ local function StartRuntimeGM()
         return { success = true, result = ret }
     end
 
+    -- ========== LuaHierarchy: Unity Hierarchy + Inspector (真机兼容) ==========
+    -- 复刻 Unity Editor 的 Hierarchy + Inspector 体验：
+    --   * 按 Scene 列出根 GameObject，点击节点懒加载子节点
+    --   * 选中 GO 后一次性返回该 GO 上所有 Component 的反射详情
+    --   * Locate：从 LuaUiInspector 的 (uiName, path) 解析到 GO，返回祖先链供前端展开
+    -- 与 LuaCsMonitor 共享底层反射工具（readComponentDetail / convertTypedValue / callCompMethodImpl）
+    -- 与 LuaCsMonitor._compRefs 共享缓存：每次 GetGoDetail 时写入 goId_compIdx → comp，
+    -- 让 set_prop / call_method 直接走 LuaCsMonitor 的现有实现，不重复造轮子。
+    local LuaHierarchy = {}
+    LuaHierarchy._goCache = setmetatable({}, { __mode = "v" })  -- instanceId(number) → GameObject (弱引用，GO 销毁后自动回收)
+
+    origin_print("[RuntimeGM] LuaHierarchy module initialized")
+
+    local function hierCacheGo(go)
+        if not go then return end
+        pcall(function() LuaHierarchy._goCache[go:GetInstanceID()] = go end)
+    end
+
+    -- instanceId → GameObject 反查：先弱引用缓存，未命中则全场景兜底（性能较差，仅在缓存失效边界触发）
+    local function hierFindGo(instanceId)
+        if not instanceId then return nil end
+        instanceId = tonumber(instanceId) or instanceId
+        local go = LuaHierarchy._goCache[instanceId]
+        if go then
+            local alive = false
+            pcall(function() alive = (go.name ~= nil) end)
+            if alive then return go end
+            LuaHierarchy._goCache[instanceId] = nil
+        end
+        local ok, allGOs = pcall(function()
+            return CS.UnityEngine.Object.FindObjectsOfType(typeof(CS.UnityEngine.GameObject))
+        end)
+        if not ok or not allGOs then return nil end
+        for i = 0, allGOs.Length - 1 do
+            local g = allGOs[i]
+            if g and g:GetInstanceID() == instanceId then
+                LuaHierarchy._goCache[instanceId] = g
+                return g
+            end
+        end
+        return nil
+    end
+
+    local function hierNodeOf(go)
+        if not go then return nil end
+        hierCacheGo(go)
+        local n = { instanceId = go:GetInstanceID(), name = go.name }
+        pcall(function() n.active = go.activeSelf end)
+        pcall(function() n.activeInHierarchy = go.activeInHierarchy end)
+        pcall(function() n.childCount = go.transform.childCount end)
+        return n
+    end
+
+    -- 通过创建临时 GO 标记 DontDestroyOnLoad，借此拿到该 scene 的根列表
+    local function hierGetDontDestroyRoots()
+        local roots = {}
+        local ok, tempScene = pcall(function()
+            local tempGo = CS.UnityEngine.GameObject("___EncyHubHierTemp___")
+            CS.UnityEngine.Object.DontDestroyOnLoad(tempGo)
+            local s = tempGo.scene
+            CS.UnityEngine.Object.Destroy(tempGo)
+            return s
+        end)
+        if not ok or not tempScene then return roots end
+        local ok2, list = pcall(function() return tempScene:GetRootGameObjects() end)
+        if not ok2 or not list then return roots end
+        for i = 0, list.Length - 1 do
+            local go = list[i]
+            if go and go.name ~= "___EncyHubHierTemp___" then
+                local n = hierNodeOf(go)
+                if n then roots[#roots + 1] = n end
+            end
+        end
+        return roots
+    end
+
+    function LuaHierarchy.GetSceneRoots()
+        local SM = CS.UnityEngine.SceneManagement.SceneManager
+        local count = 0
+        pcall(function() count = SM.sceneCount end)
+        local scenes = {}
+        for i = 0, count - 1 do
+            pcall(function()
+                local s = SM.GetSceneAt(i)
+                if not s.isLoaded then return end
+                local roots = {}
+                local list = s:GetRootGameObjects()
+                for j = 0, list.Length - 1 do
+                    local node = hierNodeOf(list[j])
+                    if node then roots[#roots + 1] = node end
+                end
+                scenes[#scenes + 1] = { name = s.name, roots = roots }
+            end)
+        end
+        return { scenes = scenes, dontDestroy = hierGetDontDestroyRoots() }
+    end
+
+    function LuaHierarchy.GetChildren(instanceId)
+        local go = hierFindGo(instanceId)
+        if not go then return { error = "GameObject not found: " .. tostring(instanceId) } end
+        local children = {}
+        local ok, t = pcall(function() return go.transform end)
+        if not ok or not t then return { instanceId = instanceId, children = children } end
+        local n = 0
+        pcall(function() n = t.childCount end)
+        for i = 0, n - 1 do
+            pcall(function()
+                local c = t:GetChild(i).gameObject
+                local node = hierNodeOf(c)
+                if node then children[#children + 1] = node end
+            end)
+        end
+        return { instanceId = instanceId, children = children }
+    end
+
+    function LuaHierarchy.GetGoDetail(instanceId)
+        local go = hierFindGo(instanceId)
+        if not go then return { error = "GameObject not found: " .. tostring(instanceId) } end
+        local detail = {
+            instanceId = instanceId,
+            name = go.name,
+            components = {},
+        }
+        pcall(function() detail.active = go.activeSelf end)
+        pcall(function() detail.activeInHierarchy = go.activeInHierarchy end)
+        pcall(function() detail.layer = go.layer end)
+        pcall(function() detail.tag = go.tag end)
+        pcall(function() detail.hierarchyPath = getHierarchyPath(go) end)
+        pcall(function()
+            local p = go.transform.parent
+            if p then detail.parentInstanceId = p.gameObject:GetInstanceID() end
+        end)
+
+        local comps
+        pcall(function() comps = go:GetComponents(typeof(CS.UnityEngine.Component)) end)
+        if not comps then return detail end
+        local goId = detail.instanceId
+        for ci = 0, comps.Length - 1 do
+            local entry = { compIndex = ci }
+            local c = comps[ci]
+            if not c then
+                entry.error = "missing component"
+                entry.typeName = "<missing>"
+                entry.properties = {}
+                entry.methods = {}
+            else
+                local typeName = "<unknown>"
+                local fullTypeName = ""
+                pcall(function() typeName = tostring(c:GetType().Name) end)
+                pcall(function() fullTypeName = tostring(c:GetType().FullName) end)
+                entry.typeName = typeName
+                entry.fullTypeName = fullTypeName
+                -- 写入共用缓存，让 set_prop / call_method 走 LuaCsMonitor 现有实现
+                LuaCsMonitor._compRefs[goId .. "_" .. ci] = {
+                    go = go, comp = c, goName = go.name,
+                    parentName = "", typeName = typeName,
+                }
+                local ok, det = pcall(readComponentDetail, c)
+                if not ok then
+                    entry.error = tostring(det)
+                    entry.properties = {}
+                    entry.methods = {}
+                else
+                    entry.properties = det.properties or {}
+                    entry.methods = det.methods or {}
+                    table.sort(entry.properties, function(a, b) return a.name < b.name end)
+                    table.sort(entry.methods, function(a, b) return a.name < b.name end)
+                    -- enabled 字段（仅 Behaviour 子类有该属性）
+                    pcall(function()
+                        local v = c.enabled
+                        if type(v) == "boolean" then entry.enabled = v end
+                    end)
+                end
+            end
+            detail.components[#detail.components + 1] = entry
+        end
+        return detail
+    end
+
+    -- Locate: 三种模式
+    --   1) {instanceId = N}                      → 直接定位
+    --   2) {uiName = "...", path = "..."}        → 解析 LuaUi 路径到 GO
+    --   3) {goInstanceId = N, compIndex = K}     → scan_by_type 结果点击后定位
+    function LuaHierarchy.Locate(packet)
+        local go
+        if packet.instanceId then
+            go = hierFindGo(packet.instanceId)
+        elseif packet.goInstanceId then
+            go = hierFindGo(packet.goInstanceId)
+        elseif packet.uiName and packet.uiName ~= "" then
+            local luaUi
+            pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(packet.uiName) end)
+            if not luaUi then return { error = "UI not found: " .. tostring(packet.uiName) } end
+            local target = luaUi
+            local path = packet.path or ""
+            if path ~= "" then
+                for seg in string.gmatch(path, "[^%.]+") do
+                    local key = tonumber(seg) or seg
+                    if type(target) ~= "table" then return { error = "path resolve failed at " .. tostring(seg) } end
+                    target = target[key]
+                end
+            end
+            if not target then return { error = "path target nil" } end
+            pcall(function()
+                local ok, goObj = pcall(function() return target.gameObject end)
+                if ok and goObj then go = goObj
+                else
+                    local ok2, ah = pcall(function() return target.activeInHierarchy end)
+                    if ok2 and type(ah) == "boolean" then go = target end
+                end
+            end)
+        end
+
+        if not go then return { error = "GameObject not found" } end
+
+        hierCacheGo(go)
+        local chain = {}
+        local t = go.transform
+        while t do
+            local g = t.gameObject
+            hierCacheGo(g)
+            chain[#chain + 1] = g:GetInstanceID()
+            t = t.parent
+        end
+        local ordered = {}
+        for i = #chain, 1, -1 do ordered[#ordered + 1] = chain[i] end
+
+        return {
+            found = true,
+            instanceId = go:GetInstanceID(),
+            ancestorChain = ordered,
+            hierarchyPath = getHierarchyPath(go),
+        }
+    end
+
+    -- 描述单个集合元素 → { kind:"go"|"comp"|"value", instanceId?, name?, typeName?, display? }
+    -- 对 GameObject / Component 提取 instanceId 让前端可点击 Locate；其它做 tostring
+    local function hierDescribeItem(el)
+        if el == nil then return { kind = "value", display = "nil", typeName = "nil" } end
+        local lt = type(el)
+        if lt == "boolean" then return { kind = "value", display = tostring(el), typeName = "Boolean" } end
+        if lt == "number" then return { kind = "value", display = tostring(el), typeName = "Number" } end
+        if lt == "string" then return { kind = "value", display = el, typeName = "String" } end
+        if lt ~= "userdata" then return { kind = "value", display = tostring(el), typeName = lt } end
+
+        local typeName = "?"
+        pcall(function() typeName = tostring(el:GetType().Name) end)
+
+        -- GameObject
+        if typeName == "GameObject" then
+            local id = -1; pcall(function() id = el:GetInstanceID() end)
+            local name = "?"; pcall(function() name = el.name end)
+            hierCacheGo(el)
+            return { kind = "go", instanceId = id, name = name, typeName = "GameObject" }
+        end
+
+        -- Component（Transform / 任意 MonoBehaviour 子类等）有 .gameObject 反指 GO
+        local goObj
+        pcall(function() goObj = el.gameObject end)
+        if goObj then
+            local id = -1; pcall(function() id = goObj:GetInstanceID() end)
+            local name = "?"; pcall(function() name = goObj.name end)
+            hierCacheGo(goObj)
+            return { kind = "comp", instanceId = id, name = name, typeName = typeName }
+        end
+
+        -- 其他 userdata（struct 如 Vector3 / 自定义值类型 等）
+        local s = "?"; pcall(function() s = tostring(el) end)
+        return { kind = "value", display = s, typeName = typeName }
+    end
+
+    -- 获取集合元素（懒加载，按需分页）
+    -- Args: { goInstanceId, compIndex, propName, offset=0, limit=20 }
+    function LuaHierarchy.GetCollectionItems(packet)
+        local goId = packet.goInstanceId
+        local compIndex = packet.compIndex
+        local propName = packet.propName
+        local offset = tonumber(packet.offset) or 0
+        local limit = tonumber(packet.limit) or 20
+        if limit < 1 then limit = 1 end
+        if limit > 200 then limit = 200 end
+
+        local key = goId .. "_" .. compIndex
+        local ref = LuaCsMonitor._compRefs[key]
+        if not ref or not ref.comp then return { error = "Component 缓存丢失，请重新选中 GameObject" } end
+
+        -- 取属性/字段值（先尝试 xlua property accessor，失败再走反射 Field/Property GetValue）
+        local val
+        local ok = pcall(function() val = ref.comp[propName] end)
+        if not ok or val == nil then
+            -- 尝试反射 GetField / GetProperty
+            pcall(function()
+                local t = ref.comp:GetType()
+                local fld = t:GetField(propName)
+                if fld then val = fld:GetValue(ref.comp) end
+            end)
+            if val == nil then
+                pcall(function()
+                    local t = ref.comp:GetType()
+                    local p = t:GetProperty(propName)
+                    if p then val = p:GetValue(ref.comp, nil) end
+                end)
+            end
+        end
+        if val == nil then return { error = "属性为 nil 或无法访问: " .. tostring(propName) } end
+
+        local items = {}
+        local total = 0
+        local kind = "list"
+
+        local enumOk, enumErr = pcall(function()
+            local t = val:GetType()
+
+            -- Dictionary：通过 IDictionaryEnumerator 取 Entry.Key / Entry.Value
+            if t.IsGenericType then
+                local short = tostring(t.Name):gsub("`%d+$", "")
+                if short == "Dictionary" or short == "SortedDictionary" or short == "ConcurrentDictionary" then
+                    kind = "dict"
+                    pcall(function() total = val.Count end)
+                    local enum
+                    pcall(function() enum = val:GetEnumerator() end)
+                    if not enum then error("无法获取字典枚举器") end
+                    local idx = 0
+                    while true do
+                        local advanced = false
+                        pcall(function() advanced = enum:MoveNext() end)
+                        if not advanced then break end
+                        if idx >= offset and #items < limit then
+                            local k, v
+                            pcall(function() k = enum.Current.Key end)
+                            pcall(function() v = enum.Current.Value end)
+                            items[#items + 1] = { index = idx, kind = "kv", key = hierDescribeItem(k), value = hierDescribeItem(v) }
+                        end
+                        idx = idx + 1
+                        if idx >= offset + limit and #items >= limit then break end
+                    end
+                    return
+                end
+            end
+
+            -- Array
+            if t.IsArray then
+                pcall(function() total = val.Length end)
+                local maxI = math.min(offset + limit, total)
+                for i = offset, maxI - 1 do
+                    pcall(function()
+                        local d = hierDescribeItem(val[i])
+                        d.index = i
+                        items[#items + 1] = d
+                    end)
+                end
+                return
+            end
+
+            -- 通用 IList / List<T>：用 .Count + 索引器 [i]
+            local hasCount = false
+            pcall(function() total = val.Count; hasCount = true end)
+            if hasCount then
+                local maxI = math.min(offset + limit, total)
+                for i = offset, maxI - 1 do
+                    pcall(function()
+                        local d = hierDescribeItem(val[i])
+                        d.index = i
+                        items[#items + 1] = d
+                    end)
+                end
+                return
+            end
+
+            -- 兜底：IEnumerable，遍历
+            local enum
+            pcall(function() enum = val:GetEnumerator() end)
+            if not enum then error("不支持的集合类型: " .. tostring(t.Name)) end
+            local idx = 0
+            while true do
+                local advanced = false
+                pcall(function() advanced = enum:MoveNext() end)
+                if not advanced then break end
+                if idx >= offset and #items < limit then
+                    local cur
+                    pcall(function() cur = enum.Current end)
+                    local d = hierDescribeItem(cur)
+                    d.index = idx
+                    items[#items + 1] = d
+                end
+                idx = idx + 1
+                if idx >= offset + limit then break end
+            end
+            total = math.max(total, idx)
+        end)
+
+        if not enumOk then return { error = "枚举失败: " .. tostring(enumErr) } end
+
+        return {
+            total = total,
+            kind = kind,
+            offset = offset,
+            limit = limit,
+            items = items,
+        }
+    end
+
     function LuaCsMonitor.HandleCommand(packet)
         local action = packet.action
         local result
         if action == "scan" then
             result = LuaCsMonitor.Scan(packet.typeName)
-        elseif action == "cache_from_inspector" then
-            result = (function()
-                -- 内联路径导航（不依赖 Inspector 的 local 函数，因为 CsMonitor 定义在 Inspector 之前）
-                local luaUi = XLuaUiManager.GetTopLuaUi(packet.uiName)
-                if not luaUi then return { error = "UI not found: " .. tostring(packet.uiName) } end
-                local target = luaUi
-                local path = packet.path
-                if path and path ~= "" then
-                    for seg in string.gmatch(path, "[^%.]+") do
-                        local key = tonumber(seg) or seg
-                        if type(target) ~= "table" then return { error = "path resolve failed" } end
-                        target = target[key]
-                    end
-                end
-                if not target or type(target) ~= "userdata" then return { error = "target is not userdata" } end
-                -- 获取 GO
-                local go
-                pcall(function()
-                    local ok2, goObj = pcall(function() return target.gameObject end)
-                    if ok2 and goObj then go = goObj
-                    else
-                        local ok3, ah = pcall(function() return target.activeInHierarchy end)
-                        if ok3 and type(ah) == "boolean" then go = target end
-                    end
-                end)
-                if not go then return { error = "GO not found" } end
-                local ok2, r = pcall(function()
-                    local allC = go:GetComponents(typeof(CS.UnityEngine.Component))
-                    local ci = packet.compIndex
-                    if ci < 0 or ci >= allC.Length then error("compIndex out of range") end
-                    local comp = allC[ci]
-                    local goId = go:GetInstanceID()
-                    local key = goId .. "_" .. ci
-                    local tn = ""; pcall(function() tn = tostring(comp:GetType().Name) end)
-                    local pn = ""; pcall(function() local p = go.transform.parent; if p then pn = p.name end end)
-                    local hPath = ""; pcall(function() hPath = getHierarchyPath(go) end)
-                    LuaCsMonitor._compRefs[key] = { go = go, comp = comp, goName = go.name, parentName = pn, typeName = tn }
-                    return { success = true, entry = {
-                        goInstanceId = goId, goName = go.name, parentName = pn,
-                        hierarchyPath = hPath,
-                        compIndex = ci, compTypeName = tn, sameTypeIndex = 0, sameTypeCount = 1,
-                    }}
-                end)
-                if not ok2 then return { error = tostring(r) } end
-                return r
-            end)()
         elseif action == "get_detail" then
             result = LuaCsMonitor.GetDetail(packet.goInstanceId, packet.compIndex)
         elseif action == "set_prop" then
             result = LuaCsMonitor.SetProp(packet.goInstanceId, packet.compIndex, packet.propName, packet.value, packet.valueType)
         elseif action == "call_method" then
             result = LuaCsMonitor.CallMethod(packet.goInstanceId, packet.compIndex, packet.methodName)
+        elseif action == "scene_roots" then
+            result = LuaHierarchy.GetSceneRoots()
+        elseif action == "children" then
+            result = LuaHierarchy.GetChildren(packet.instanceId)
+        elseif action == "go_detail" then
+            result = LuaHierarchy.GetGoDetail(packet.instanceId)
+        elseif action == "locate" then
+            result = LuaHierarchy.Locate(packet)
+        elseif action == "collection_items" then
+            result = LuaHierarchy.GetCollectionItems(packet)
         else
             result = { error = "Unknown action: " .. tostring(action) }
         end
@@ -1960,6 +2344,58 @@ local function StartRuntimeGM()
             return nil, nil
         end)
         if eOk and eVal then return eVal, eType end
+        -- 单个引用 (GameObject / Component) — 让前端可以 🎯 在 Hierarchy 中定位
+        -- 注意必须放在 Vector/Color/Quaternion 之后（那些是 struct，不是引用），放在 collection 之前
+        local rOk, rInfo = pcall(function()
+            if type(val) ~= "userdata" then return nil end
+            local t = val:GetType()
+            local tName = tostring(t.Name)
+            -- GameObject 自身
+            if tName == "GameObject" then
+                local id = -1; pcall(function() id = val:GetInstanceID() end)
+                local name = "?"; pcall(function() name = val.name end)
+                return { display = name, refKind = "go", instanceId = id, actualType = "GameObject" }
+            end
+            -- Component 子类（Transform / RectTransform / 任意 MonoBehaviour 等）有 .gameObject 反指 GO
+            local goObj
+            pcall(function() goObj = val.gameObject end)
+            if goObj then
+                local id = -1; pcall(function() id = goObj:GetInstanceID() end)
+                local name = "?"; pcall(function() name = goObj.name end)
+                return { display = name, refKind = "comp", instanceId = id, actualType = tName }
+            end
+            return nil
+        end)
+        if rOk and rInfo and rInfo.instanceId and rInfo.instanceId ~= -1 then
+            return rInfo.display, "ref", rInfo
+        end
+        -- 集合 (Array / List / Dictionary / 其它带 Count 的泛型容器)
+        -- C# 默认 ToString() 只返回 "FullTypeName: hashcode"，对调试无用，这里改为输出 "Type<T>(N)" 元信息
+        -- 同时返回 valueType="collection" 让前端知道可以请求展开 (collection_items)
+        local cOk, cInfo = pcall(function()
+            local t = val:GetType()
+            if t.IsArray then
+                local len = 0
+                pcall(function() len = val.Length end)
+                local elName = "?"
+                pcall(function() elName = tostring(t:GetElementType().Name) end)
+                return { display = string.format("%s[%d]", elName, len), count = len, kind = "list" }
+            end
+            if t.IsGenericType then
+                local count
+                pcall(function() count = val.Count end)
+                if count ~= nil then
+                    local short = tostring(t.Name):gsub("`%d+$", "")
+                    local args = t:GetGenericArguments()
+                    local parts = {}
+                    for i = 0, args.Length - 1 do parts[#parts + 1] = tostring(args[i].Name) end
+                    local kind = (short == "Dictionary" or short == "SortedDictionary" or short == "ConcurrentDictionary") and "dict" or "list"
+                    return { display = string.format("%s<%s>(%d)", short, table.concat(parts, ","), count), count = count, kind = kind }
+                end
+            end
+            return nil
+        end)
+        if cOk and cInfo then return cInfo.display, "collection", cInfo end
         -- 其他：只读显示
         local sOk, sVal = pcall(function() return tostring(val) end)
         return sOk and sVal or "(unknown)", "readonly"

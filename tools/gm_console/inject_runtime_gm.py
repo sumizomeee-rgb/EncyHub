@@ -2,15 +2,18 @@
 inject_runtime_gm.py — 一键注入 RuntimeGMClient 到游戏 Lua 入口文件
 
 使用方法:
-  1. 修改下方 TARGET_LUA_FILE 为你的 Lua 入口文件绝对路径
-  2. 修改下方 GM_HOST / GM_PORT 为你运行 EncyHub 的电脑 IP 和端口
+  1. 在下方 TARGET_LUA_FILES 列表中维护要注入的 Lua 入口文件路径（支持多分支）
+     - 临时跳过某个分支：把对应行注释掉即可
+     - 多分支会自动分配递增端口（第 N 个使用 GM_PORT + N-1）
+  2. 修改下方 GM_HOST / GM_PORT 为你运行 EncyHub 的电脑 IP 和起始端口
   3. 运行: python inject_runtime_gm.py
 
-脚本会:
-  1. 对目标文件执行 svn revert（还原到干净状态）
-  2. 从 README_RuntimeGM_Client.md 中提取 Lua 代码块
-  3. 替换代码中的 IP 和端口为你的配置
+脚本会对列表里的每个文件依次执行:
+  1. svn revert（还原到干净状态）
+  2. 从 README_RuntimeGM_Client.md 中提取 Lua 代码块（仅一次）
+  3. 替换代码中的 IP 和端口为你的配置（端口按列表序号递增）
   4. 追加到目标文件末尾
+单文件失败（缺失/IO 错误）不会阻断后续文件，最终输出汇总。
 """
 
 import os
@@ -22,8 +25,12 @@ import sys
 # ★★★ 修改这里 ★★★
 # ============================================================
 
-# 目标 Lua 文件的绝对路径
-TARGET_LUA_FILE = r"F:\HaruTrunk\Product\Lua\Launch\XLaunchModule.lua"
+# 目标 Lua 文件的绝对路径列表 — 添加/注释行即可增减分支
+TARGET_LUA_FILES = [
+    r"F:\HaruTrunk\Product\Lua\Launch\XLaunchModule.lua",
+    r"E:\WorkProject\branches\HaruBranchV4.7_w_FullDev\Product\Lua\Launch\XLaunchModule.lua",
+    # r"F:\HaruBranch_Bar\Product\Lua\Launch\XLaunchModule.lua",
+]
 
 # EncyHub GM Console 的连接地址
 GM_HOST = "10.101.0.8"
@@ -98,41 +105,70 @@ def svn_revert(filepath: str):
         print("[SVN] revert 超时，跳过")
 
 
+def inject_one(target: str, base_lua_code: str, host: str, port: int) -> tuple[bool, str]:
+    """对单个目标文件执行注入。返回 (成功?, 描述)。失败时只记录、不抛异常。"""
+    if not os.path.isfile(target):
+        return False, "文件不存在"
+
+    try:
+        svn_revert(target)
+        # 每个文件用各自的端口号 patch 一次（不同分支可用同一台 EncyHub 不同端口区分来源）
+        lua_code = patch_host_port(base_lua_code, host, port)
+        with open(target, "r", encoding="utf-8") as f:
+            original = f.read()
+
+        separator = "\n\n-- ========== [EncyHub] RuntimeGMClient Auto-Injected ==========\n\n"
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(original.rstrip("\n"))
+            f.write(separator)
+            f.write(lua_code)
+            f.write("\n")
+
+        return True, f"原 {original.count(chr(10))+1} 行 → +{lua_code.count(chr(10))+1} 行 @ port {port}"
+    except Exception as e:
+        return False, f"IO 错误: {e}"
+
+
 def main():
-    if not os.path.isfile(TARGET_LUA_FILE):
-        print(f"[ERROR] 目标文件不存在: {TARGET_LUA_FILE}")
+    targets = [p for p in TARGET_LUA_FILES if p]  # 过滤空字符串
+    if not targets:
+        print("[ERROR] TARGET_LUA_FILES 为空，请至少配置一个目标文件")
         sys.exit(1)
 
     if not os.path.isfile(README_PATH):
         print(f"[ERROR] README 不存在: {README_PATH}")
         sys.exit(1)
 
-    # 1. svn revert
-    svn_revert(TARGET_LUA_FILE)
+    # 提取一次（所有目标共享同一份原始 Lua，patch 在每个文件循环里按各自端口做）
+    base_lua_code = extract_lua_from_readme(README_PATH)
+    print(f"[EXTRACT] 提取了 {len(base_lua_code)} 字符的 Lua 代码")
+    end_port = GM_PORT + len(targets) - 1
+    if len(targets) == 1:
+        print(f"[PLAN] 1 个目标文件，端口 {GM_PORT}")
+    else:
+        print(f"[PLAN] {len(targets)} 个目标文件，端口分配 {GM_PORT} ~ {end_port}（按列表顺序递增）")
+    print()
 
-    # 2. 提取 Lua 代码
-    lua_code = extract_lua_from_readme(README_PATH)
-    print(f"[EXTRACT] 提取了 {len(lua_code)} 字符的 Lua 代码")
+    results = []
+    for i, target in enumerate(targets):
+        port = GM_PORT + i
+        print(f"--- [{i+1}/{len(targets)}] {target}  (port={port}) ---")
+        ok, info = inject_one(target, base_lua_code, GM_HOST, port)
+        results.append((target, port, ok, info))
+        print(f"[{'DONE' if ok else 'SKIP'}] {info}\n")
 
-    # 3. 替换 IP/端口
-    lua_code = patch_host_port(lua_code, GM_HOST, GM_PORT)
+    # 汇总
+    ok_count = sum(1 for _, _, ok, _ in results if ok)
+    print("=" * 60)
+    print(f"汇总: 成功 {ok_count}/{len(results)}")
+    for target, port, ok, info in results:
+        flag = "✓" if ok else "✗"
+        print(f"  {flag} [port {port}] {target}  ({info})")
+    print(f"主连接地址: {GM_HOST}:{GM_PORT}" + (f" ~ {end_port}" if len(targets) > 1 else ""))
 
-    # 4. 追加到目标文件
-    with open(TARGET_LUA_FILE, "r", encoding="utf-8") as f:
-        original = f.read()
-
-    separator = "\n\n-- ========== [EncyHub] RuntimeGMClient Auto-Injected ==========\n\n"
-
-    with open(TARGET_LUA_FILE, "w", encoding="utf-8") as f:
-        f.write(original.rstrip("\n"))
-        f.write(separator)
-        f.write(lua_code)
-        f.write("\n")
-
-    final_lines = original.count("\n") + separator.count("\n") + lua_code.count("\n") + 1
-    print(f"[DONE] 已注入到 {TARGET_LUA_FILE}")
-    print(f"       原始 {original.count(chr(10))+1} 行 → 注入后 ~{final_lines} 行")
-    print(f"       连接地址: {GM_HOST}:{GM_PORT}")
+    # 全部失败时返回非零退出码，便于脚本化串联
+    if ok_count == 0:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
