@@ -162,7 +162,8 @@ def main():
     print("=" * 60)
     print(f"汇总: 成功 {ok_count}/{len(results)}")
     for target, port, ok, info in results:
-        flag = "✓" if ok else "✗"
+        # 用 ASCII 标记避免 Windows GBK 控制台 UnicodeEncodeError
+        flag = "[OK]" if ok else "[FAIL]"
         print(f"  {flag} [port {port}] {target}  ({info})")
     print(f"主连接地址: {GM_HOST}:{GM_PORT}" + (f" ~ {end_port}" if len(targets) > 1 else ""))
 

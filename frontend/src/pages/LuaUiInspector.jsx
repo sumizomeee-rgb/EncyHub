@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye, EyeOff, PlayCircle, Loader2, Trash2, Pencil } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import SearchModal from '../components/SearchModal'
 
 // localStorage 持久化分类展开状态
 const CATEGORY_STORAGE_KEY = 'inspector_expanded_categories'
@@ -117,7 +118,7 @@ const TYPE_COLORS = {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole, onPinToMonitor, active }) {
+export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole, onPinToMonitor, onLocateInHierarchy, active }) {
     // --- 左栏宽度（可拖拽） ---
     const [leftWidth, setLeftWidth] = useState(208)
     const isDragging = useRef(false)
@@ -152,6 +153,22 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
 
     // --- 字段展开状态 ---
     const [expandedFields, setExpandedFields] = useState(new Set())
+
+    // --- 字段高亮（来自高级搜索跳转，2s 自动淡出） ---
+    const [highlightFieldKey, setHighlightFieldKey] = useState(null)
+    const highlightFieldTimerRef = useRef(null)
+    const flashHighlightField = useCallback((key) => {
+        if (highlightFieldTimerRef.current) clearTimeout(highlightFieldTimerRef.current)
+        setHighlightFieldKey(key)
+        highlightFieldTimerRef.current = setTimeout(() => {
+            setHighlightFieldKey(null)
+            highlightFieldTimerRef.current = null
+        }, 2000)
+    }, [])
+    useEffect(() => () => { if (highlightFieldTimerRef.current) clearTimeout(highlightFieldTimerRef.current) }, [])
+
+    // --- 高级搜索弹窗 ---
+    const [searchOpen, setSearchOpen] = useState(false)
 
     // --- 分类展开状态（默认全部折叠，localStorage 记忆） ---
     const [expandedCategories, setExpandedCategories] = useState(() => loadExpandedCategories())
@@ -230,7 +247,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
 
     // --- Auto-refresh ---
     useEffect(() => {
-        if (!autoRefresh || !active || !selectedUi || refreshInterval <= 0) return
+        if (!autoRefresh || !active || !selectedUi || refreshInterval <= 0 || searchOpen) return
         const timer = setInterval(() => {
             request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (data) => {
                 if (data.error) { setAutoRefresh(false); return }
@@ -238,7 +255,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
             })
         }, refreshInterval * 1000)
         return () => clearInterval(timer)
-    }, [autoRefresh, active, refreshInterval, selectedUi, selectedPath, depth, request])
+    }, [autoRefresh, active, refreshInterval, selectedUi, selectedPath, depth, request, searchOpen])
 
     // --- 修改值 ---
     const setValue = useCallback((path, value, valueType) => {
@@ -282,6 +299,48 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
         })
     }, [request, selectedUi, selectedPath])
 
+    // --- 高级搜索：透传给 SearchModal 的 onSearch 回调 ---
+    const handleSearch = useCallback((params, cb) => {
+        request('search', params, (data) => cb && cb(data))
+    }, [request])
+
+    // --- 高级搜索结果点击：跳到目标 UI + path + 高亮命中字段 ---
+    const handleJumpToHit = useCallback((hit) => {
+        const targetPath = hit.luaPath || ''
+        setSelectedUi(hit.uiName)
+        setSelectedPath(targetPath)
+        // 面包屑
+        if (!targetPath) {
+            setBreadcrumb([{ name: hit.uiName, path: '' }])
+        } else {
+            const parts = targetPath.split('.')
+            const crumbs = [{ name: hit.uiName, path: '' }]
+            let p = ''
+            for (const part of parts) {
+                p = p ? p + '.' + part : part
+                crumbs.push({ name: part, path: p })
+            }
+            setBreadcrumb(crumbs)
+        }
+        setExpandedFields(new Set())
+        setNodeData(null)
+        setLastError(null)
+        setLoadingNode(true)
+        let pending = 2
+        const done = () => { if (--pending <= 0) setLoadingNode(false) }
+        request('ui_tree', { uiName: hit.uiName }, (data) => {
+            done()
+            if (!data.error) setUiTree(data)
+        })
+        request('node_data', { uiName: hit.uiName, path: targetPath, depth }, (data) => {
+            done()
+            if (data.error) { setLastError('node_data: ' + data.error); return }
+            setNodeData(data)
+            // 数据回来后再触发 caramel 高亮（让组件先 mount 再 flash）
+            setTimeout(() => flashHighlightField(hit.key), 60)
+        })
+    }, [request, depth, flashHighlightField])
+
     // --- 左侧过滤 ---
     const filteredUiList = leftFilter
         ? uiList.filter(ui => ui.name.toLowerCase().includes(leftFilter.toLowerCase()))
@@ -308,6 +367,11 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
                         <span className="text-sm font-semibold text-[var(--coffee-deep)]">Open UIs</span>
                         <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
+                            <button onClick={() => setSearchOpen(true)}
+                                disabled={!selectedClient}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--caramel)] disabled:opacity-30 disabled:pointer-events-none transition-colors mr-1" title="跨 UI 高级搜索 (字段值 / 类型 / C# 文本)">
+                                <Search size={13} />
+                            </button>
                             <button onClick={() => { refreshUiList(); if (selectedUi) loadNodeData(selectedUi, selectedPath) }}
                                 disabled={loadingList || !selectedClient}
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新">
@@ -467,6 +531,7 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                                 showAddr={showAddr}
                                 selectedUi={selectedUi}
                                 parentPath={selectedPath}
+                                highlightFieldKey={highlightFieldKey}
                                 onToggleField={(key) => {
                                     setExpandedFields(prev => {
                                         const next = new Set(prev)
@@ -522,6 +587,16 @@ export default function LuaUiInspector({ clients, selectedClient, broadcastMode,
                     </button>
                 </div>
             </div>
+
+            {/* 高级搜索弹窗 */}
+            <SearchModal
+                open={searchOpen}
+                onClose={() => setSearchOpen(false)}
+                uiList={uiList}
+                onSearch={handleSearch}
+                onJumpToHit={handleJumpToHit}
+                onLocateGo={(instanceId) => onLocateInHierarchy && onLocateInHierarchy(instanceId)}
+            />
         </div>
     )
 }
@@ -606,7 +681,7 @@ function TreeNode({ node, selectedPath, expandedNodes, onSelect, onToggle, inden
 // ============================================================================
 // 右侧属性列表
 // ============================================================================
-function FieldList({ fields, filter, expandedFields, expandedCategories, showAddr, selectedUi, parentPath, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
+function FieldList({ fields, filter, expandedFields, expandedCategories, showAddr, selectedUi, parentPath, highlightFieldKey, onToggleField, onToggleCategory, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
     if (!fields || fields.length === 0) return <div className="text-center text-[var(--coffee-muted)] text-xs py-4">无字段</div>
 
     // 按类型分组
@@ -654,6 +729,7 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, showAdd
                                         showAddr={showAddr}
                                         selectedUi={selectedUi}
                                         parentPath={parentPath}
+                                        highlight={highlightFieldKey === f.key}
                                         onToggle={() => onToggleField(f.key)}
                                         onSetValue={onSetValue}
                                         onRevert={onRevert}
@@ -675,7 +751,7 @@ function FieldList({ fields, filter, expandedFields, expandedCategories, showAdd
 // ============================================================================
 // 单行字段
 // ============================================================================
-function FieldRow({ field, catColor, expanded, canExpand = true, showAddr, selectedUi, parentPath, onToggle, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
+function FieldRow({ field, catColor, expanded, canExpand = true, showAddr, selectedUi, parentPath, highlight, onToggle, onSetValue, onRevert, onNavigate, onCallMethod, onGoAction, onPinToMonitor }) {
     const [editValue, setEditValue] = useState(String(field.value ?? ''))
     const [isEditing, setIsEditing] = useState(false)
     const [callResult, setCallResult] = useState(null)
@@ -720,7 +796,7 @@ function FieldRow({ field, catColor, expanded, canExpand = true, showAddr, selec
     }
 
     return (
-        <div>
+        <div className={highlight ? 'rounded ring-2 ring-[var(--caramel)] bg-[var(--caramel)]/10 transition-all' : ''}>
             <div
                 className={`grid items-center px-2 rounded text-xs transition-colors hover:bg-[var(--cream-warm)]/30 ${
                     f.modified ? 'border-l-2' : ''

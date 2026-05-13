@@ -2446,6 +2446,359 @@ local function StartRuntimeGM()
         return { success = true, result = tostring(ret or "void") }
     end
 
+    -- ========== LuaUiInspector.Search: 跨 UI / 跨节点 / C# 文本穿透的高级搜索 ==========
+    -- 详见 doc/31_设计方案书_LuaUiInspector_AdvancedSearch.md
+    --
+    -- 查询语法：
+    --   Id=55              kv 精确
+    --   Name="Foo"         kv 精确（强 string）
+    --   *Count / Lv*       key glob
+    --   "hello"            强 string 精确
+    --   55 / 55*           number 精确 / 强 number 模糊
+    --   hello              string contains + 数字 fallback
+    --   t:XUiButton        type 精确
+    --   t:*Button          type glob
+    --
+    -- 白名单（仅作用于值搜的 C# 文本穿透，对 t: 搜不影响）
+    local SEARCH_TEXT_PROBE = {
+        Text = "text",
+        TMP_Text = "text",
+        TextMeshProUGUI = "text",
+        InputField = "text",
+        TMP_InputField = "text",
+        UILabel = "text",
+    }
+    local SEARCH_MAX_FIELDS = 5000  -- 扫描总字段硬上限
+    local SEARCH_MAX_DEPTH = 30     -- 深度硬上限
+
+    -- 解析 query → { mode, ... } 内部表示
+    local function searchParseQuery(q)
+        if not q or q == "" then return nil, "查询为空" end
+        -- t: 前缀 → type 搜
+        if q:sub(1, 2) == "t:" then
+            local pat = q:sub(3)
+            if pat == "" then return nil, "t: 后缺类型名" end
+            local hasGlob = pat:find("*", 1, true) ~= nil
+            return { mode = "type", typePattern = pat, isGlob = hasGlob }
+        end
+        -- key=value
+        local k, v = q:match("^([%w_]+)=(.+)$")
+        if k then
+            local strVal = v:match("^\"(.*)\"$")
+            if strVal then
+                return { mode = "kv", key = k, valueExpect = strVal, valueType = "string" }
+            end
+            local n = tonumber(v)
+            if n then
+                return { mode = "kv", key = k, valueExpect = n, valueType = "number" }
+            end
+            if v == "true" or v == "false" then
+                return { mode = "kv", key = k, valueExpect = (v == "true"), valueType = "boolean" }
+            end
+            -- 裸字符串
+            return { mode = "kv", key = k, valueExpect = v, valueType = "string" }
+        end
+        -- 强 string 精确
+        local exact = q:match("^\"(.*)\"$")
+        if exact then
+            return { mode = "string_exact", value = exact }
+        end
+        -- key glob (*Foo / Foo*)
+        if q:find("*", 1, true) and not q:match("[%d%.]") then
+            return { mode = "key_glob", pattern = q }
+        end
+        -- 强 number 模糊：55* / *55*
+        local numFuzzy = q:match("^%*?([%-]?%d+%.?%d*)%*$") or q:match("^%*([%-]?%d+%.?%d*)%*?$")
+        if numFuzzy then
+            return { mode = "number_fuzzy", contains = numFuzzy }
+        end
+        -- 纯数字 → number 精确 + string contains 双试
+        local n = tonumber(q)
+        if n then
+            return { mode = "value", numberExact = n, stringContains = q }
+        end
+        -- 默认：string contains
+        return { mode = "value", stringContains = q }
+    end
+
+    -- glob 匹配（支持 * 通配符）
+    local function searchGlobMatch(pattern, text)
+        if pattern == text then return true end
+        -- 转换 glob 到 Lua pattern
+        local luaPat = "^" .. pattern:gsub("[%(%)%.%+%-%?%[%]%^%$%%]", "%%%1"):gsub("%*", ".*") .. "$"
+        return text:match(luaPat) ~= nil
+    end
+
+    -- 判定单个 (k, v) 是否命中
+    -- 返回：nil（不命中） 或 { valueDisplay, valueType, via? }
+    local function searchHit(parsed, k, v)
+        local m = parsed.mode
+
+        if m == "kv" then
+            if tostring(k) ~= parsed.key then return nil end
+            if parsed.valueType == "number" then
+                if type(v) == "number" and v == parsed.valueExpect then
+                    return { valueDisplay = tostring(v), valueType = "number" }
+                end
+            elseif parsed.valueType == "boolean" then
+                if type(v) == "boolean" and v == parsed.valueExpect then
+                    return { valueDisplay = tostring(v), valueType = "bool" }
+                end
+            else  -- string
+                if type(v) == "string" and v == parsed.valueExpect then
+                    return { valueDisplay = v, valueType = "string" }
+                end
+            end
+            return nil
+        end
+
+        if m == "key_glob" then
+            if type(k) == "string" and searchGlobMatch(parsed.pattern, k) then
+                local disp = (type(v) == "string" or type(v) == "number" or type(v) == "boolean")
+                    and tostring(v) or type(v)
+                local vt = type(v) == "number" and "number" or (type(v) == "boolean" and "bool" or "string")
+                return { valueDisplay = disp, valueType = vt }
+            end
+            return nil
+        end
+
+        if m == "string_exact" then
+            if type(v) == "string" and v == parsed.value then
+                return { valueDisplay = v, valueType = "string" }
+            end
+            return nil
+        end
+
+        if m == "number_fuzzy" then
+            if type(v) == "number" then
+                local s = tostring(v)
+                if s:find(parsed.contains, 1, true) then
+                    return { valueDisplay = s, valueType = "number" }
+                end
+            end
+            return nil
+        end
+
+        if m == "value" then
+            if type(v) == "string" and parsed.stringContains then
+                if v:find(parsed.stringContains, 1, true) then
+                    return { valueDisplay = v, valueType = "string" }
+                end
+            elseif type(v) == "number" and parsed.numberExact then
+                if v == parsed.numberExact then
+                    return { valueDisplay = tostring(v), valueType = "number" }
+                end
+            end
+            return nil
+        end
+
+        if m == "type" then
+            -- 仅 userdata 进入此判定
+            if type(v) ~= "userdata" then return nil end
+            local tn
+            local ok = pcall(function() tn = tostring(v:GetType().Name) end)
+            if not ok or not tn then return nil end
+            if parsed.isGlob then
+                if searchGlobMatch(parsed.typePattern, tn) then
+                    return { valueDisplay = tn, valueType = "type" }
+                end
+            else
+                if tn == parsed.typePattern then
+                    return { valueDisplay = tn, valueType = "type" }
+                end
+            end
+            return nil
+        end
+
+        return nil
+    end
+
+    -- C# 文本穿透：value 模式 + 白名单类型时，反射读 .text 后再判定
+    local function searchProbeText(parsed, k, v)
+        if parsed.mode ~= "value" and parsed.mode ~= "string_exact" then return nil end
+        if type(v) ~= "userdata" then return nil end
+        local tn
+        local ok = pcall(function() tn = tostring(v:GetType().Name) end)
+        if not ok or not tn then return nil end
+        local prop = SEARCH_TEXT_PROBE[tn]
+        if not prop then return nil end
+        local txt
+        local ok2 = pcall(function() txt = v[prop] end)
+        if not ok2 or type(txt) ~= "string" then return nil end
+        -- 复用 searchHit 但伪装成 string 字段
+        local fakeHit = searchHit(parsed, k, txt)
+        if fakeHit then
+            return {
+                valueDisplay = txt:sub(1, 80),
+                valueType = "compText",
+                via = tn .. "." .. prop,
+            }
+        end
+        return nil
+    end
+
+    -- 计算 GameObject 路径（找当前 table 上是否有 GO/Component 字段）
+    -- selfTable 是当前递归层级的 table；hit 已确定，找其所属 GO
+    -- 优先级：1) selfTable 自身是 userdata Component → 用其 .gameObject
+    --        2) selfTable 有 .GameObject / .Transform / .gameObject 字段
+    --        3) 找不到 → 不返回
+    local function searchExtractGoPath(selfTable, hitValue)
+        local function tryGo(go)
+            if not go then return nil end
+            local id, path
+            local ok = pcall(function()
+                id = go:GetInstanceID()
+                local parts = {}
+                local t = go.transform
+                while t do
+                    parts[#parts + 1] = t.name
+                    t = t.parent
+                end
+                local p = ""
+                for i = #parts, 1, -1 do
+                    p = p .. (p ~= "" and "/" or "") .. parts[i]
+                end
+                path = p
+            end)
+            if ok and id and path then return id, path end
+            return nil
+        end
+
+        -- 1) hitValue 本身就是 GO/Component（type 搜常见）
+        if type(hitValue) == "userdata" then
+            local goObj
+            pcall(function()
+                local tn = tostring(hitValue:GetType().Name)
+                if tn == "GameObject" then
+                    goObj = hitValue
+                else
+                    goObj = hitValue.gameObject
+                end
+            end)
+            if goObj then
+                local id, p = tryGo(goObj)
+                if id then return id, p end
+            end
+        end
+
+        -- 2) selfTable 平铺找
+        if type(selfTable) == "table" then
+            local fieldsToTry = { "GameObject", "gameObject", "Transform", "transform" }
+            for _, f in ipairs(fieldsToTry) do
+                local v = rawget(selfTable, f)
+                if type(v) == "userdata" then
+                    local goObj
+                    pcall(function()
+                        local tn = tostring(v:GetType().Name)
+                        if tn == "GameObject" then goObj = v
+                        else goObj = v.gameObject end
+                    end)
+                    if goObj then
+                        local id, p = tryGo(goObj)
+                        if id then return id, p end
+                    end
+                end
+            end
+        end
+
+        return nil, nil
+    end
+
+    function LuaUiInspector.Search(packet)
+        local startTime = 0
+        pcall(function() startTime = CS.UnityEngine.Time.realtimeSinceStartup end)
+
+        local parsed, perr = searchParseQuery(packet.query)
+        if not parsed then return { error = perr or "查询解析失败" } end
+
+        local depth = math.min(tonumber(packet.depth) or 20, SEARCH_MAX_DEPTH)
+        local probeText = packet.probeComponentText ~= false  -- 默认 true
+        local scope = packet.scope or "all"
+
+        -- 决定要遍历的 UI 列表
+        local uiNames = {}
+        if scope == "all" or scope == nil or scope == "" then
+            local ok, list = pcall(function() return XLuaUiManager:GetUiStack() end)
+            if ok and list then
+                for i = 0, list.Count - 1 do
+                    pcall(function()
+                        local item = list[i]
+                        if item and item.Name then uiNames[#uiNames + 1] = tostring(item.Name) end
+                    end)
+                end
+            end
+        else
+            uiNames[1] = tostring(scope)
+        end
+
+        local hits = {}
+        local totalScanned = 0
+        local truncated = false
+
+        local function recurse(node, parentTable, path, d)
+            if truncated then return end
+            if type(node) ~= "table" then return end
+            for k, v in pairs(node) do
+                if truncated then return end
+                totalScanned = totalScanned + 1
+                if totalScanned > SEARCH_MAX_FIELDS then
+                    truncated = true
+                    return
+                end
+
+                -- skip 黑名单
+                if not (type(k) == "string" and INSPECTOR_SKIP_KEYS[k]) then
+                    -- 命中判定（普通值 + type 搜）
+                    local hit = searchHit(parsed, k, v)
+                    if not hit and probeText then
+                        hit = searchProbeText(parsed, k, v)
+                    end
+                    if hit then
+                        local goId, goPath = searchExtractGoPath(node, v)
+                        local entry = {
+                            uiName = path.uiName,
+                            luaPath = path.lua,
+                            key = tostring(k),
+                            valueDisplay = hit.valueDisplay,
+                            valueType = hit.valueType,
+                        }
+                        if hit.via then entry.via = hit.via end
+                        if goId then entry.goInstanceId = goId; entry.goPath = goPath end
+                        hits[#hits + 1] = entry
+                    end
+
+                    -- 递归 table
+                    if type(v) == "table" and d > 0 then
+                        local nextLua = path.lua == "" and tostring(k) or (path.lua .. "." .. tostring(k))
+                        recurse(v, node, { uiName = path.uiName, lua = nextLua }, d - 1)
+                    end
+                end
+            end
+        end
+
+        for _, uiName in ipairs(uiNames) do
+            if truncated then break end
+            local luaUi
+            pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(uiName) end)
+            if luaUi then
+                recurse(luaUi, nil, { uiName = uiName, lua = "" }, depth)
+            end
+        end
+
+        local elapsedMs = 0
+        pcall(function()
+            elapsedMs = math.floor((CS.UnityEngine.Time.realtimeSinceStartup - startTime) * 1000)
+        end)
+
+        return {
+            hits = hits,
+            truncated = truncated,
+            totalScanned = totalScanned,
+            elapsedMs = elapsedMs,
+            uiCount = #uiNames,
+        }
+    end
+
     function LuaUiInspector.HandleCommand(packet)
         local action = packet.action
         local result
@@ -2477,6 +2830,8 @@ local function StartRuntimeGM()
             result = LuaUiInspector.SetComponentProp(packet.uiName, packet.path, packet.compIndex, packet.propName, packet.value, packet.valueType)
         elseif action == "call_component_method" then
             result = LuaUiInspector.CallComponentMethod(packet.uiName, packet.path, packet.compIndex, packet.methodName)
+        elseif action == "search" then
+            result = LuaUiInspector.Search(packet)
         else
             result = { error = "Unknown action: " .. tostring(action) }
         end

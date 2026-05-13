@@ -58,3 +58,17 @@ class CustomGmManager:
             self._save()
             return True
         return False
+
+    def reorder(self, commands: List[Dict[str, str]]) -> bool:
+        """整体替换命令顺序。前端拖拽完成后传入完整的新有序数组。
+        校验：长度相同 + 每个元素必须包含 name 与 cmd 字段，避免误传清空。"""
+        if not isinstance(commands, list) or len(commands) != len(self.commands):
+            return False
+        normalized = []
+        for c in commands:
+            if not isinstance(c, dict) or "name" not in c or "cmd" not in c:
+                return False
+            normalized.append({"name": str(c["name"]), "cmd": str(c["cmd"])})
+        self.commands = normalized
+        self._save()
+        return True

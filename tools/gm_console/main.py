@@ -383,6 +383,17 @@ async def edit_custom_gm(index: int, req: CustomGmRequest):
     return {"message": "已更新"}
 
 
+@app.post("/custom-gm/reorder")
+async def reorder_custom_gm(req: Request):
+    """整体重排自定义命令。Body: { "commands": [{name, cmd}, ...] }
+    长度必须等于当前列表，且每项需含 name/cmd，否则 400 拒绝避免误清空。"""
+    body = await req.json()
+    commands = body.get("commands")
+    if not custom_gm_mgr.reorder(commands):
+        raise HTTPException(400, "重排失败：长度不一致或字段缺失")
+    return {"message": "已重排"}
+
+
 @app.delete("/custom-gm/{index}")
 async def delete_custom_gm(index: int):
     """删除自定义命令"""

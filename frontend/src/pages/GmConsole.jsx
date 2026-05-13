@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
-  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw, Activity,
+  Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw,
   PanelLeftClose, PanelLeftOpen, Package, Database, Zap, Settings,
   Film, Video, Clock, Table2
 } from 'lucide-react'
@@ -12,6 +12,7 @@ import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
 import Hierarchy from './Hierarchy'
+import HierarchyIcon from '../components/HierarchyIcon'
 import SubPackageMonitor from './SubPackageMonitor'
 import PlayerPrefsViewer from './PlayerPrefsViewer'
 import AvMonitor from './AvMonitor'
@@ -24,7 +25,7 @@ const TAB_META = {
   custom_gm:     { label: '自定义',    icon: Layers,   gridSlider: true },
   lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
   timeline:      { label: 'Timeline',  icon: Clock },
-  cs_monitor:    { label: 'Hierarchy', icon: Activity },
+  cs_monitor:    { label: 'Hierarchy', icon: HierarchyIcon },
   animator:      { label: 'Animator',  icon: Film },
   subpkg_monitor:{ label: '分包监控',  icon: Package },
   player_prefs:  { label: 'PlayerPrefs', icon: Database },
@@ -68,6 +69,9 @@ function GmConsole() {
   const [activeTab, setActiveTab] = useState('lua_gm')
   const [luaUiContext, setLuaUiContext] = useState(null) // null=普通模式, "UIName"=LuaUI上下文模式
   const [pendingLocate, setPendingLocate] = useState(null) // 从 LuaUiInspector 联动到 Hierarchy 的 Locate 载荷
+  // 自定义 GM 按钮拖拽排序
+  const dragGmRef = useRef(null) // 当前正在拖动的按钮 index（用 ref 避免触发重渲染）
+  const [dropGmTarget, setDropGmTarget] = useState(null) // { idx, side: 'left'|'right' }
   const [haruRootInfo, setHaruRootInfo] = useState({ haruroot: '', valid: false, protocolCount: 0 })
   const [tabOrder, setTabOrder] = useState(loadTabOrder)
   const dragTabRef = useRef(null)
@@ -578,6 +582,23 @@ end`
       toast.error('删除失败: ' + err.message)
     }
   }
+
+  // 自定义 GM 拖拽重排：本地立即生效 + 后端持久化（乐观更新）
+  const handleReorderCustomGm = useCallback((fromIdx, toIdx) => {
+    if (fromIdx === toIdx) return
+    setCustomGmList(prev => {
+      const next = [...prev]
+      const [item] = next.splice(fromIdx, 1)
+      const adjusted = toIdx > fromIdx ? toIdx - 1 : toIdx
+      next.splice(adjusted, 0, item)
+      fetch('/api/gm_console/custom-gm/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commands: next }),
+      }).catch(err => console.error('GM 重排同步后端失败:', err))
+      return next
+    })
+  }, [])
 
   // 获取日志颜色
   const getLogColor = (type) => {
@@ -1100,11 +1121,45 @@ end`
                         {customGmList.map((item, i) => (
                           <div
                             key={i}
-                            className="gm-btn-core group"
+                            draggable
+                            onDragStart={e => {
+                              dragGmRef.current = i
+                              e.dataTransfer.effectAllowed = 'move'
+                              e.currentTarget.style.opacity = '0.5'
+                            }}
+                            onDragEnd={e => {
+                              dragGmRef.current = null
+                              setDropGmTarget(null)
+                              e.currentTarget.style.opacity = ''
+                            }}
+                            onDragOver={e => {
+                              if (dragGmRef.current === null || dragGmRef.current === i) return
+                              e.preventDefault()
+                              e.dataTransfer.dropEffect = 'move'
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              const side = (e.clientX - rect.left) < rect.width / 2 ? 'left' : 'right'
+                              setDropGmTarget({ idx: i, side })
+                            }}
+                            onDragLeave={() => setDropGmTarget(prev => prev?.idx === i ? null : prev)}
+                            onDrop={e => {
+                              e.preventDefault()
+                              const fromIdx = dragGmRef.current
+                              if (fromIdx === null || fromIdx === i) { setDropGmTarget(null); return }
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              const side = (e.clientX - rect.left) < rect.width / 2 ? 'left' : 'right'
+                              const insertIdx = side === 'left' ? i : i + 1
+                              handleReorderCustomGm(fromIdx, insertIdx)
+                              dragGmRef.current = null
+                              setDropGmTarget(null)
+                            }}
+                            className="gm-btn-core group relative cursor-grab active:cursor-grabbing"
                             style={{ height: btnHeight }}
                             onClick={() => handleExecCustomGm(item.cmd)}
-                            title={`${item.name}\n${item.cmd}`}
+                            title={`${item.name}\n${item.cmd}\n（按住可拖动排序）`}
                           >
+                            {dropGmTarget?.idx === i && (
+                              <span className={`absolute top-1 bottom-1 w-0.5 rounded-full bg-[var(--caramel)] z-10 ${dropGmTarget.side === 'left' ? '-left-1' : '-right-1'}`} />
+                            )}
                             <div className="w-full text-left pr-7">
                               <span className="line-clamp-2">{item.name}</span>
                             </div>
@@ -1113,6 +1168,7 @@ end`
                               style={{ display: 'flex', flexDirection: 'column' }}
                             >
                               <button
+                                draggable={false}
                                 className="p-1 rounded-md text-[var(--coffee-muted)]/50 hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-all"
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -1124,6 +1180,7 @@ end`
                                 <Edit size={11} />
                               </button>
                               <button
+                                draggable={false}
                                 className="p-1 rounded-md text-[var(--coffee-muted)]/50 hover:text-[var(--terracotta)] hover:bg-[var(--error-soft)] transition-all"
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -1158,6 +1215,10 @@ end`
                     onBindConsole={(uiName) => setLuaUiContext(uiName)}
                     onPinToMonitor={(locateData) => {
                       setPendingLocate(locateData)
+                      setActiveTab('cs_monitor')
+                    }}
+                    onLocateInHierarchy={(instanceId) => {
+                      setPendingLocate({ instanceId })
                       setActiveTab('cs_monitor')
                     }}
                     active={activeTab === 'lua_inspector'}
