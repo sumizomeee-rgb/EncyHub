@@ -761,6 +761,34 @@ async def get_foreground_app(hw_id: str):
     return {"package": package, "activity": activity}
 
 
+@app.post("/devices/{hw_id}/apps/{package}/start")
+async def start_app(hw_id: str, package: str):
+    """按包名启动指定应用"""
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(404, "设备不存在或离线")
+
+    success = await adb_mgr.start_app(dev.active_serial, package)
+    if not success:
+        raise HTTPException(400, f"启动 {package} 失败")
+    return {"message": f"已启动 {package}", "package": package}
+
+
+@app.post("/devices/{hw_id}/apps/{package}/stop")
+async def stop_app(hw_id: str, package: str):
+    """按包名强制停止指定应用"""
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((d for d in devices if d.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(404, "设备不存在或离线")
+
+    success = await adb_mgr.stop_app(dev.active_serial, package)
+    if not success:
+        raise HTTPException(400, f"停止 {package} 失败")
+    return {"message": f"已停止 {package}", "package": package}
+
+
 # ============================================================================
 # Path History API
 # ============================================================================

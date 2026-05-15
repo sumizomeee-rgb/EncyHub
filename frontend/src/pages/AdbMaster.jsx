@@ -37,6 +37,8 @@ function AdbMaster() {
   const [extracting, setExtracting] = useState(false)
   const [extractProgress, setExtractProgress] = useState(null)
   const [packagesLoading, setPackagesLoading] = useState(false)
+  // 单包启停 loading: Map<package, 'start'|'stop'>
+  const [pkgActionLoading, setPkgActionLoading] = useState({})
 
   // 投屏控制 State (Phase 2 - Web 嵌入)
   const [scrcpyStatus, setScrcpyStatus] = useState({ running: false })
@@ -1103,6 +1105,88 @@ function AdbMaster() {
     } catch {}
   }
 
+  // ======== 单包启停 ========
+  const handleStartApp = async (pkg) => {
+    if (!selectedDevice || pkgActionLoading[pkg]) return
+    setPkgActionLoading(prev => ({ ...prev, [pkg]: 'start' }))
+    try {
+      const res = await fetch(
+        `/api/adb_master/devices/${selectedDevice.hardware_id}/apps/${encodeURIComponent(pkg)}/start`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.detail || '启动失败')
+        return
+      }
+
+      // 轮询前台应用确认启动: 最多 5 次 × 500ms
+      let confirmed = false
+      for (let i = 0; i < 5; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        try {
+          const fgRes = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/foreground-app`)
+          if (fgRes.ok) {
+            const fg = await fgRes.json()
+            if (fg.package === pkg) {
+              confirmed = true
+              setForegroundApp(fg.package ? fg : null)
+              break
+            }
+          }
+        } catch {}
+      }
+      if (confirmed) {
+        toast.success(`已启动 ${pkg}`)
+      } else {
+        toast.warning(`已发送启动指令，但未检测到 ${pkg} 切到前台`)
+      }
+    } catch (err) {
+      toast.error('启动失败: ' + err.message)
+    } finally {
+      setPkgActionLoading(prev => {
+        const next = { ...prev }
+        delete next[pkg]
+        return next
+      })
+    }
+  }
+
+  const handleStopApp = async (pkg) => {
+    if (!selectedDevice || pkgActionLoading[pkg]) return
+    setPkgActionLoading(prev => ({ ...prev, [pkg]: 'stop' }))
+    try {
+      const res = await fetch(
+        `/api/adb_master/devices/${selectedDevice.hardware_id}/apps/${encodeURIComponent(pkg)}/stop`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.detail || '停止失败')
+        return
+      }
+      toast.success(`已停止 ${pkg}`)
+      // 若停掉的是当前前台,立刻刷新一次
+      if (foregroundApp?.package === pkg) {
+        try {
+          const fgRes = await fetch(`/api/adb_master/devices/${selectedDevice.hardware_id}/foreground-app`)
+          if (fgRes.ok) {
+            const fg = await fgRes.json()
+            setForegroundApp(fg.package ? fg : null)
+          }
+        } catch {}
+      }
+    } catch (err) {
+      toast.error('停止失败: ' + err.message)
+    } finally {
+      setPkgActionLoading(prev => {
+        const next = { ...prev }
+        delete next[pkg]
+        return next
+      })
+    }
+  }
+
   // ======== 设备切换处理 ========
   const handleSelectDevice = async (device) => {
     // 如果点击的是当前已选中的设备，不做任何处理
@@ -2004,7 +2088,11 @@ function AdbMaster() {
                               </span>
                             </div>
                             <div className="max-h-[280px] overflow-y-auto rounded-lg border border-[var(--glass-border)] bg-white/50">
-                              {filteredPackages.map(pkg => (
+                              {filteredPackages.map(pkg => {
+                                const action = pkgActionLoading[pkg.package]
+                                const busy = !!action
+                                const disabled = extracting || !selectedDevice?.active_serial || busy
+                                return (
                                 <label
                                   key={pkg.package}
                                   className="flex items-center gap-3 px-3 py-2 hover:bg-[var(--cream-warm)]/50 cursor-pointer border-b border-[var(--glass-border)] last:border-b-0 transition-colors"
@@ -2021,8 +2109,33 @@ function AdbMaster() {
                                   <span className="text-xs text-[var(--coffee-muted)] shrink-0 tabular-nums">
                                     {formatSize(pkg.size_bytes)}
                                   </span>
+                                  <div className="flex items-center gap-1 shrink-0 ml-2">
+                                    <button
+                                      type="button"
+                                      onClick={e => { e.preventDefault(); e.stopPropagation(); handleStartApp(pkg.package) }}
+                                      disabled={disabled}
+                                      title={busy ? '处理中...' : '启动此应用'}
+                                      className="p-1.5 rounded text-[var(--coffee-muted)] hover:text-[var(--sage)] hover:bg-[var(--cream-warm)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                      {action === 'start'
+                                        ? <RefreshCw size={14} className="animate-spin" />
+                                        : <Play size={14} />}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={e => { e.preventDefault(); e.stopPropagation(); handleStopApp(pkg.package) }}
+                                      disabled={disabled}
+                                      title={busy ? '处理中...' : '强制停止此应用'}
+                                      className="p-1.5 rounded text-[var(--coffee-muted)] hover:text-[var(--terracotta)] hover:bg-[var(--cream-warm)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                      {action === 'stop'
+                                        ? <RefreshCw size={14} className="animate-spin" />
+                                        : <Square size={14} />}
+                                    </button>
+                                  </div>
                                 </label>
-                              ))}
+                                )
+                              })}
                             </div>
                           </>
                         )}
