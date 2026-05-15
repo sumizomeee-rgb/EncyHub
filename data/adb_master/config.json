@@ -30,6 +30,7 @@
   },
   "path_history": {
     "pull": [
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug450/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.bilibili/files/log",
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug440/files/log",
@@ -37,6 +38,7 @@
       "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug/files/log"
     ],
     "push": [
+      "/storage/emulated/0/Android/data/com.kurogame.haru.internal.debug450/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.bilibili/files/",
       "/storage/emulated/0/Android/data/com.kurogame.haru.nearme.gamecenter/files/",
