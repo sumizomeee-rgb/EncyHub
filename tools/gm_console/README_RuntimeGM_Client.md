@@ -1540,6 +1540,73 @@ local function StartRuntimeGM()
         return n
     end
 
+    -- Android/XLua 下无参 scene:GetRootGameObjects() 可能误进 List<T> 重载并抛空引用；
+    -- 先走 Editor/PC 可用的无参重载，再兜底显式传 List<GameObject>。
+    local function hierCollectionCount(list)
+        if not list then return 0 end
+        local okLen, len = pcall(function() return list.Length end)
+        if okLen and len then return tonumber(len) or 0 end
+        local okCount, count = pcall(function() return list.Count end)
+        if okCount and count then return tonumber(count) or 0 end
+        return 0
+    end
+
+    local function hierCollectionAt(list, index)
+        local ok, item = pcall(function() return list[index] end)
+        if ok then return item end
+        return nil
+    end
+
+    local function hierGetSceneRootGameObjects(scene)
+        local roots = {}
+        if not scene then return roots end
+
+        local ok, list = pcall(function() return scene:GetRootGameObjects() end)
+        if ok and list then
+            local n = hierCollectionCount(list)
+            for i = 0, n - 1 do
+                local go = hierCollectionAt(list, i)
+                if go then roots[#roots + 1] = go end
+            end
+            return roots
+        end
+
+        local okList, list2 = pcall(function()
+            local ListGO = CS.System.Collections.Generic.List(CS.UnityEngine.GameObject)
+            local l = ListGO()
+            scene:GetRootGameObjects(l)
+            return l
+        end)
+        if okList and list2 then
+            local n = hierCollectionCount(list2)
+            for i = 0, n - 1 do
+                local go = hierCollectionAt(list2, i)
+                if go then roots[#roots + 1] = go end
+            end
+            return roots
+        end
+
+        -- 最后一层兜底：仅用 active GO 反推根节点，覆盖极端 IL2CPP/XLua 绑定异常。
+        local sceneName = ""
+        pcall(function() sceneName = tostring(scene.name) end)
+        local okAll, allGOs = pcall(function()
+            return CS.UnityEngine.Object.FindObjectsOfType(typeof(CS.UnityEngine.GameObject))
+        end)
+        if okAll and allGOs then
+            for i = 0, allGOs.Length - 1 do
+                local go = allGOs[i]
+                local isRoot = false
+                local inScene = sceneName == ""
+                pcall(function()
+                    isRoot = go.transform.parent == nil
+                    inScene = inScene or tostring(go.scene.name) == sceneName
+                end)
+                if go and isRoot and inScene then roots[#roots + 1] = go end
+            end
+        end
+        return roots
+    end
+
     -- 通过创建临时 GO 标记 DontDestroyOnLoad，借此拿到该 scene 的根列表
     local function hierGetDontDestroyRoots()
         local roots = {}
@@ -1551,9 +1618,8 @@ local function StartRuntimeGM()
             return s
         end)
         if not ok or not tempScene then return roots end
-        local ok2, list = pcall(function() return tempScene:GetRootGameObjects() end)
-        if not ok2 or not list then return roots end
-        for i = 0, list.Length - 1 do
+        local list = hierGetSceneRootGameObjects(tempScene)
+        for i = 1, #list do
             local go = list[i]
             if go and go.name ~= "___EncyHubHierTemp___" then
                 local n = hierNodeOf(go)
@@ -1573,8 +1639,8 @@ local function StartRuntimeGM()
                 local s = SM.GetSceneAt(i)
                 if not s.isLoaded then return end
                 local roots = {}
-                local list = s:GetRootGameObjects()
-                for j = 0, list.Length - 1 do
+                local list = hierGetSceneRootGameObjects(s)
+                for j = 1, #list do
                     local node = hierNodeOf(list[j])
                     if node then roots[#roots + 1] = node end
                 end
@@ -2016,9 +2082,8 @@ local function StartRuntimeGM()
             return s
         end)
         if not ok or not tempScene then return roots end
-        local ok2, list = pcall(function() return tempScene:GetRootGameObjects() end)
-        if not ok2 or not list then return roots end
-        for i = 0, list.Length - 1 do
+        local list = hierGetSceneRootGameObjects(tempScene)
+        for i = 1, #list do
             local go = list[i]
             if go and go.name ~= "___EncyHubHierSearchTemp___" then roots[#roots + 1] = go end
         end
@@ -2250,8 +2315,8 @@ local function StartRuntimeGM()
                 local s = SM.GetSceneAt(i)
                 if not s.isLoaded then return end
                 if scope ~= "all" and scope ~= tostring(s.name) then return end
-                local roots = s:GetRootGameObjects()
-                for j = 0, roots.Length - 1 do
+                local roots = hierGetSceneRootGameObjects(s)
+                for j = 1, #roots do
                     if stopObjects then return end
                     scanGo(roots[j], tostring(s.name))
                 end
