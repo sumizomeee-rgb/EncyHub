@@ -1197,10 +1197,10 @@ local function StartRuntimeGM()
         end
     end
 
-    -- 前置声明：供 CsMonitor 和 Inspector 共用的属性值序列化函数（定义在 Inspector 区域）
+    -- 前置声明：供 Hierarchy 和 Inspector 共用的属性值序列化函数（定义在 Inspector 区域）
     local inspectorSerializePropValue
 
-    -- ========== 共享常量 & 工具函数 (CsMonitor + Inspector 复用) ==========
+    -- ========== 共享常量 & 工具函数 (Hierarchy + Inspector 复用) ==========
     local _PROP_BLACKLIST = {
         mesh=1, material=1, materials=1, sharedMesh=1, sharedMaterial=1, sharedMaterials=1,
         rigidbody=1, rigidbody2D=1, camera=1, light=1, animation=1, constantForce=1,
@@ -1251,7 +1251,7 @@ local function StartRuntimeGM()
         return false, "method not found: " .. tostring(methodName)
     end
 
-    -- 读取组件的属性、字段、方法（CsMonitor.GetDetail 和 Inspector.GetComponentDetail 共用）
+    -- 读取组件的属性、字段、方法（Hierarchy.GetDetail 和 Inspector.GetComponentDetail 共用）
     local function readComponentDetail(comp)
         local result = { properties = {}, methods = {}, _debug = { propCount = 0, tried = 0, failed = 0 } }
 
@@ -1366,12 +1366,12 @@ local function StartRuntimeGM()
         return result
     end
 
-    -- ========== LuaCsMonitor: C# 组件搜索 + 监控 (真机兼容) ==========
-    local LuaCsMonitor = {}
-    LuaCsMonitor._compRefs = {}    -- "goId_compIdx" → {go, comp, goName, parentName, typeName}
-    LuaCsMonitor._scanResults = {} -- 最近一次搜索结果
+    -- ========== LuaHierarchyCore: Hierarchy 反射读写内核 (真机兼容) ==========
+    local LuaHierarchyCore = {}
+    LuaHierarchyCore._compRefs = {}    -- "goId_compIdx" → {go, comp, goName, parentName, typeName}
+    LuaHierarchyCore._scanResults = {} -- 最近一次搜索结果
 
-    origin_print("[RuntimeGM] LuaCsMonitor module initialized")
+    origin_print("[RuntimeGM] LuaHierarchyCore module initialized")
 
     local function getHierarchyPath(go)
         local parts = {}
@@ -1389,7 +1389,7 @@ local function StartRuntimeGM()
     end
 
     -- 扫描所有 GameObject，按组件类型名字符串匹配（绕过 typeof 动态解析的 xlua 兼容问题）
-    function LuaCsMonitor.Scan(typeName)
+    function LuaHierarchyCore.Scan(typeName)
         local ok, allGOs = pcall(function()
             return CS.UnityEngine.Object.FindObjectsOfType(typeof(CS.UnityEngine.GameObject))
         end)
@@ -1398,7 +1398,7 @@ local function StartRuntimeGM()
         local results = {}
         local maxShow = 200
         local total = 0
-        LuaCsMonitor._compRefs = {}
+        LuaHierarchyCore._compRefs = {}
 
         for gi = 0, allGOs.Length - 1 do
             if #results >= maxShow then break end
@@ -1431,7 +1431,7 @@ local function StartRuntimeGM()
                     if #results >= maxShow then total = total + 1; return end
                     total = total + 1
                     local key = goId .. "_" .. ci
-                    LuaCsMonitor._compRefs[key] = { go = go, comp = comps[ci], goName = goName, parentName = parentName, typeName = typeName }
+                    LuaHierarchyCore._compRefs[key] = { go = go, comp = comps[ci], goName = goName, parentName = parentName, typeName = typeName }
                     results[#results + 1] = {
                         goInstanceId = goId, goName = goName, parentName = parentName,
                         hierarchyPath = hPath,
@@ -1447,9 +1447,9 @@ local function StartRuntimeGM()
         return resp
     end
 
-    function LuaCsMonitor.GetDetail(goInstanceId, compIndex)
+    function LuaHierarchyCore.GetDetail(goInstanceId, compIndex)
         local key = goInstanceId .. "_" .. compIndex
-        local ref = LuaCsMonitor._compRefs[key]
+        local ref = LuaHierarchyCore._compRefs[key]
         if not ref or not ref.comp then return { error = "组件未找到，请重新搜索" } end
         local alive = false
         pcall(function() alive = ref.go.name ~= nil end)
@@ -1465,18 +1465,18 @@ local function StartRuntimeGM()
         return detail
     end
 
-    function LuaCsMonitor.SetProp(goInstanceId, compIndex, propName, value, valueType)
+    function LuaHierarchyCore.SetProp(goInstanceId, compIndex, propName, value, valueType)
         local key = goInstanceId .. "_" .. compIndex
-        local ref = LuaCsMonitor._compRefs[key]
+        local ref = LuaHierarchyCore._compRefs[key]
         if not ref or not ref.comp then return { error = "组件未找到" } end
         local ok, err = pcall(function() ref.comp[propName] = convertTypedValue(value, valueType) end)
         if not ok then return { error = tostring(err) } end
         return { success = true }
     end
 
-    function LuaCsMonitor.CallMethod(goInstanceId, compIndex, methodName)
+    function LuaHierarchyCore.CallMethod(goInstanceId, compIndex, methodName)
         local key = goInstanceId .. "_" .. compIndex
-        local ref = LuaCsMonitor._compRefs[key]
+        local ref = LuaHierarchyCore._compRefs[key]
         if not ref or not ref.comp then return { error = "组件未找到" } end
         local ok, ret = pcall(function()
             local found, result = callCompMethodImpl(ref.comp, methodName)
@@ -1492,9 +1492,9 @@ local function StartRuntimeGM()
     --   * 按 Scene 列出根 GameObject，点击节点懒加载子节点
     --   * 选中 GO 后一次性返回该 GO 上所有 Component 的反射详情
     --   * Locate：从 LuaUiInspector 的 (uiName, path) 解析到 GO，返回祖先链供前端展开
-    -- 与 LuaCsMonitor 共享底层反射工具（readComponentDetail / convertTypedValue / callCompMethodImpl）
-    -- 与 LuaCsMonitor._compRefs 共享缓存：每次 GetGoDetail 时写入 goId_compIdx → comp，
-    -- 让 set_prop / call_method 直接走 LuaCsMonitor 的现有实现，不重复造轮子。
+    -- 与 LuaHierarchyCore 共享底层反射工具（readComponentDetail / convertTypedValue / callCompMethodImpl）
+    -- 与 LuaHierarchyCore._compRefs 共享缓存：每次 GetGoDetail 时写入 goId_compIdx → comp，
+    -- 让 set_prop / call_method 直接走 LuaHierarchyCore 的现有实现，不重复造轮子。
     local LuaHierarchy = {}
     LuaHierarchy._goCache = setmetatable({}, { __mode = "v" })  -- instanceId(number) → GameObject (弱引用，GO 销毁后自动回收)
 
@@ -1639,8 +1639,8 @@ local function StartRuntimeGM()
                 pcall(function() fullTypeName = tostring(c:GetType().FullName) end)
                 entry.typeName = typeName
                 entry.fullTypeName = fullTypeName
-                -- 写入共用缓存，让 set_prop / call_method 走 LuaCsMonitor 现有实现
-                LuaCsMonitor._compRefs[goId .. "_" .. ci] = {
+                -- 写入共用缓存，让 set_prop / call_method 走 LuaHierarchyCore 现有实现
+                LuaHierarchyCore._compRefs[goId .. "_" .. ci] = {
                     go = go, comp = c, goName = go.name,
                     parentName = "", typeName = typeName,
                 }
@@ -1770,7 +1770,7 @@ local function StartRuntimeGM()
         if limit > 200 then limit = 200 end
 
         local key = goId .. "_" .. compIndex
-        local ref = LuaCsMonitor._compRefs[key]
+        local ref = LuaHierarchyCore._compRefs[key]
         if not ref or not ref.comp then return { error = "Component 缓存丢失，请重新选中 GameObject" } end
 
         -- 取属性/字段值（先尝试 xlua property accessor，失败再走反射 Field/Property GetValue）
@@ -1889,17 +1889,407 @@ local function StartRuntimeGM()
         }
     end
 
-    function LuaCsMonitor.HandleCommand(packet)
+    -- ========== LuaHierarchy.Search: 全场景 GO / Component / 字段高级搜索 ==========
+    local HIERARCHY_SEARCH_TEXT_PROBE = {
+        Text = "text",
+        TMP_Text = "text",
+        TextMeshProUGUI = "text",
+        InputField = "text",
+        TMP_InputField = "text",
+        UILabel = "text",
+    }
+    local HIERARCHY_SEARCH_MAX_OBJECTS = 5000
+    local HIERARCHY_SEARCH_MAX_MEMBERS = 12000
+
+    local function hierSearchGlobMatch(pattern, text)
+        pattern = tostring(pattern or "")
+        text = tostring(text or "")
+        if pattern == text then return true end
+        local luaPat = "^" .. pattern:gsub("[%(%)%.%+%-%?%[%]%^%$%%]", "%%%1"):gsub("%*", ".*") .. "$"
+        return text:match(luaPat) ~= nil
+    end
+
+    local function hierSearchParseQuery(q)
+        if not q or q == "" then return nil, "查询为空" end
+        if q:sub(1, 2) == "t:" then
+            local pat = q:sub(3)
+            if pat == "" then return nil, "t: 后缺类型名" end
+            return { mode = "type", typePattern = pat, isGlob = pat:find("*", 1, true) ~= nil }
+        end
+        if q:sub(1, 3) == "go:" then
+            local pat = q:sub(4)
+            if pat == "" then return nil, "go: 后缺 GameObject 名称" end
+            return { mode = "go", value = pat, isGlob = pat:find("*", 1, true) ~= nil }
+        end
+        if q:sub(1, 5) == "path:" then
+            local pat = q:sub(6)
+            if pat == "" then return nil, "path: 后缺路径" end
+            return { mode = "path", value = pat, isGlob = pat:find("*", 1, true) ~= nil }
+        end
+        if q == "active:false" or q == "active=false" or q == "active:true" or q == "active=true" then
+            return { mode = "active", value = (q:match("true") ~= nil) }
+        end
+        local k, v = q:match("^([%w_]+)=(.+)$")
+        if k then
+            local strVal = v:match("^\"(.*)\"$")
+            if strVal then return { mode = "kv", key = k, valueExpect = strVal, valueType = "string" } end
+            local n = tonumber(v)
+            if n then return { mode = "kv", key = k, valueExpect = n, valueType = "number" } end
+            if v == "true" or v == "false" then return { mode = "kv", key = k, valueExpect = (v == "true"), valueType = "boolean" } end
+            return { mode = "kv", key = k, valueExpect = v, valueType = "string" }
+        end
+        local exact = q:match("^\"(.*)\"$")
+        if exact then return { mode = "string_exact", value = exact } end
+        if q:find("*", 1, true) and not q:match("[%d%.]") then
+            return { mode = "key_glob", pattern = q }
+        end
+        local numFuzzy = q:match("^%*?([%-]?%d+%.?%d*)%*$") or q:match("^%*([%-]?%d+%.?%d*)%*?$")
+        if numFuzzy then return { mode = "number_fuzzy", contains = numFuzzy } end
+        local n = tonumber(q)
+        if n then return { mode = "value", numberExact = n, stringContains = q } end
+        return { mode = "value", stringContains = q }
+    end
+
+    local function hierSearchValueInfo(v, declaredTypeName)
+        local lt = type(v)
+        if lt == "string" then return v, "string", v end
+        if lt == "number" then return tostring(v), "number", v end
+        if lt == "boolean" then return tostring(v), "bool", v end
+        if lt == "userdata" then
+            local ok, enumVal = pcall(function()
+                if v:GetType().IsEnum then return tostring(v) end
+                return nil
+            end)
+            if ok and enumVal then return enumVal, "enum", enumVal end
+        end
+        return nil, nil, nil
+    end
+
+    local function hierSearchMatchText(parsed, text)
+        text = tostring(text or "")
+        if parsed.isGlob then return hierSearchGlobMatch(parsed.value, text) end
+        return text:find(parsed.value, 1, true) ~= nil
+    end
+
+    local function hierSearchMatchMember(parsed, memberName, display, valueType, rawValue)
+        local m = parsed.mode
+        if m == "kv" then
+            if tostring(memberName) ~= parsed.key then return nil end
+            if parsed.valueType == "number" then
+                local n = type(rawValue) == "number" and rawValue or tonumber(display)
+                if n == parsed.valueExpect then return true end
+            elseif parsed.valueType == "boolean" then
+                if type(rawValue) == "boolean" and rawValue == parsed.valueExpect then return true end
+            else
+                if tostring(display or "") == tostring(parsed.valueExpect) then return true end
+            end
+            return nil
+        end
+        if m == "key_glob" then
+            return hierSearchGlobMatch(parsed.pattern, memberName)
+        end
+        if m == "string_exact" then
+            return (valueType == "string" or valueType == "enum") and tostring(display or "") == parsed.value
+        end
+        if m == "number_fuzzy" then
+            return valueType == "number" and tostring(display or ""):find(parsed.contains, 1, true) ~= nil
+        end
+        if m == "value" then
+            if parsed.numberExact and valueType == "number" then
+                local n = type(rawValue) == "number" and rawValue or tonumber(display)
+                if n == parsed.numberExact then return true end
+            end
+            if parsed.stringContains and (valueType == "string" or valueType == "enum") then
+                return tostring(display or ""):find(parsed.stringContains, 1, true) ~= nil
+            end
+        end
+        return nil
+    end
+
+    local function hierSearchDdolRootObjects()
+        local roots = {}
+        local ok, tempScene = pcall(function()
+            local tempGo = CS.UnityEngine.GameObject("___EncyHubHierSearchTemp___")
+            CS.UnityEngine.Object.DontDestroyOnLoad(tempGo)
+            local s = tempGo.scene
+            CS.UnityEngine.Object.Destroy(tempGo)
+            return s
+        end)
+        if not ok or not tempScene then return roots end
+        local ok2, list = pcall(function() return tempScene:GetRootGameObjects() end)
+        if not ok2 or not list then return roots end
+        for i = 0, list.Length - 1 do
+            local go = list[i]
+            if go and go.name ~= "___EncyHubHierSearchTemp___" then roots[#roots + 1] = go end
+        end
+        return roots
+    end
+
+    function LuaHierarchy.Search(packet)
+        local startTime = 0
+        pcall(function() startTime = CS.UnityEngine.Time.realtimeSinceStartup end)
+
+        local parsed, perr = hierSearchParseQuery(packet.query)
+        if not parsed then return { error = perr or "查询解析失败" } end
+
+        local scope = packet.scope or "all"
+        local includeInactive = packet.includeInactive ~= false
+        local searchGoName = packet.searchGoName ~= false
+        local searchMembers = packet.searchMembers ~= false
+        local maxObjects = math.min(tonumber(packet.maxObjects) or HIERARCHY_SEARCH_MAX_OBJECTS, HIERARCHY_SEARCH_MAX_OBJECTS)
+        local maxMembers = math.min(tonumber(packet.maxMembers) or HIERARCHY_SEARCH_MAX_MEMBERS, HIERARCHY_SEARCH_MAX_MEMBERS)
+
+        local hits = {}
+        local visited = {}
+        local objectCount = 0
+        local componentCount = 0
+        local totalScanned = 0
+        local truncated = false
+        local stopObjects = false
+        local memberLimitReached = false
+
+        local function pushHit(go, sceneName, compIndex, typeName, memberName, memberKind, valueDisplay, valueType, via)
+            local goId = -1
+            local goName = "?"
+            local activeInHierarchy = false
+            local activeSelf = false
+            local hPath = ""
+            pcall(function() goId = go:GetInstanceID() end)
+            pcall(function() goName = go.name end)
+            pcall(function() activeInHierarchy = go.activeInHierarchy end)
+            pcall(function() activeSelf = go.activeSelf end)
+            pcall(function() hPath = getHierarchyPath(go) end)
+            goName = tostring(goName or "")
+            hPath = tostring(hPath or "")
+            local entry = {
+                sceneName = sceneName or "",
+                goName = goName,
+                hierarchyPath = hPath,
+                goInstanceId = goId,
+                active = activeSelf,
+                activeInHierarchy = activeInHierarchy,
+                typeName = typeName or "",
+                memberName = memberName or "",
+                memberKind = memberKind or "field",
+                valueDisplay = tostring(valueDisplay or ""):sub(1, 120),
+                valueType = valueType or "string",
+            }
+            if compIndex ~= nil and compIndex >= 0 then entry.compIndex = compIndex end
+            if via then entry.via = via end
+            hits[#hits + 1] = entry
+        end
+
+        local function scanMember(go, sceneName, comp, compIndex, typeName, memberName, value, declaredTypeName, memberKind)
+            if memberLimitReached then return end
+            totalScanned = totalScanned + 1
+            if totalScanned > maxMembers then
+                truncated = true
+                memberLimitReached = true
+                return
+            end
+            local display, valueType, rawValue = hierSearchValueInfo(value, declaredTypeName)
+            if not display then return end
+            if hierSearchMatchMember(parsed, memberName, display, valueType, rawValue) then
+                local via = nil
+                if valueType == "string" and HIERARCHY_SEARCH_TEXT_PROBE[typeName] == memberName then
+                    valueType = "compText"
+                    memberKind = "text"
+                    via = typeName .. "." .. memberName
+                end
+                pushHit(go, sceneName, compIndex, typeName, memberName, memberKind, display, valueType, via)
+            end
+        end
+
+        local function scanComponent(go, sceneName, comp, compIndex)
+            if not comp then return end
+            componentCount = componentCount + 1
+            local typeName = "<unknown>"
+            local fullTypeName = ""
+            pcall(function() typeName = tostring(comp:GetType().Name) end)
+            pcall(function() fullTypeName = tostring(comp:GetType().FullName) end)
+            local goId = -1; pcall(function() goId = go:GetInstanceID() end)
+            LuaHierarchyCore._compRefs[goId .. "_" .. compIndex] = {
+                go = go, comp = comp, goName = go.name,
+                parentName = "", typeName = typeName,
+            }
+
+            if parsed.mode == "type" then
+                local matched = parsed.isGlob and hierSearchGlobMatch(parsed.typePattern, typeName) or typeName == parsed.typePattern
+                if not matched and fullTypeName ~= "" then
+                    matched = parsed.isGlob and hierSearchGlobMatch(parsed.typePattern, fullTypeName) or fullTypeName == parsed.typePattern
+                end
+                if matched then
+                    pushHit(go, sceneName, compIndex, typeName, "Component", "type", typeName, "type")
+                end
+                return
+            end
+
+            local textOk, textVal = pcall(function() return comp.text end)
+            if textOk and type(textVal) == "string" then
+                local hitText = nil
+                if parsed.mode == "value" and parsed.stringContains then
+                    hitText = textVal:find(parsed.stringContains, 1, true) ~= nil
+                elseif parsed.mode == "string_exact" then
+                    hitText = textVal == parsed.value
+                end
+                if hitText then
+                    pushHit(go, sceneName, compIndex, typeName, "text", "text", textVal, "compText", typeName .. ".text")
+                end
+            end
+
+            if not searchMembers then return end
+            if memberLimitReached then return end
+
+            local props
+            pcall(function() props = comp:GetType():GetProperties(20) end)
+            if not props then pcall(function() props = comp:GetType():GetProperties() end) end
+            local propCount = 0
+            if props then pcall(function() propCount = props.Length end) end
+            for i = 0, propCount - 1 do
+                if memberLimitReached then return end
+                local prop = props[i]
+                pcall(function()
+                    if prop.IsSpecialName then return end
+                    local idxParams = prop:GetIndexParameters()
+                    if idxParams and idxParams.Length > 0 then return end
+                    if not prop.CanRead then return end
+                    local pName = tostring(prop.Name)
+                    if _PROP_BLACKLIST[pName] then return end
+                    local valOk, val = pcall(function() return comp[pName] end)
+                    if not valOk then valOk, val = pcall(function() return prop:GetValue(comp) end) end
+                    if not valOk then valOk, val = pcall(function() return prop:GetValue(comp, nil) end) end
+                    if not valOk then return end
+                    scanMember(go, sceneName, comp, compIndex, typeName, pName, val, tostring(prop.PropertyType.Name), "property")
+                end)
+            end
+
+            local fields
+            pcall(function() fields = comp:GetType():GetFields(20) end)
+            local fieldCount = 0
+            if fields then pcall(function() fieldCount = fields.Length end) end
+            for i = 0, fieldCount - 1 do
+                if memberLimitReached then return end
+                local fld = fields[i]
+                pcall(function()
+                    if fld.IsSpecialName then return end
+                    local fName = tostring(fld.Name)
+                    local valOk, val = pcall(function() return comp[fName] end)
+                    if not valOk then valOk, val = pcall(function() return fld:GetValue(comp) end) end
+                    if not valOk then return end
+                    scanMember(go, sceneName, comp, compIndex, typeName, fName, val, tostring(fld.FieldType.Name), "field")
+                end)
+            end
+        end
+
+        local function scanGo(go, sceneName)
+            if stopObjects or not go then return end
+            local goId = -1
+            pcall(function() goId = go:GetInstanceID() end)
+            if visited[goId] then return end
+            visited[goId] = true
+            objectCount = objectCount + 1
+            if objectCount > maxObjects then
+                truncated = true
+                stopObjects = true
+                return
+            end
+
+            hierCacheGo(go)
+            local activeInHierarchy = true
+            pcall(function() activeInHierarchy = go.activeInHierarchy end)
+            if not includeInactive and not activeInHierarchy then return end
+
+            local hPath = ""
+            local goName = ""
+            pcall(function() hPath = getHierarchyPath(go) end)
+            pcall(function() goName = go.name end)
+            hPath = tostring(hPath or "")
+            goName = tostring(goName or "")
+
+            if searchGoName then
+                if parsed.mode == "go" and hierSearchMatchText(parsed, goName) then
+                    pushHit(go, sceneName, nil, "GameObject", "name", "go", goName, "string")
+                elseif parsed.mode == "path" and hierSearchMatchText(parsed, hPath) then
+                    pushHit(go, sceneName, nil, "GameObject", "path", "go", hPath, "string")
+                elseif parsed.mode == "value" and parsed.stringContains and (goName:find(parsed.stringContains, 1, true) or hPath:find(parsed.stringContains, 1, true)) then
+                    pushHit(go, sceneName, nil, "GameObject", "name/path", "go", hPath, "string")
+                elseif parsed.mode == "string_exact" and (goName == parsed.value or hPath == parsed.value) then
+                    pushHit(go, sceneName, nil, "GameObject", "name/path", "go", hPath, "string")
+                elseif parsed.mode == "active" then
+                    local a = false; pcall(function() a = go.activeInHierarchy end)
+                    if a == parsed.value then pushHit(go, sceneName, nil, "GameObject", "activeInHierarchy", "go", tostring(a), "bool") end
+                end
+            end
+
+            local comps
+            pcall(function() comps = go:GetComponents(typeof(CS.UnityEngine.Component)) end)
+            if comps then
+                for ci = 0, comps.Length - 1 do
+                    if stopObjects then return end
+                    pcall(function() scanComponent(go, sceneName, comps[ci], ci) end)
+                end
+            end
+
+            local t
+            pcall(function() t = go.transform end)
+            if not t then return end
+            local childCount = 0
+            pcall(function() childCount = t.childCount end)
+            for i = 0, childCount - 1 do
+                if stopObjects then return end
+                pcall(function() scanGo(t:GetChild(i).gameObject, sceneName) end)
+            end
+        end
+
+        local SM = CS.UnityEngine.SceneManagement.SceneManager
+        local sceneCount = 0
+        pcall(function() sceneCount = SM.sceneCount end)
+        for i = 0, sceneCount - 1 do
+            if stopObjects then break end
+            pcall(function()
+                local s = SM.GetSceneAt(i)
+                if not s.isLoaded then return end
+                if scope ~= "all" and scope ~= tostring(s.name) then return end
+                local roots = s:GetRootGameObjects()
+                for j = 0, roots.Length - 1 do
+                    if stopObjects then return end
+                    scanGo(roots[j], tostring(s.name))
+                end
+            end)
+        end
+        if (scope == "all" or scope == "DontDestroyOnLoad") and not stopObjects then
+            local ddolRoots = hierSearchDdolRootObjects()
+            for _, go in ipairs(ddolRoots) do
+                if stopObjects then break end
+                scanGo(go, "DontDestroyOnLoad")
+            end
+        end
+
+        local elapsedMs = 0
+        pcall(function()
+            elapsedMs = math.floor((CS.UnityEngine.Time.realtimeSinceStartup - startTime) * 1000)
+        end)
+        return {
+            hits = hits,
+            truncated = truncated,
+            totalScanned = totalScanned,
+            objectCount = objectCount,
+            componentCount = componentCount,
+            elapsedMs = elapsedMs,
+        }
+    end
+
+    function LuaHierarchy.HandleCommand(packet)
         local action = packet.action
         local result
         if action == "scan" then
-            result = LuaCsMonitor.Scan(packet.typeName)
+            result = LuaHierarchyCore.Scan(packet.typeName)
         elseif action == "get_detail" then
-            result = LuaCsMonitor.GetDetail(packet.goInstanceId, packet.compIndex)
+            result = LuaHierarchyCore.GetDetail(packet.goInstanceId, packet.compIndex)
         elseif action == "set_prop" then
-            result = LuaCsMonitor.SetProp(packet.goInstanceId, packet.compIndex, packet.propName, packet.value, packet.valueType)
+            result = LuaHierarchyCore.SetProp(packet.goInstanceId, packet.compIndex, packet.propName, packet.value, packet.valueType)
         elseif action == "call_method" then
-            result = LuaCsMonitor.CallMethod(packet.goInstanceId, packet.compIndex, packet.methodName)
+            result = LuaHierarchyCore.CallMethod(packet.goInstanceId, packet.compIndex, packet.methodName)
         elseif action == "scene_roots" then
             result = LuaHierarchy.GetSceneRoots()
         elseif action == "children" then
@@ -1910,10 +2300,12 @@ local function StartRuntimeGM()
             result = LuaHierarchy.Locate(packet)
         elseif action == "collection_items" then
             result = LuaHierarchy.GetCollectionItems(packet)
+        elseif action == "search" then
+            result = LuaHierarchy.Search(packet)
         else
             result = { error = "Unknown action: " .. tostring(action) }
         end
-        RuntimeGMClient.Send({ type = "CS_MONITOR_RESP", action = action, data = result })
+        RuntimeGMClient.Send({ type = "HIERARCHY_RESP", action = action, data = result })
     end
 
     -- ========== LuaUiInspector: 运行时 Lua UI 数据查看 (真机兼容) ==========
@@ -2621,7 +3013,7 @@ local function StartRuntimeGM()
         local ok = pcall(function() tn = tostring(v:GetType().Name) end)
         if not ok or not tn then return nil end
         local prop = SEARCH_TEXT_PROBE[tn]
-        if not prop then return nil end
+        if not prop then prop = "text" end
         local txt
         local ok2 = pcall(function() txt = v[prop] end)
         if not ok2 or type(txt) ~= "string" then return nil end
@@ -4261,10 +4653,10 @@ local function StartRuntimeGM()
             if not ok then
                 origin_print("[RuntimeGM] TIMELINE command error: " .. tostring(err))
             end
-        elseif type == "CS_MONITOR" then
-            local ok, err = pcall(LuaCsMonitor.HandleCommand, packet)
+        elseif type == "HIERARCHY" or type == "CS_MONITOR" then
+            local ok, err = pcall(LuaHierarchy.HandleCommand, packet)
             if not ok then
-                origin_print("[RuntimeGM] CS_MONITOR command error: " .. tostring(err))
+                origin_print("[RuntimeGM] HIERARCHY command error: " .. tostring(err))
             end
         elseif type == "SUBPKG_MONITOR" then
             local ok, err = pcall(SubPkgMonitor.Handle, packet)

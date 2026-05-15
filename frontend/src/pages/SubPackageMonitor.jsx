@@ -484,7 +484,7 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
         </button>
       </div>
 
-      {/* Right: refresh controls (same style as CsComponentMonitor) */}
+      {/* Right: refresh controls (same style as Hierarchy) */}
       <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
         <button onClick={(e) => { if (e.shiftKey) { fetchStructure(); fetchStatus() } else { fetchStatus() } }}
           title="刷新（Shift+点击刷新结构）"

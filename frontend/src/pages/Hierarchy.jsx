@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { RotateCw, ChevronRight, ChevronDown, Loader2, Search, Clipboard, Crosshair } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 import PropRow from '../components/PropRow'
+import HierarchySearchModal from '../components/HierarchySearchModal'
 
 // ============================================================================
-// WebSocket Hook（与 LuaUiInspector / 旧 CsComponentMonitor 同款）
+// WebSocket Hook（与 LuaUiInspector 同款）
 // ============================================================================
 function useHierarchyWs(selectedClient) {
     const listenersRef = useRef({})
@@ -17,7 +18,7 @@ function useHierarchyWs(selectedClient) {
         const connect = () => {
             if (closed) return
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-            const ws = new WebSocket(`${protocol}//${window.location.host}/api/gm_console/ws/cs_monitor`)
+            const ws = new WebSocket(`${protocol}//${window.location.host}/api/gm_console/ws/hierarchy`)
             wsRef.current = ws
             let pingTimer = null
             ws.onopen = () => {
@@ -48,7 +49,7 @@ function useHierarchyWs(selectedClient) {
     const request = useCallback((action, params, onResponse) => {
         if (!selectedClient) return
         if (onResponse) listenersRef.current[action] = onResponse
-        fetch(`/api/gm_console/cs_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
+        fetch(`/api/gm_console/hierarchy/${encodeURIComponent(selectedClient.id)}/command`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action, ...params })
         }).catch(e => console.error('[Hierarchy] sendCmd error:', e))
@@ -86,6 +87,7 @@ export default function Hierarchy({ clients, selectedClient, pendingLocate, onPe
     const [scanResults, setScanResults] = useState(null)  // type 模式结果列表
     const [scanInfo, setScanInfo] = useState(null)
     const [scanning, setScanning] = useState(false)
+    const [searchOpen, setSearchOpen] = useState(false)
 
     // --- 刷新控制 ---
     const [refreshInterval, setRefreshInterval] = useState(60)
@@ -217,6 +219,11 @@ export default function Hierarchy({ clients, selectedClient, pendingLocate, onPe
         })
     }, [filterText, request])
 
+    // --- 高级搜索：复用 Hierarchy 通道，结果点击后走现有 Locate 流程 ---
+    const handleSearch = useCallback((params, cb) => {
+        request('search', params, (data) => cb && cb(data))
+    }, [request])
+
     // --- Locate 流程：展开父链 + 选中目标 ---
     const [locating, setLocating] = useState(false)
     const locateAndSelect = useCallback((locateParams, onDone) => {
@@ -254,6 +261,25 @@ export default function Hierarchy({ clients, selectedClient, pendingLocate, onPe
             fetchChain()
         })
     }, [request, expanded, childrenMap, loadDetail])
+
+    const locateSearchHit = useCallback((hit) => {
+        const compIndex = hit?.compIndex
+        const params = { instanceId: hit.goInstanceId }
+        if (compIndex != null) params.compIndex = compIndex
+        const run = () => locateAndSelect(params, (success) => {
+            if (success && compIndex != null) flashHighlight(compIndex)
+        })
+        if (tree) {
+            run()
+            return
+        }
+        setLoadingTree(true)
+        request('scene_roots', {}, (data) => {
+            setLoadingTree(false)
+            if (!data?.error) setTree(data || { scenes: [], dontDestroy: [] })
+            run()
+        })
+    }, [tree, request, locateAndSelect, flashHighlight])
 
     // --- 接收 pendingLocate（来自 LuaUiInspector 的"Locate in Hierarchy"） ---
     useEffect(() => {
@@ -318,6 +344,10 @@ export default function Hierarchy({ clients, selectedClient, pendingLocate, onPe
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${wsConnected ? 'bg-[var(--sage)]' : 'bg-[var(--terracotta)]'}`} />
                         <span className="text-sm font-semibold text-[var(--coffee-deep)]">Hierarchy</span>
                         <div className="ml-auto flex items-center gap-0.5 text-[var(--coffee-muted)]" title={`Inspector 自动刷新间隔 ${refreshInterval}s（设 0 关闭）`}>
+                            <button onClick={() => setSearchOpen(true)} disabled={!selectedClient}
+                                className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--caramel)] disabled:opacity-30 disabled:pointer-events-none transition-colors mr-1" title="全场景高级搜索 (GO / Component / 字段 / 文本)">
+                                <Search size={13} />
+                            </button>
                             <button onClick={loadTree} disabled={!selectedClient || loadingTree}
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新整树">
                                 <RotateCw size={13} className={loadingTree ? 'animate-spin' : ''} />
@@ -430,6 +460,14 @@ export default function Hierarchy({ clients, selectedClient, pendingLocate, onPe
                     </div>
                 </div>
             )}
+
+            <HierarchySearchModal
+                open={searchOpen}
+                onClose={() => setSearchOpen(false)}
+                scenes={tree?.scenes || []}
+                onSearch={handleSearch}
+                onLocateHit={locateSearchHit}
+            />
         </div>
     )
 }

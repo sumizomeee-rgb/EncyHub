@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { ChevronRight, ChevronDown, Crosshair, Loader2 } from 'lucide-react'
 
-// 复用：Hierarchy / 旧 CsComponentMonitor / 未来其它反射面板共用的属性单行组件
+// 复用：Hierarchy / 未来其它反射面板共用的属性单行组件
 // 接收 prop 对象：{ name, value, valueType, typeName, editable, count?, collectionKind? }
 // onSet(value): 触发后端写值
 // onLoadCollection(propName, offset, limit, cb): 懒加载集合元素 (仅 valueType='collection' 时)

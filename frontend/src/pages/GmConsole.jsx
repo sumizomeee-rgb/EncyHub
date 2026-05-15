@@ -25,7 +25,7 @@ const TAB_META = {
   custom_gm:     { label: '自定义',    icon: Layers,   gridSlider: true },
   lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
   timeline:      { label: 'Timeline',  icon: Clock },
-  cs_monitor:    { label: 'Hierarchy', icon: HierarchyIcon },
+  hierarchy:     { label: 'Hierarchy', icon: HierarchyIcon },
   animator:      { label: 'Animator',  icon: Film },
   subpkg_monitor:{ label: '分包监控',  icon: Package },
   player_prefs:  { label: 'PlayerPrefs', icon: Database },
@@ -33,7 +33,7 @@ const TAB_META = {
   proto:         { label: 'Proto',    icon: Zap },
   table_monitor: { label: 'Table',    icon: Table2 },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'cs_monitor', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor', 'proto', 'table_monitor']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'hierarchy', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor', 'proto', 'table_monitor']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -42,7 +42,10 @@ function loadTabOrder() {
     if (!Array.isArray(saved)) return DEFAULT_TAB_ORDER
     // merge：保留已知顺序，新 tab 追加，已删除的过滤
     const known = new Set(Object.keys(TAB_META))
-    const order = saved.filter(id => known.has(id))
+    const seen = new Set()
+    const order = saved
+      .map(id => id === 'cs_monitor' ? 'hierarchy' : id)
+      .filter(id => known.has(id) && !seen.has(id) && seen.add(id))
     for (const id of DEFAULT_TAB_ORDER) {
       if (!order.includes(id)) order.push(id)
     }
@@ -1215,11 +1218,11 @@ end`
                     onBindConsole={(uiName) => setLuaUiContext(uiName)}
                     onPinToMonitor={(locateData) => {
                       setPendingLocate(locateData)
-                      setActiveTab('cs_monitor')
+                      setActiveTab('hierarchy')
                     }}
                     onLocateInHierarchy={(instanceId) => {
                       setPendingLocate({ instanceId })
-                      setActiveTab('cs_monitor')
+                      setActiveTab('hierarchy')
                     }}
                     active={activeTab === 'lua_inspector'}
                   />
@@ -1234,13 +1237,13 @@ end`
                   />
                 </div>
 
-                <div style={{ display: activeTab === 'cs_monitor' ? 'contents' : 'none' }}>
+                <div style={{ display: activeTab === 'hierarchy' ? 'contents' : 'none' }}>
                   <Hierarchy
                     clients={clients}
                     selectedClient={selectedClient}
                     pendingLocate={pendingLocate}
                     onPendingLocateConsumed={() => setPendingLocate(null)}
-                    active={activeTab === 'cs_monitor'}
+                    active={activeTab === 'hierarchy'}
                   />
                 </div>
 

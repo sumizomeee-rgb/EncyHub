@@ -75,7 +75,8 @@ class ServerMgr:
         self.on_animator_removed = None     # Callback for ANIM_REMOVED
         self.on_inspector_data = None       # Callback for UI_INSPECTOR_RESP
         self.on_timeline_data = None        # Callback for TIMELINE_RESP
-        self.on_cs_monitor_data = None      # Callback for CS_MONITOR_RESP
+        self.on_hierarchy_data = None       # Callback for HIERARCHY_RESP
+        self.on_cs_monitor_data = None      # Legacy callback for CS_MONITOR_RESP
         self.on_subpkg_monitor_data = None  # Callback for SUBPKG_MONITOR_RESP
         self.on_player_prefs_data = None    # Callback for PLAYER_PREFS_RESP
         self.on_av_monitor_data = None      # Callback for AV_MONITOR_RESP
@@ -312,8 +313,10 @@ class ServerMgr:
         elif t == "TIMELINE_RESP":
             if self.on_timeline_data:
                 self.on_timeline_data(cid, pkt)
-        elif t == "CS_MONITOR_RESP":
-            if self.on_cs_monitor_data:
+        elif t == "HIERARCHY_RESP" or t == "CS_MONITOR_RESP":
+            if self.on_hierarchy_data:
+                self.on_hierarchy_data(cid, pkt)
+            elif self.on_cs_monitor_data:
                 self.on_cs_monitor_data(cid, pkt)
         elif t == "SUBPKG_MONITOR_RESP":
             action = pkt.get("action", "?")
@@ -625,19 +628,23 @@ class ServerMgr:
         except Exception as e:
             self._add_log("error", f"Send UI_INSPECTOR failed: {e}", client_id)
 
-    async def send_cs_monitor_request(self, client_id: str, action: str, params: dict):
-        """发送 CS Monitor 命令到客户端"""
+    async def send_hierarchy_request(self, client_id: str, action: str, params: dict):
+        """发送 Hierarchy 命令到客户端"""
         c = self.clients.get(client_id)
         if not c:
             return
-        pkt = {"type": "CS_MONITOR", "action": action}
+        pkt = {"type": "HIERARCHY", "action": action}
         pkt.update(params)
         msg = json.dumps(pkt) + "\n"
         try:
             c.writer.write(msg.encode())
             await c.writer.drain()
         except Exception as e:
-            self._add_log("error", f"Send CS_MONITOR failed: {e}", client_id)
+            self._add_log("error", f"Send HIERARCHY failed: {e}", client_id)
+
+    async def send_cs_monitor_request(self, client_id: str, action: str, params: dict):
+        """兼容旧调用：转发到 Hierarchy 通道"""
+        await self.send_hierarchy_request(client_id, action, params)
 
     async def send_timeline_request(self, client_id: str, action: str, params: dict):
         """发送 Timeline 命令到客户端"""

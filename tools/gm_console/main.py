@@ -134,14 +134,14 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_timeline_data = on_timeline_data
 
-    def on_cs_monitor_data(client_id, pkt):
-        asyncio.create_task(broadcast_cs_monitor_event({
+    def on_hierarchy_data(client_id, pkt):
+        asyncio.create_task(broadcast_hierarchy_event({
             "type": pkt.get("action", "unknown"),
             "client_id": client_id,
             "data": pkt.get("data", {})
         }))
 
-    server_mgr.on_cs_monitor_data = on_cs_monitor_data
+    server_mgr.on_hierarchy_data = on_hierarchy_data
 
     def on_subpkg_monitor_data(client_id, pkt):
         asyncio.create_task(broadcast_subpkg_monitor_event({
@@ -485,33 +485,33 @@ async def inspector_command(client_id: str, request: Request):
     await server_mgr.send_inspector_request(client_id, action, body)
     return {"status": "requested"}
 
-# === C# Component Monitor API ===
+# === Hierarchy API ===
 
-cs_monitor_ws_connections: list = []
+hierarchy_ws_connections: list = []
 
-async def broadcast_cs_monitor_event(data: dict):
+async def broadcast_hierarchy_event(data: dict):
     dead = []
-    for ws in cs_monitor_ws_connections:
+    for ws in hierarchy_ws_connections:
         try:
             await ws.send_json(data)
         except Exception:
             dead.append(ws)
     for ws in dead:
-        cs_monitor_ws_connections.remove(ws)
+        hierarchy_ws_connections.remove(ws)
 
-@app.post("/cs_monitor/{client_id}/command")
-async def cs_monitor_command(client_id: str, request: Request):
+@app.post("/hierarchy/{client_id}/command")
+async def hierarchy_command(client_id: str, request: Request):
     body = await request.json()
     action = body.pop("action", "")
     if not action:
         raise HTTPException(400, "Missing action")
-    await server_mgr.send_cs_monitor_request(client_id, action, body)
+    await server_mgr.send_hierarchy_request(client_id, action, body)
     return {"status": "requested"}
 
-@app.websocket("/ws/cs_monitor")
-async def websocket_cs_monitor(websocket: WebSocket):
+@app.websocket("/ws/hierarchy")
+async def websocket_hierarchy(websocket: WebSocket):
     await websocket.accept()
-    cs_monitor_ws_connections.append(websocket)
+    hierarchy_ws_connections.append(websocket)
     try:
         while True:
             data = await websocket.receive_text()
@@ -520,8 +520,17 @@ async def websocket_cs_monitor(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        if websocket in cs_monitor_ws_connections:
-            cs_monitor_ws_connections.remove(websocket)
+        if websocket in hierarchy_ws_connections:
+            hierarchy_ws_connections.remove(websocket)
+
+# 兼容旧 URL：前端已迁到 /hierarchy，保留这里避免外部书签或旧调试脚本瞬断。
+@app.post("/cs_monitor/{client_id}/command")
+async def legacy_cs_monitor_command(client_id: str, request: Request):
+    return await hierarchy_command(client_id, request)
+
+@app.websocket("/ws/cs_monitor")
+async def legacy_websocket_cs_monitor(websocket: WebSocket):
+    await websocket_hierarchy(websocket)
 
 
 # === Timeline Monitor API ===
