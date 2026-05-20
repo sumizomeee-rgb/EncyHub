@@ -323,6 +323,16 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: 0 0 0 3px var(--error-soft);
 }
 
+/* GM Console 自动选中客户端的发光提示（呼吸式 box-shadow，3s 周期） */
+.auto-select-glow {
+  animation: auto-select-glow 3s ease-in-out infinite;
+}
+
+@keyframes auto-select-glow {
+  0%, 100% { box-shadow: 0 0 4px rgba(199, 132, 71, 0.35); }
+  50%      { box-shadow: 0 0 14px rgba(199, 132, 71, 0.75); }
+}
+
 @keyframes pulse-success {
   0%, 100% { box-shadow: 0 0 0 3px var(--success-soft); }
   50% { box-shadow: 0 0 0 8px rgba(125, 155, 118, 0.05); }

@@ -59,8 +59,10 @@ function GmConsole() {
   const [listeners, setListeners] = useState([])
   const [clients, setClients] = useState([])
   const [selectedClient, setSelectedClient] = useState(null)
+  // 被系统自动选中的客户端 id；用于在格子上渲染发光边框，提示"这是系统帮你选的"
+  const [autoSelectedClientId, setAutoSelectedClientId] = useState(null)
   const [broadcastMode, setBroadcastMode] = useState(false)
-  const [gmTree, setGmTree] = useState([])
+  // gmTree / currentNodes 派生自 selectedClient.gm_tree + breadcrumbPath，无需独立 state
   const [logs, setLogs] = useState([])
   const [luaInput, setLuaInput] = useState('')
   const [loading, setLoading] = useState(true)
@@ -125,9 +127,39 @@ function GmConsole() {
   useEffect(() => { localStorage.setItem('gm_btnHeight', String(btnHeight)) }, [btnHeight])
   useEffect(() => { localStorage.setItem('gm_sidebarCollapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
 
-  // 面包屑导航
-  const [breadcrumb, setBreadcrumb] = useState([])
-  const [currentNodes, setCurrentNodes] = useState([])
+  // 面包屑导航：仅存路径（节点 name 数组），其余从 selectedClient.gm_tree 派生
+  const [breadcrumbPath, setBreadcrumbPath] = useState([])
+
+  // gm_tree 始终跟随 selectedClient（广播模式或未选中时为空）
+  const gmTree = useMemo(() => {
+    if (broadcastMode || !selectedClient) return []
+    return Array.isArray(selectedClient.gm_tree) ? selectedClient.gm_tree : []
+  }, [selectedClient, broadcastMode])
+
+  // 沿 breadcrumbPath 在 gmTree 里走，返回 { nodes(经过的节点), currentNodes, validPath }
+  // 如果路径中某段在新 gmTree 中失效（例如刚刷新 GM 后子目录消失），在该处截断
+  const breadcrumbResolved = useMemo(() => {
+    let nodes = []
+    let validPath = []
+    let cursor = gmTree
+    for (const name of breadcrumbPath) {
+      const node = Array.isArray(cursor) ? cursor.find(n => n.name === name) : null
+      if (!node || node.type !== 'SubBox' || !Array.isArray(node.children)) break
+      nodes.push(node)
+      validPath.push(name)
+      cursor = node.children
+    }
+    return { nodes, currentNodes: cursor || [], validPath }
+  }, [gmTree, breadcrumbPath])
+  const breadcrumb = breadcrumbResolved.nodes
+  const currentNodes = breadcrumbResolved.currentNodes
+
+  // 若解析出的 validPath 比当前 path 短（说明部分路径失效），自动回退到有效位置
+  useEffect(() => {
+    if (breadcrumbResolved.validPath.length !== breadcrumbPath.length) {
+      setBreadcrumbPath(breadcrumbResolved.validPath)
+    }
+  }, [breadcrumbResolved.validPath, breadcrumbPath])
 
   // GM UI 状态 (Toggle/Input values per client)
   const [gmUiStates, setGmUiStates] = useState({})
@@ -297,15 +329,19 @@ function GmConsole() {
   }, [logs])
 
   // 选择客户端时更新 GM 树
-  const handleSelectClient = useCallback((client) => {
+  // auto=true 表示由系统自动选中（首次/掉线重连），会点亮发光边框
+  // auto=false 表示用户主动点击；若点的就是当前发光那个，视为"确认"，消光
+  const handleSelectClient = useCallback((client, { auto = false } = {}) => {
     try {
       setBroadcastMode(false)
       setSelectedClient(client)
-      const tree = Array.isArray(client.gm_tree) ? client.gm_tree : []
-      setGmTree(tree)
-      setCurrentNodes(tree)
-      setBreadcrumb([])
+      setBreadcrumbPath([])
       setSearchFilter('')
+      if (auto) {
+        setAutoSelectedClientId(client.id)
+      } else {
+        setAutoSelectedClientId(prev => (prev === client.id ? null : prev))
+      }
     } catch (err) {
       console.error('选择客户端失败:', err)
       toast.error('选择客户端时出错')
@@ -316,29 +352,33 @@ function GmConsole() {
   const handleSelectBroadcast = useCallback(() => {
     setBroadcastMode(true)
     setSelectedClient(null)
-    // 广播模式下不显示特定设备的 GM 树，因为不同设备的 GM 可能不同
-    setGmTree([])
-    setCurrentNodes([])
-    setBreadcrumb([])
+    setAutoSelectedClientId(null) // 切走即消光（用户意图为主）
+    // 广播模式下 gmTree 派生为空（不显示特定设备的 GM 树）
+    setBreadcrumbPath([])
     setSearchFilter('')
-  }, [clients])
+  }, [])
 
-  // 面包屑导航 - 进入子目录
-  const navigateToNode = useCallback((node, index) => {
+  // 没有选中任何客户端且非广播模式时，若列表里有客户端就自动选第1个
+  // 痛点：唯一客户端掉线 → 重连后用户不必再手动点一次
+  useEffect(() => {
+    if (!broadcastMode && !selectedClient && clients.length > 0) {
+      handleSelectClient(clients[0], { auto: true })
+    }
+  }, [clients, selectedClient, broadcastMode, handleSelectClient])
+
+  // 面包屑导航 - 进入子目录（基于当前层位置追加一段）
+  const navigateToNode = useCallback((node) => {
     if (node.type === 'SubBox' && Array.isArray(node.children)) {
-      const newBreadcrumb = [...breadcrumb.slice(0, index !== undefined ? index + 1 : breadcrumb.length), node]
-      setBreadcrumb(index !== undefined ? newBreadcrumb.slice(0, index + 1) : [...breadcrumb, node])
-      setCurrentNodes(node.children || [])
+      setBreadcrumbPath(prev => [...prev, node.name])
       setSearchFilter('')
     }
-  }, [breadcrumb])
+  }, [])
 
   // 面包屑 - 回到根
   const navigateToRoot = useCallback(() => {
-    setBreadcrumb([])
-    setCurrentNodes(gmTree)
+    setBreadcrumbPath([])
     setSearchFilter('')
-  }, [gmTree])
+  }, [])
 
   // 面包屑 - 回到某一级
   const navigateToBreadcrumb = useCallback((index) => {
@@ -346,11 +386,9 @@ function GmConsole() {
       navigateToRoot()
       return
     }
-    const node = breadcrumb[index]
-    setBreadcrumb(breadcrumb.slice(0, index + 1))
-    setCurrentNodes(node.children || [])
+    setBreadcrumbPath(prev => prev.slice(0, index + 1))
     setSearchFilter('')
-  }, [breadcrumb, navigateToRoot])
+  }, [navigateToRoot])
 
   // 添加监听端口
   const handleAddListener = async () => {
@@ -423,6 +461,7 @@ end`
       const url = broadcastMode
         ? '/api/gm_console/broadcast'
         : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
+      if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
       const logType = luaUiContext ? 'cmd' : (broadcastMode ? 'broadcast' : 'cmd')
       const logText = luaUiContext ? `[self=${luaUiContext}] ${luaInput}` : (broadcastMode ? `[广播] ${luaInput}` : `> ${luaInput}`)
       setLogs(prev => [...prev, { type: logType, text: logText, local: true }])
@@ -482,6 +521,7 @@ end`
     const url = broadcastMode
       ? '/api/gm_console/broadcast-gm'
       : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec-gm`
+    if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
 
     fetch(url, {
       method: 'POST',
@@ -524,6 +564,7 @@ end`
     const url = broadcastMode
       ? '/api/gm_console/broadcast'
       : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
+    if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
 
     fetch(url, {
       method: 'POST',
@@ -708,6 +749,10 @@ end`
                           selectedClient?.id === client.id && !broadcastMode
                             ? 'bg-[var(--caramel-light)]/20'
                             : 'hover:bg-[var(--cream-warm)]'
+                        } ${
+                          autoSelectedClientId === client.id
+                            ? 'auto-select-glow'
+                            : ''
                         }`}
                         onClick={() => handleSelectClient(client)}
                         title={`${client.device || 'Unknown'}\n${client.platform || ''} · ${client.ip || ''}:${client.port || ''}`}
@@ -803,6 +848,10 @@ end`
                           selectedClient?.id === client.id && !broadcastMode
                             ? 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-l-[3px] border-[var(--caramel)]'
                             : 'bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)]'
+                        } ${
+                          autoSelectedClientId === client.id
+                            ? 'auto-select-glow'
+                            : ''
                         }`}
                         onClick={() => handleSelectClient(client)}
                       >
@@ -915,6 +964,7 @@ end`
                             body: JSON.stringify({ cmd }),
                           })
                         } else if (selectedClient) {
+                          setAutoSelectedClientId(null) // 对当前客户端发命令，消光
                           await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
