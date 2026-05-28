@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import {
     Search, ChevronDown, ChevronRight, X, Loader2, Send, Star, Trash2,
     Upload, Check, FileText, Bookmark, AlertCircle, Plus, FolderOpen, Copy, ClipboardPaste,
@@ -17,7 +17,7 @@ function savePresets(presets) {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function ProtoRequester({ clients, selectedClient, active, haruRootInfo }) {
+function ProtoRequester({ clients, selectedClient, active, haruRootInfo }) {
     const [protocols, setProtocols] = useState([])
     const [searchQuery, setSearchQuery] = useState('')
     const [showDropdown, setShowDropdown] = useState(false)
@@ -2193,3 +2193,5 @@ function formatResponse(data) {
         return String(data)
     }
 }
+
+export default memo(ProtoRequester)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { Search, RotateCw, Star, Trash2, Clipboard, Plus, X, Loader2, Check } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 
@@ -28,7 +28,7 @@ function addRecent(key) {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function PlayerPrefsViewer({ clients, selectedClient, active }) {
+function PlayerPrefsViewer({ clients, selectedClient, active }) {
     const [entries, setEntries] = useState({})        // key → {key, value, type}
     const [search, setSearch] = useState('')
     const [favorites, setFavorites] = useState(loadFavorites)
@@ -438,3 +438,5 @@ export default function PlayerPrefsViewer({ clients, selectedClient, active }) {
         </div>
     )
 }
+
+export default memo(PlayerPrefsViewer)

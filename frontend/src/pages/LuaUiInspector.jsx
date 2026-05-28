@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { Search, RotateCw, ChevronRight, ChevronDown, Undo2, Play, Pause, Eye, EyeOff, PlayCircle, Loader2, Trash2, Pencil } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 import SearchModal from '../components/SearchModal'
@@ -118,7 +118,7 @@ const TYPE_COLORS = {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole, onPinToMonitor, onLocateInHierarchy, active }) {
+function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, onBindConsole, onPinToMonitor, onLocateInHierarchy, active }) {
     // --- 左栏宽度（可拖拽） ---
     const [leftWidth, setLeftWidth] = useState(208)
     const isDragging = useRef(false)
@@ -1275,3 +1275,5 @@ function CompPropRow({ prop, onSet }) {
         </div>
     )
 }
+
+export default memo(LuaUiInspector)

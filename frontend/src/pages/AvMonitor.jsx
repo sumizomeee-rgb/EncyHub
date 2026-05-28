@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import {
   Play, Pause, Square, RotateCw, ChevronDown, ChevronRight,
   Copy, Check, Loader2, Film, Music, Lock, VolumeX
@@ -893,7 +893,7 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
 // ============================================================
 // AvMonitor (main export)
 // ============================================================
-export default function AvMonitor({ clients, selectedClient, active }) {
+function AvMonitor({ clients, selectedClient, active }) {
   const [subTab, setSubTab] = useState('audio')
   const [wsConnected, setWsConnected] = useState(false)
   const [refreshInterval, setRefreshInterval] = useState(2)
@@ -1188,3 +1188,5 @@ export default function AvMonitor({ clients, selectedClient, active }) {
     </div>
   )
 }
+
+export default memo(AvMonitor)

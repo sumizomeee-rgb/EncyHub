@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { Activity, Trash2, Play, ChevronRight, RotateCw, Loader2 } from 'lucide-react'
 
-export default function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
+function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
   const [animators, setAnimators] = useState([])
   const [selectedAnimator, setSelectedAnimator] = useState(null)
   const [snapshot, setSnapshot] = useState(null)
@@ -345,3 +345,5 @@ function StateHistoryPanel({ history, onClear }) {
     </div>
   )
 }
+
+export default memo(AnimatorViewer)

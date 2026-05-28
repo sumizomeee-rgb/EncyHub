@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { Search, RotateCw, X, ChevronDown, ChevronRight, Play, Pause, Square, SkipBack, SkipForward, Volume2, VolumeX, Loader2 } from 'lucide-react'
 
 // ============================================================================
@@ -28,7 +28,7 @@ function formatTime(t) {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
+function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
     const [directors, setDirectors] = useState([])
     const [monitored, setMonitored] = useState(new Set())
     const [snapshots, setSnapshots] = useState({})
@@ -594,3 +594,5 @@ function EventPanel({ events, onInvoke, onJump }) {
         </div>
     )
 }
+
+export default memo(TimelineMonitor)

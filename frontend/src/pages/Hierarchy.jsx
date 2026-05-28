@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { RotateCw, ChevronRight, ChevronDown, Loader2, Search, Clipboard, Crosshair } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 import PropRow from '../components/PropRow'
@@ -61,7 +61,7 @@ function useHierarchyWs(selectedClient) {
 // ============================================================================
 // 主组件
 // ============================================================================
-export default function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateConsumed, active }) {
+function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateConsumed, active }) {
     const { request, wsConnected } = useHierarchyWs(selectedClient)
 
     // --- 拖拽分栏 ---
@@ -720,3 +720,5 @@ function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResu
         </div>
     )
 }
+
+export default memo(Hierarchy)

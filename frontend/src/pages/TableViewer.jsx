@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment, memo } from 'react'
 import {
   Search, RefreshCw, Loader2, Table2, ChevronLeft, ChevronRight, ChevronDown,
   Star, Eye, ArrowUpDown, ArrowUp, ArrowDown, X
@@ -74,7 +74,7 @@ function useLocalStorage(key, def) {
   return [val, set]
 }
 
-export default function TableViewer({ clients, selectedClient, broadcastMode, active }) {
+function TableViewer({ clients, selectedClient, broadcastMode, active }) {
   // --- state ---
   const [tableList, setTableList] = useState([])
   const [stats, setStats] = useState(null)
@@ -884,3 +884,5 @@ export default function TableViewer({ clients, selectedClient, broadcastMode, ac
     </div>
   )
 }
+
+export default memo(TableViewer)

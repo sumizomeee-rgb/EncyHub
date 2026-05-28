@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import {
   Search, RotateCw, Package, PanelRight, Columns3,
   ChevronDown, ChevronRight, ExternalLink, Filter, X, Copy
@@ -163,7 +163,7 @@ function SharedBadge({ count, type, ids, onJump }) {
 // Main Component
 // ============================================================================
 
-export default function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
+function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   // --- Data state ---
   const [structure, setStructure] = useState(null)
   const [status, setStatus] = useState(null)
@@ -892,3 +892,5 @@ export default function SubPackageMonitor({ clients, selectedClient, broadcastMo
     </div>
   )
 }
+
+export default memo(SubPackageMonitor)

@@ -112,6 +112,19 @@ function GmConsole() {
 
   useEffect(() => { refreshHaruRootInfo() }, [refreshHaruRootInfo])
 
+  // 稳定引用的子组件回调：和 React.memo 配合，避免在自定义 GM 弹窗里敲键盘时
+  // LuaUiInspector / Hierarchy 因每次新建箭头函数 prop 而被迫重渲染。
+  const handleBindLuaUiConsole = useCallback((uiName) => setLuaUiContext(uiName), [])
+  const handlePinLuaUiToMonitor = useCallback((locateData) => {
+    setPendingLocate(locateData)
+    setActiveTab('hierarchy')
+  }, [])
+  const handleLocateInHierarchy = useCallback((instanceId) => {
+    setPendingLocate({ instanceId })
+    setActiveTab('hierarchy')
+  }, [])
+  const handlePendingLocateConsumed = useCallback(() => setPendingLocate(null), [])
+
   // tab bar 鼠标滚轮横向滚动（必须用原生非 passive 监听器，React onWheel 无法 preventDefault）
   // 依赖 loading：tab bar DOM 在 loading=false 后才渲染，需等它出现再绑
   useEffect(() => {
@@ -166,9 +179,9 @@ function GmConsole() {
 
   // 自定义 GM
   const [customGmList, setCustomGmList] = useState([])
-  const [showCustomGmModal, setShowCustomGmModal] = useState(false)
-  const [editingCustomGm, setEditingCustomGm] = useState(null)
-  const [customGmForm, setCustomGmForm] = useState({ name: '', cmd: '' })
+  // 弹窗规格：null = 关闭；{ editingIndex, initial } = 打开。
+  // 表单内部 state 收敛在 <CustomGmModal> 里，避免敲键盘触发顶层 GmConsole 重渲染。
+  const [customGmModal, setCustomGmModal] = useState(null)
 
   // 添加监听弹窗
   const [showAddListener, setShowAddListener] = useState(false)
@@ -581,37 +594,7 @@ end`
     })
   }
 
-  // 自定义 GM CRUD
-  const handleSaveCustomGm = async () => {
-    if (!customGmForm.name.trim() || !customGmForm.cmd.trim()) {
-      toast.warning('请填写名称和命令')
-      return
-    }
-    try {
-      const url = editingCustomGm !== null
-        ? `/api/gm_console/custom-gm/${editingCustomGm}`
-        : '/api/gm_console/custom-gm'
-      const method = editingCustomGm !== null ? 'PUT' : 'POST'
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(customGmForm),
-      })
-      if (res.ok) {
-        setShowCustomGmModal(false)
-        setEditingCustomGm(null)
-        setCustomGmForm({ name: '', cmd: '' })
-        fetchCustomGm()
-        toast.success(editingCustomGm !== null ? '已更新' : '已添加')
-      } else {
-        const data = await res.json()
-        toast.error(data.detail || '保存失败')
-      }
-    } catch (err) {
-      toast.error('保存失败: ' + err.message)
-    }
-  }
-
+  // 自定义 GM CRUD：保存逻辑收敛到 <CustomGmModal> 内部。
   const handleDeleteCustomGm = async (index) => {
     try {
       const res = await fetch(`/api/gm_console/custom-gm/${index}`, { method: 'DELETE' })
@@ -1154,11 +1137,7 @@ end`
                       <span className="text-xs text-[var(--coffee-muted)]">{customGmList.length} 个命令</span>
                       <button
                         className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1"
-                        onClick={() => {
-                          setEditingCustomGm(null)
-                          setCustomGmForm({ name: '', cmd: '' })
-                          setShowCustomGmModal(true)
-                        }}
+                        onClick={() => setCustomGmModal({ editingIndex: null, initial: { name: '', cmd: '' } })}
                       >
                         <Plus size={14} />
                         新增
@@ -1171,8 +1150,12 @@ end`
                       </div>
                     ) : (
                       <div className="max-h-[calc(100vh-300px)] overflow-auto pr-1" style={gridStyle}>
-                        {customGmList.map((item, i) => (
-                          <div
+                        {customGmList.map((item, i) => {
+                          const cmdTitle = item.cmd && item.cmd.length > 500
+                            ? `${item.cmd.slice(0, 500)}...`
+                            : item.cmd
+                          return (
+                            <div
                             key={i}
                             draggable
                             onDragStart={e => {
@@ -1208,7 +1191,7 @@ end`
                             className="gm-btn-core group relative cursor-grab active:cursor-grabbing"
                             style={{ height: btnHeight }}
                             onClick={() => handleExecCustomGm(item.cmd)}
-                            title={`${item.name}\n${item.cmd}\n（按住可拖动排序）`}
+                            title={`${item.name}\n${cmdTitle}\n（按住可拖动排序）`}
                           >
                             {dropGmTarget?.idx === i && (
                               <span className={`absolute top-1 bottom-1 w-0.5 rounded-full bg-[var(--caramel)] z-10 ${dropGmTarget.side === 'left' ? '-left-1' : '-right-1'}`} />
@@ -1225,9 +1208,7 @@ end`
                                 className="p-1 rounded-md text-[var(--coffee-muted)]/50 hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-all"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  setEditingCustomGm(i)
-                                  setCustomGmForm({ name: item.name, cmd: item.cmd })
-                                  setShowCustomGmModal(true)
+                                  setCustomGmModal({ editingIndex: i, initial: { name: item.name, cmd: item.cmd } })
                                 }}
                               >
                                 <Edit size={11} />
@@ -1244,7 +1225,8 @@ end`
                               </button>
                             </div>
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
                   </div>
@@ -1265,15 +1247,9 @@ end`
                     selectedClient={selectedClient}
                     broadcastMode={broadcastMode}
                     luaUiContext={luaUiContext}
-                    onBindConsole={(uiName) => setLuaUiContext(uiName)}
-                    onPinToMonitor={(locateData) => {
-                      setPendingLocate(locateData)
-                      setActiveTab('hierarchy')
-                    }}
-                    onLocateInHierarchy={(instanceId) => {
-                      setPendingLocate({ instanceId })
-                      setActiveTab('hierarchy')
-                    }}
+                    onBindConsole={handleBindLuaUiConsole}
+                    onPinToMonitor={handlePinLuaUiToMonitor}
+                    onLocateInHierarchy={handleLocateInHierarchy}
                     active={activeTab === 'lua_inspector'}
                   />
                 </div>
@@ -1292,7 +1268,7 @@ end`
                     clients={clients}
                     selectedClient={selectedClient}
                     pendingLocate={pendingLocate}
-                    onPendingLocateConsumed={() => setPendingLocate(null)}
+                    onPendingLocateConsumed={handlePendingLocateConsumed}
                     active={activeTab === 'hierarchy'}
                   />
                 </div>
@@ -1470,55 +1446,11 @@ end`
       )}
 
       {/* Custom GM Modal */}
-      {showCustomGmModal && (
-        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowCustomGmModal(false) }}>
-          <div
-            className="glass-card p-6 w-[500px]"
-            style={{ animation: 'slideUp 0.3s ease' }}
-          >
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[var(--caramel)] to-[var(--caramel-dark)] flex items-center justify-center">
-                  <Layers size={20} className="text-white" />
-                </div>
-                <h3 className="font-display text-lg font-semibold">
-                  {editingCustomGm !== null ? '编辑命令' : '新增命令'}
-                </h3>
-              </div>
-              <button
-                onClick={() => setShowCustomGmModal(false)}
-                className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
-              >
-                <X size={20} />
-              </button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm text-[var(--coffee-light)] mb-2">名称</label>
-                <input
-                  type="text"
-                  value={customGmForm.name}
-                  onChange={e => setCustomGmForm(prev => ({ ...prev, name: e.target.value }))}
-                  placeholder="命令名称"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-[var(--coffee-light)] mb-2">Lua 命令</label>
-                <textarea
-                  className="w-full h-40 bg-[var(--coffee-deep)] text-[var(--sage)] rounded-xl p-3 text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[var(--caramel)] placeholder-[var(--coffee-muted)]"
-                  value={customGmForm.cmd}
-                  onChange={e => setCustomGmForm(prev => ({ ...prev, cmd: e.target.value }))}
-                  placeholder="输入 Lua 代码..."
-                />
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button className="btn-secondary flex-1" onClick={() => setShowCustomGmModal(false)}>取消</button>
-                <button className="btn-primary flex-1" onClick={handleSaveCustomGm}>保存</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <CustomGmModal
+        spec={customGmModal}
+        onClose={() => setCustomGmModal(null)}
+        onSaved={() => { setCustomGmModal(null); fetchCustomGm() }}
+      />
     </div>
   )
 }
@@ -1616,6 +1548,243 @@ function HaruRootConfig({ haruRootInfo, onConfigChange, onRefresh }) {
       {errorMsg && (
         <div className="mt-1 text-[10px] text-[var(--terracotta)]">{errorMsg}</div>
       )}
+    </div>
+  )
+}
+
+// ============================================================================
+// 自定义 GM 弹窗
+// 拆出独立组件的目的：把表单 state 限制在 modal 内，让敲键盘不再触发顶层 GmConsole
+// 以及那 9 个 display:none 常驻挂载的兄弟 tab 子组件全树重渲染。
+// ============================================================================
+function CustomGmModal({ spec, onClose, onSaved }) {
+  const toast = useToast()
+  const open = spec !== null
+  const editingIndex = spec?.editingIndex ?? null
+  const initialCmd = spec?.initial?.cmd || ''
+  const [name, setName] = useState(() => spec?.initial?.name || '')
+  const overlayRef = useRef(null)
+  const cmdRef = useRef(null)
+  const [saving, setSaving] = useState(false)
+
+  // 每次打开/切换条目时，把表单重置为传入的 initial。关闭时不重置（避免动画期间内容闪烁）。
+  useEffect(() => {
+    if (!open) return
+    setName(spec.initial?.name || '')
+    if (cmdRef.current) {
+      cmdRef.current.value = spec.initial?.cmd || ''
+    }
+  }, [open, spec])
+
+  useEffect(() => {
+    if (!open) return
+    const overlay = overlayRef.current
+    if (!overlay) return
+
+    const handleWheel = (e) => {
+      const textarea = cmdRef.current
+      if (textarea && textarea.contains(e.target)) {
+        const atTop = textarea.scrollTop <= 0
+        const atBottom = textarea.scrollTop + textarea.clientHeight >= textarea.scrollHeight - 1
+        if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
+          e.preventDefault()
+        }
+        e.stopPropagation()
+        return
+      }
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
+    const handleTouchMove = (e) => {
+      const textarea = cmdRef.current
+      if (textarea && textarea.contains(e.target)) return
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
+    overlay.addEventListener('wheel', handleWheel, { passive: false })
+    overlay.addEventListener('touchmove', handleTouchMove, { passive: false })
+    return () => {
+      overlay.removeEventListener('wheel', handleWheel)
+      overlay.removeEventListener('touchmove', handleTouchMove)
+    }
+  }, [open])
+
+  if (!open) return null
+
+  const handleSave = async () => {
+    const cmd = cmdRef.current?.value || ''
+    if (!name.trim() || !cmd.trim()) {
+      toast.warning('请填写名称和命令')
+      return
+    }
+    setSaving(true)
+    try {
+      const url = editingIndex !== null
+        ? `/api/gm_console/custom-gm/${editingIndex}`
+        : '/api/gm_console/custom-gm'
+      const method = editingIndex !== null ? 'PUT' : 'POST'
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, cmd }),
+      })
+      if (res.ok) {
+        toast.success(editingIndex !== null ? '已更新' : '已添加')
+        onSaved?.()
+      } else {
+        const data = await res.json()
+        toast.error(data.detail || '保存失败')
+      }
+    } catch (err) {
+      toast.error('保存失败: ' + err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      ref={overlayRef}
+      className="modal-overlay"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'rgba(74, 64, 58, 0.38)',
+        backdropFilter: 'none',
+        WebkitBackdropFilter: 'none',
+        overscrollBehavior: 'contain',
+      }}
+      onWheel={(e) => {
+        if (e.target === e.currentTarget) e.preventDefault()
+      }}
+      onTouchMove={(e) => {
+        if (e.target === e.currentTarget) e.preventDefault()
+      }}
+    >
+      <div
+        className="absolute inset-0"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'rgba(74, 64, 58, 0.24)',
+          pointerEvents: 'auto',
+        }}
+        onWheel={(e) => e.preventDefault()}
+        onTouchMove={(e) => e.preventDefault()}
+        onMouseDown={onClose}
+      />
+      <div
+        className="relative z-10 overflow-hidden p-6 w-[min(780px,92vw)]"
+        style={{
+          position: 'relative',
+          zIndex: 10,
+          overflow: 'hidden',
+          padding: 24,
+          width: 'min(780px, 92vw)',
+          maxHeight: 'calc(100vh - 48px)',
+          animation: 'slideUp 0.2s ease',
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--glass-border)',
+          boxShadow: 'var(--glass-shadow)',
+          background: 'rgba(255, 252, 247, 0.96)',
+          overscrollBehavior: 'contain',
+        }}
+        onWheel={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+      >
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            background: 'linear-gradient(135deg, rgba(255,255,255,0.72) 0%, rgba(255,248,238,0.42) 48%, rgba(245,237,227,0.7) 100%)',
+          }}
+        />
+        <div className="relative z-10" style={{ position: 'relative', zIndex: 10 }}>
+          <div className="flex items-center justify-between mb-5" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+            <div className="flex items-center gap-3" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div
+                className="w-10 h-10 rounded-lg bg-gradient-to-br from-[var(--caramel)] to-[var(--caramel-dark)] flex items-center justify-center"
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 10,
+                  background: 'linear-gradient(135deg, var(--caramel), var(--caramel-dark))',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Layers size={20} className="text-white" />
+              </div>
+              <h3 className="font-display text-lg font-semibold">
+                {editingIndex !== null ? '编辑命令' : '新增命令'}
+              </h3>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
+              style={{ width: 36, height: 36, padding: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <X size={20} />
+            </button>
+          </div>
+          <div className="space-y-4" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div>
+              <label className="block text-sm text-[var(--coffee-light)] mb-2" style={{ display: 'block', marginBottom: 8, color: 'var(--coffee-light)', fontSize: 14 }}>名称</label>
+              <input
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="命令名称"
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-[var(--coffee-light)] mb-2" style={{ display: 'block', marginBottom: 8, color: 'var(--coffee-light)', fontSize: 14 }}>Lua 命令</label>
+              <textarea
+                ref={cmdRef}
+                className="w-full h-80 bg-[var(--coffee-deep)] text-[var(--sage)] rounded-xl p-3 text-xs font-mono resize-none overflow-auto focus:outline-none focus:ring-2 focus:ring-[var(--caramel)] placeholder-[var(--coffee-muted)]"
+                style={{
+                  width: '100%',
+                  height: 320,
+                  minHeight: 320,
+                  boxSizing: 'border-box',
+                  background: 'var(--coffee-deep)',
+                  color: 'var(--sage)',
+                  borderRadius: 12,
+                  padding: 12,
+                  fontSize: 12,
+                  fontFamily: 'var(--font-mono)',
+                  lineHeight: 1.45,
+                  resize: 'none',
+                  overflow: 'auto',
+                  outline: 'none',
+                  overscrollBehavior: 'contain',
+                  transition: 'none',
+                }}
+                defaultValue={initialCmd}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                placeholder="输入 Lua 代码..."
+              />
+            </div>
+            <div className="flex gap-3 pt-2" style={{ display: 'flex', gap: 12, paddingTop: 8 }}>
+              <button className="btn-secondary flex-1" style={{ flex: 1 }} onClick={onClose} disabled={saving}>取消</button>
+              <button className="btn-primary flex-1" style={{ flex: 1 }} onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
