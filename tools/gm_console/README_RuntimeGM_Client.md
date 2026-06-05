@@ -1964,8 +1964,10 @@ local function StartRuntimeGM()
         TMP_InputField = "text",
         UILabel = "text",
     }
-    local HIERARCHY_SEARCH_MAX_OBJECTS = 5000
-    local HIERARCHY_SEARCH_MAX_MEMBERS = 12000
+    local HIERARCHY_SEARCH_DEFAULT_MAX_OBJECTS = 5000
+    local HIERARCHY_SEARCH_DEFAULT_MAX_MEMBERS = 12000
+    local HIERARCHY_SEARCH_HARD_MAX_OBJECTS = 20000
+    local HIERARCHY_SEARCH_HARD_MAX_MEMBERS = 60000
 
     local function hierSearchGlobMatch(pattern, text)
         pattern = tostring(pattern or "")
@@ -2090,6 +2092,173 @@ local function StartRuntimeGM()
         return roots
     end
 
+    -- 普通 Hierarchy 搜索：只按 GameObject 名称 / 路径搜，不解析高级语法，不扫 Component。
+    function LuaHierarchy.SearchGameObjects(packet)
+        local startTime = 0
+        pcall(function() startTime = CS.UnityEngine.Time.realtimeSinceStartup end)
+
+        local query = tostring(packet.query or "")
+        if query == "" then return { error = "查询为空" } end
+
+        local scope = packet.scope or "all"
+        local includeInactive = packet.includeInactive ~= false
+        local maxObjects = math.max(1, math.min(tonumber(packet.maxObjects) or HIERARCHY_SEARCH_HARD_MAX_OBJECTS, HIERARCHY_SEARCH_HARD_MAX_OBJECTS))
+        local qLower = string.lower(query)
+
+        local results = {}
+        local visited = {}
+        local objectCount = 0
+        local truncated = false
+        local stopObjects = false
+
+        local function containsQuery(text)
+            return string.lower(tostring(text or "")):find(qLower, 1, true) ~= nil
+        end
+
+        local function buildAncestorChain(go)
+            local chain = {}
+            local t = nil
+            pcall(function() t = go.transform end)
+            while t do
+                local g = t.gameObject
+                hierCacheGo(g)
+                chain[#chain + 1] = g:GetInstanceID()
+                t = t.parent
+            end
+            local ordered = {}
+            for i = #chain, 1, -1 do ordered[#ordered + 1] = chain[i] end
+            return ordered
+        end
+
+        local function pushGo(go, sceneName, goName, hPath, activeSelf, activeInHierarchy)
+            local goId = -1
+            pcall(function() goId = go:GetInstanceID() end)
+            results[#results + 1] = {
+                sceneName = sceneName or "",
+                goName = tostring(goName or ""),
+                hierarchyPath = tostring(hPath or ""),
+                goInstanceId = goId,
+                active = activeSelf,
+                activeInHierarchy = activeInHierarchy,
+                ancestorChain = buildAncestorChain(go),
+            }
+        end
+
+        local function scanGo(go, sceneName)
+            if stopObjects or not go then return end
+            local goId = -1
+            pcall(function() goId = go:GetInstanceID() end)
+            if visited[goId] then return end
+            visited[goId] = true
+
+            objectCount = objectCount + 1
+            if objectCount > maxObjects then
+                truncated = true
+                stopObjects = true
+                return
+            end
+
+            hierCacheGo(go)
+            local activeInHierarchy = true
+            local activeSelf = false
+            pcall(function() activeInHierarchy = go.activeInHierarchy end)
+            pcall(function() activeSelf = go.activeSelf end)
+            if not includeInactive and not activeInHierarchy then return end
+
+            local hPath = ""
+            local goName = ""
+            pcall(function() hPath = getHierarchyPath(go) end)
+            pcall(function() goName = go.name end)
+            hPath = tostring(hPath or "")
+            goName = tostring(goName or "")
+
+            if containsQuery(goName) or containsQuery(hPath) then
+                pushGo(go, sceneName, goName, hPath, activeSelf, activeInHierarchy)
+            end
+
+            local t
+            pcall(function() t = go.transform end)
+            if not t then return end
+            local childCount = 0
+            pcall(function() childCount = t.childCount end)
+            for i = 0, childCount - 1 do
+                if stopObjects then return end
+                pcall(function() scanGo(t:GetChild(i).gameObject, sceneName) end)
+            end
+        end
+
+        local SM = CS.UnityEngine.SceneManagement.SceneManager
+        local sceneCount = 0
+        pcall(function() sceneCount = SM.sceneCount end)
+        for i = 0, sceneCount - 1 do
+            if stopObjects then break end
+            pcall(function()
+                local s = SM.GetSceneAt(i)
+                if not s.isLoaded then return end
+                if scope ~= "all" and scope ~= tostring(s.name) then return end
+                local roots = hierGetSceneRootGameObjects(s)
+                for j = 1, #roots do
+                    if stopObjects then return end
+                    scanGo(roots[j], tostring(s.name))
+                end
+            end)
+        end
+        if (scope == "all" or scope == "DontDestroyOnLoad") and not stopObjects then
+            local ddolRoots = hierSearchDdolRootObjects()
+            for _, go in ipairs(ddolRoots) do
+                if stopObjects then break end
+                scanGo(go, "DontDestroyOnLoad")
+            end
+        end
+
+        local elapsedMs = 0
+        pcall(function()
+            elapsedMs = math.floor((CS.UnityEngine.Time.realtimeSinceStartup - startTime) * 1000)
+        end)
+        return {
+            query = query,
+            results = results,
+            truncated = truncated,
+            objectCount = objectCount,
+            elapsedMs = elapsedMs,
+            maxObjects = maxObjects,
+        }
+    end
+
+    function LuaHierarchy.SetGameObjectActive(packet)
+        local go = hierFindGo(packet.instanceId or packet.goInstanceId)
+        if not go then return { error = "GameObject not found" } end
+        local active = packet.active == true
+        local ok, err = pcall(function() go:SetActive(active) end)
+        if not ok then return { error = tostring(err) } end
+        return {
+            success = true,
+            instanceId = go:GetInstanceID(),
+            active = go.activeSelf,
+            activeInHierarchy = go.activeInHierarchy,
+        }
+    end
+
+    function LuaHierarchy.SetComponentEnabled(packet)
+        local go = hierFindGo(packet.instanceId or packet.goInstanceId)
+        if not go then return { error = "GameObject not found" } end
+        local compIndex = tonumber(packet.compIndex)
+        if compIndex == nil then return { error = "Missing compIndex" } end
+        local comps
+        pcall(function() comps = go:GetComponents(typeof(CS.UnityEngine.Component)) end)
+        if not comps or compIndex < 0 or compIndex >= comps.Length then
+            return { error = "Component not found: " .. tostring(compIndex) }
+        end
+        local comp = comps[compIndex]
+        if not comp then return { error = "Component missing: " .. tostring(compIndex) } end
+        local enabled = packet.enabled == true
+        local ok, err = pcall(function() comp.enabled = enabled end)
+        if not ok then return { error = tostring(err) } end
+        local actual = enabled
+        pcall(function() actual = comp.enabled end)
+        return { success = true, compIndex = compIndex, enabled = actual }
+    end
+
     function LuaHierarchy.Search(packet)
         local startTime = 0
         pcall(function() startTime = CS.UnityEngine.Time.realtimeSinceStartup end)
@@ -2101,8 +2270,9 @@ local function StartRuntimeGM()
         local includeInactive = packet.includeInactive ~= false
         local searchGoName = packet.searchGoName ~= false
         local searchMembers = packet.searchMembers ~= false
-        local maxObjects = math.min(tonumber(packet.maxObjects) or HIERARCHY_SEARCH_MAX_OBJECTS, HIERARCHY_SEARCH_MAX_OBJECTS)
-        local maxMembers = math.min(tonumber(packet.maxMembers) or HIERARCHY_SEARCH_MAX_MEMBERS, HIERARCHY_SEARCH_MAX_MEMBERS)
+        local maxObjects = math.max(1, math.min(tonumber(packet.maxObjects) or HIERARCHY_SEARCH_DEFAULT_MAX_OBJECTS, HIERARCHY_SEARCH_HARD_MAX_OBJECTS))
+        local maxMembers = math.max(1, math.min(tonumber(packet.maxMembers) or HIERARCHY_SEARCH_DEFAULT_MAX_MEMBERS, HIERARCHY_SEARCH_HARD_MAX_MEMBERS))
+        local maxHits = math.max(0, tonumber(packet.maxHits) or 0)
 
         local hits = {}
         local visited = {}
@@ -2112,8 +2282,10 @@ local function StartRuntimeGM()
         local truncated = false
         local stopObjects = false
         local memberLimitReached = false
+        local hitLimitReached = false
 
         local function pushHit(go, sceneName, compIndex, typeName, memberName, memberKind, valueDisplay, valueType, via)
+            if hitLimitReached then return end
             local goId = -1
             local goName = "?"
             local activeInHierarchy = false
@@ -2142,6 +2314,12 @@ local function StartRuntimeGM()
             if compIndex ~= nil and compIndex >= 0 then entry.compIndex = compIndex end
             if via then entry.via = via end
             hits[#hits + 1] = entry
+            if maxHits > 0 and #hits >= maxHits then
+                truncated = true
+                hitLimitReached = true
+                stopObjects = true
+                memberLimitReached = true
+            end
         end
 
         local function scanMember(go, sceneName, comp, compIndex, typeName, memberName, value, declaredTypeName, memberKind)
@@ -2168,6 +2346,7 @@ local function StartRuntimeGM()
         local function scanComponent(go, sceneName, comp, compIndex)
             if not comp then return end
             componentCount = componentCount + 1
+            if hitLimitReached then return end
             local typeName = "<unknown>"
             local fullTypeName = ""
             pcall(function() typeName = tostring(comp:GetType().Name) end)
@@ -2204,6 +2383,7 @@ local function StartRuntimeGM()
 
             if not searchMembers then return end
             if memberLimitReached then return end
+            if hitLimitReached then return end
 
             local props
             pcall(function() props = comp:GetType():GetProperties(20) end)
@@ -2291,6 +2471,7 @@ local function StartRuntimeGM()
             if comps then
                 for ci = 0, comps.Length - 1 do
                     if stopObjects then return end
+                    if hitLimitReached then return end
                     pcall(function() scanComponent(go, sceneName, comps[ci], ci) end)
                 end
             end
@@ -2302,6 +2483,7 @@ local function StartRuntimeGM()
             pcall(function() childCount = t.childCount end)
             for i = 0, childCount - 1 do
                 if stopObjects then return end
+                if hitLimitReached then return end
                 pcall(function() scanGo(t:GetChild(i).gameObject, sceneName) end)
             end
         end
@@ -2341,6 +2523,8 @@ local function StartRuntimeGM()
             objectCount = objectCount,
             componentCount = componentCount,
             elapsedMs = elapsedMs,
+            maxObjects = maxObjects,
+            maxMembers = maxMembers,
         }
     end
 
@@ -2365,6 +2549,12 @@ local function StartRuntimeGM()
             result = LuaHierarchy.Locate(packet)
         elseif action == "collection_items" then
             result = LuaHierarchy.GetCollectionItems(packet)
+        elseif action == "go_search" then
+            result = LuaHierarchy.SearchGameObjects(packet)
+        elseif action == "set_go_active" then
+            result = LuaHierarchy.SetGameObjectActive(packet)
+        elseif action == "set_component_enabled" then
+            result = LuaHierarchy.SetComponentEnabled(packet)
         elseif action == "search" then
             result = LuaHierarchy.Search(packet)
         else
@@ -2925,8 +3115,9 @@ local function StartRuntimeGM()
         TMP_InputField = "text",
         UILabel = "text",
     }
-    local SEARCH_MAX_FIELDS = 5000  -- 扫描总字段硬上限
-    local SEARCH_MAX_DEPTH = 30     -- 深度硬上限
+    local SEARCH_DEFAULT_MAX_FIELDS = 5000   -- 默认扫描字段上限
+    local SEARCH_HARD_MAX_FIELDS = 30000     -- 手动提高预算时的硬上限
+    local SEARCH_MAX_DEPTH = 30              -- 深度硬上限
 
     -- 解析 query → { mode, ... } 内部表示
     local function searchParseQuery(q)
@@ -3171,6 +3362,8 @@ local function StartRuntimeGM()
         local depth = math.min(tonumber(packet.depth) or 20, SEARCH_MAX_DEPTH)
         local probeText = packet.probeComponentText ~= false  -- 默认 true
         local scope = packet.scope or "all"
+        local maxFields = math.max(1, math.min(tonumber(packet.maxFields) or SEARCH_DEFAULT_MAX_FIELDS, SEARCH_HARD_MAX_FIELDS))
+        local maxHits = math.max(0, tonumber(packet.maxHits) or 0)
 
         -- 决定要遍历的 UI 列表
         local uiNames = {}
@@ -3198,7 +3391,7 @@ local function StartRuntimeGM()
             for k, v in pairs(node) do
                 if truncated then return end
                 totalScanned = totalScanned + 1
-                if totalScanned > SEARCH_MAX_FIELDS then
+                if totalScanned > maxFields then
                     truncated = true
                     return
                 end
@@ -3222,6 +3415,10 @@ local function StartRuntimeGM()
                         if hit.via then entry.via = hit.via end
                         if goId then entry.goInstanceId = goId; entry.goPath = goPath end
                         hits[#hits + 1] = entry
+                        if maxHits > 0 and #hits >= maxHits then
+                            truncated = true
+                            return
+                        end
                     end
 
                     -- 递归 table
@@ -3253,6 +3450,7 @@ local function StartRuntimeGM()
             totalScanned = totalScanned,
             elapsedMs = elapsedMs,
             uiCount = #uiNames,
+            maxFields = maxFields,
         }
     end
 
