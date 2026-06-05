@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Search, X, Loader2, Crosshair, Clipboard, AlertTriangle, CornerDownRight } from 'lucide-react'
-import { copyText } from '../utils/clipboard'
+import { Search, X, Loader2, Crosshair, AlertTriangle, CornerDownRight } from 'lucide-react'
+import CopyButton from './CopyButton'
 
 // 高级搜索弹窗（v2 风格统一版）：跨 UI / 跨节点 / C# 文本穿透 / 类型搜
 // 详见 doc/31_设计方案书_LuaUiInspector_AdvancedSearch.md
@@ -16,6 +16,12 @@ import { copyText } from '../utils/clipboard'
 const COL_WIDTHS_KEY = 'luaui_search_col_widths'
 const DEFAULT_COL_WIDTHS = { ui: 120, luaPath: 240, goPath: 280, hit: 280 }
 const MIN_COL_WIDTH = 60
+const RESULT_RENDER_BATCH = 1000
+const SCAN_BUDGETS = {
+    standard: { key: 'standard', label: '标准', maxFields: 5000 },
+    deep: { key: 'deep', label: '深度', maxFields: 15000 },
+    max: { key: 'max', label: '最大', maxFields: 30000 },
+}
 
 function loadColWidths() {
     try {
@@ -37,7 +43,7 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
     const [scope, setScope] = useState('all')
     const [depth, setDepth] = useState(20)
     const [probeText, setProbeText] = useState(true)
-    const [showAdvanced, setShowAdvanced] = useState(false)
+    const [scanBudget, setScanBudget] = useState('standard')
 
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState(null)
@@ -64,6 +70,7 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
     const doSearch = useCallback(() => {
         const q = query.trim()
         if (!q) { setError('请输入搜索内容'); return }
+        const budget = SCAN_BUDGETS[scanBudget] || SCAN_BUDGETS.standard
         setLoading(true)
         setError(null)
         setResult(null)
@@ -72,12 +79,13 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
             scope,
             depth: Math.min(Math.max(parseInt(depth) || 20, 1), 30),
             probeComponentText: probeText,
+            maxFields: budget.maxFields,
         }, (data) => {
             setLoading(false)
             if (!data || data.error) { setError(data?.error || '搜索失败'); return }
-            setResult(data)
+            setResult({ ...data, appliedBudget: budget })
         })
-    }, [query, scope, depth, probeText, onSearch])
+    }, [query, scope, depth, probeText, scanBudget, onSearch])
 
     useEffect(() => {
         const onMove = (e) => {
@@ -112,7 +120,7 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
     return createPortal((
         <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
             <div className="glass-card flex flex-col w-[min(1100px,92vw)]"
-                style={{ animation: 'slideUp 0.25s ease', maxHeight: '85vh' }}>
+                style={{ animation: 'slideUp 0.25s ease', height: 'min(760px, 85vh)', maxHeight: '85vh' }}>
 
                 {/* Header */}
                 <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--glass-border)] flex-shrink-0">
@@ -146,34 +154,38 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
                         <code className="px-1.5 py-0.5 bg-black/5 rounded text-[var(--coffee-deep)]">{`"hello"`}</code>
                         <code className="px-1.5 py-0.5 bg-black/5 rounded text-[var(--coffee-deep)]">*Count</code>
                         <code className="px-1.5 py-0.5 bg-black/5 rounded text-[var(--coffee-deep)]">t:XUiButton</code>
-                        <button onClick={() => setShowAdvanced(s => !s)}
-                            className="ml-auto text-[var(--coffee-deep)] hover:text-[var(--caramel)]">
-                            {showAdvanced ? '▼ 高级选项' : '▶ 高级选项'}
-                        </button>
                     </div>
-                    {showAdvanced && (
-                        <div className="flex items-center flex-wrap gap-x-5 gap-y-2 text-xs text-[var(--coffee-muted)] pt-1">
-                            <label className="flex items-center gap-2 whitespace-nowrap">
-                                <span>范围:</span>
-                                <select value={scope} onChange={e => setScope(e.target.value)}
-                                    className="!w-auto !min-w-[160px] !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70">
-                                    <option value="all">全部打开的 UI</option>
-                                    {uiList?.map(u => <option key={u.name} value={u.name}>{u.name}</option>)}
-                                </select>
-                            </label>
-                            <label className="flex items-center gap-2 whitespace-nowrap">
-                                <span>深度:</span>
-                                <input type="number" min={1} max={30} value={depth}
-                                    onChange={e => setDepth(parseInt(e.target.value) || 20)}
-                                    className="!w-16 !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70" />
-                            </label>
-                            <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
-                                <input type="checkbox" checked={probeText} onChange={e => setProbeText(e.target.checked)}
-                                    className="!w-3.5 !h-3.5 !p-0 accent-[var(--caramel)]" />
-                                <span>穿透 C# Text/InputField/Label</span>
-                            </label>
-                        </div>
-                    )}
+                    <div className="flex items-center flex-wrap gap-x-5 gap-y-2 text-xs text-[var(--coffee-muted)] pt-1">
+                        <label className="flex items-center gap-2 whitespace-nowrap">
+                            <span className="text-[10px] font-semibold text-[var(--coffee-deep)]">搜索范围</span>
+                            <select value={scope} onChange={e => setScope(e.target.value)}
+                                className="!w-auto !min-w-[160px] !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70">
+                                <option value="all">全部打开的 UI</option>
+                                {uiList?.map(u => <option key={u.name} value={u.name}>{u.name}</option>)}
+                            </select>
+                        </label>
+                        <label className="flex items-center gap-2 whitespace-nowrap">
+                            <span className="text-[10px] font-semibold text-[var(--coffee-deep)]">扫描深度</span>
+                            <input type="number" min={1} max={30} value={depth}
+                                onChange={e => setDepth(parseInt(e.target.value) || 20)}
+                                className="!w-16 !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70" />
+                        </label>
+                        <label className="flex items-center gap-2 whitespace-nowrap">
+                            <span className="text-[10px] font-semibold text-[var(--coffee-deep)]">扫描预算</span>
+                            <select value={scanBudget} onChange={e => setScanBudget(e.target.value)}
+                                className="!w-auto !min-w-[100px] !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70">
+                                {Object.values(SCAN_BUDGETS).map(b => (
+                                    <option key={b.key} value={b.key}>{b.label}</option>
+                                ))}
+                            </select>
+                        </label>
+                        <span className="hidden sm:inline-block w-px h-4 bg-[var(--glass-border)]" />
+                        <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+                            <input type="checkbox" checked={probeText} onChange={e => setProbeText(e.target.checked)}
+                                className="!w-3.5 !h-3.5 !p-0 accent-[var(--caramel)]" />
+                            <span>C# 文本穿透</span>
+                        </label>
+                    </div>
                 </div>
 
                 {/* Stats */}
@@ -184,7 +196,7 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
                         {result.truncated && (
                             <div className="mt-1.5 flex items-start gap-1.5 px-2 py-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-[11px]">
                                 <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
-                                <span>扫描达上限 5000，结果可能不全 — 请收紧 query 或减小范围/深度</span>
+                                <span>{getTruncatedMessage(result)}</span>
                             </div>
                         )}
                     </div>
@@ -195,20 +207,20 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
                     </div>
                 )}
 
-                {/* Results table — 内容自然高度 + 内置滚动；不强制 flex-1 撑满，避免空表时下方大片空白 */}
-                <div className="overflow-auto bg-[var(--cream-soft)]/30" style={{ minHeight: 0 }}>
+                {/* Results table */}
+                <div className="flex-1 min-h-0 overflow-auto bg-[var(--cream-soft)]/30">
                     {!result && !loading && !error && (
-                        <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
+                        <div className="flex items-center justify-center h-full min-h-[220px] text-[var(--coffee-muted)] text-sm">
                             输入 query 后回车或点搜索
                         </div>
                     )}
                     {loading && (
-                        <div className="flex items-center justify-center gap-2 h-32 text-[var(--coffee-muted)]">
+                        <div className="flex items-center justify-center gap-2 h-full min-h-[220px] text-[var(--coffee-muted)]">
                             <Loader2 size={16} className="animate-spin" /> 搜索中...
                         </div>
                     )}
                     {result && result.hits.length === 0 && !loading && (
-                        <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
+                        <div className="flex items-center justify-center h-full min-h-[220px] text-[var(--coffee-muted)] text-sm">
                             无匹配
                         </div>
                     )}
@@ -227,11 +239,28 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
     ), document.body)
 }
 
+function getTruncatedMessage(result) {
+    const budget = result?.appliedBudget || SCAN_BUDGETS.standard
+    const maxFields = result?.maxFields || budget.maxFields
+    const suffix = budget.key === 'max'
+        ? '已使用最大预算；请收紧 query 或减小范围/深度。'
+        : '可切换到更大的扫描预算，或收紧 query / 减小范围/深度。'
+    return `字段扫描达到当前预算 ${maxFields}，后续字段未继续扫描；结果可能不全。${suffix}`
+}
+
 // ============================================================================
 // 结果表格
 // ============================================================================
 function ResultsTable({ hits, colWidths, onResize, onJump, onLocateGo }) {
+    const [visibleCount, setVisibleCount] = useState(RESULT_RENDER_BATCH)
+
+    useEffect(() => {
+        setVisibleCount(RESULT_RENDER_BATCH)
+    }, [hits])
+
     const totalWidth = colWidths.ui + colWidths.luaPath + colWidths.goPath + colWidths.hit + 12  // +12 for resizers
+    const visibleHits = hits.length > visibleCount ? hits.slice(0, visibleCount) : hits
+    const remaining = hits.length - visibleHits.length
     return (
         <div className="text-xs" style={{ minWidth: totalWidth }}>
             <div className="flex items-stretch sticky top-0 bg-[var(--cream-warm)] border-b border-[var(--glass-border)] font-semibold text-[var(--coffee-deep)] z-10 shadow-sm">
@@ -243,9 +272,21 @@ function ResultsTable({ hits, colWidths, onResize, onJump, onLocateGo }) {
                 <Resizer onMouseDown={onResize('goPath')} />
                 <HeaderCell w={colWidths.hit} label="命中字段" />
             </div>
-            {hits.map((hit, i) => (
+            {visibleHits.map((hit, i) => (
                 <Row key={i} hit={hit} colWidths={colWidths} onJump={onJump} onLocateGo={onLocateGo} alt={i % 2 === 1} />
             ))}
+            {remaining > 0 && (
+                <div className="px-3 py-2 text-[11px] text-[var(--coffee-muted)] bg-[var(--cream-warm)]/40 border-b border-[var(--glass-border)] flex items-center gap-2">
+                    <span>已显示 {visibleHits.length}/{hits.length} 条。</span>
+                    <button
+                        type="button"
+                        onClick={() => setVisibleCount(c => Math.min(c + RESULT_RENDER_BATCH, hits.length))}
+                        className="px-2 py-1 rounded border border-[var(--glass-border)] bg-white/60 text-[var(--coffee-deep)] hover:bg-white"
+                    >
+                        再显示 {Math.min(RESULT_RENDER_BATCH, remaining)} 条
+                    </button>
+                </div>
+            )}
         </div>
     )
 }
@@ -302,11 +343,7 @@ function LuaPathCell({ w, luaPath, hovered }) {
             <span className="font-mono text-[var(--coffee-muted)] truncate min-w-0 select-text" title={path}
                 style={{ cursor: 'text' }}>{displayPath}</span>
             {hovered && luaPath && (
-                <button onClick={() => copyText(luaPath)}
-                    className="p-0.5 rounded hover:bg-black/10 text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] flex-shrink-0"
-                    title="复制 Lua 路径">
-                    <Clipboard size={11} />
-                </button>
+                <CopyButton value={luaPath} title="复制 Lua 路径" />
             )}
         </div>
     )
@@ -325,11 +362,7 @@ function GoPathCell({ w, goPath, goInstanceId, hovered, onLocateGo }) {
                 style={{ cursor: 'text' }}>{displayPath}</span>
             {hovered && (
                 <>
-                    <button onClick={() => copyText(goPath)}
-                        className="p-0.5 rounded hover:bg-black/10 text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] flex-shrink-0"
-                        title="复制 GameObject 全路径">
-                        <Clipboard size={11} />
-                    </button>
+                    <CopyButton value={goPath} title="复制 GameObject 全路径" />
                     {goInstanceId != null && goInstanceId !== -1 && (
                         <button onClick={() => onLocateGo(goInstanceId)}
                             className="p-0.5 rounded hover:bg-[var(--caramel)]/20 text-[var(--coffee-muted)] hover:text-[var(--caramel)] flex-shrink-0"

@@ -1,8 +1,39 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
-import { RotateCw, ChevronRight, ChevronDown, Loader2, Search, Clipboard, Crosshair } from 'lucide-react'
+import { RotateCw, ChevronRight, ChevronDown, Loader2, Search, Clipboard, Crosshair, X, Eye, EyeOff } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 import PropRow from '../components/PropRow'
 import HierarchySearchModal from '../components/HierarchySearchModal'
+
+const GO_SEARCH_MAX_OBJECTS = 20000
+
+function waitForNextPaint() {
+    return new Promise(resolve => {
+        if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+            window.requestAnimationFrame(() => window.setTimeout(resolve, 0))
+            return
+        }
+        setTimeout(resolve, 0)
+    })
+}
+
+function patchNodeActive(node, instanceId, active, activeInHierarchy) {
+    if (!node) return node
+    if (node.instanceId === instanceId) {
+        return { ...node, active, activeInHierarchy }
+    }
+    return node
+}
+
+function patchNodeListActive(list, instanceId, active, activeInHierarchy) {
+    if (!Array.isArray(list)) return list
+    let changed = false
+    const next = list.map(node => {
+        const patched = patchNodeActive(node, instanceId, active, activeInHierarchy)
+        if (patched !== node) changed = true
+        return patched
+    })
+    return changed ? next : list
+}
 
 // ============================================================================
 // WebSocket Hook（与 LuaUiInspector 同款）
@@ -72,6 +103,8 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
     const [tree, setTree] = useState(null)               // { scenes:[{name,roots:[]}], dontDestroy:[] }
     const [childrenMap, setChildrenMap] = useState({})   // instanceId → HierarchyNode[]
     const [expanded, setExpanded] = useState(new Set())  // Set<instanceId>
+    const childrenMapRef = useRef({})
+    const expandedRef = useRef(new Set())
     const [loadingTree, setLoadingTree] = useState(false)
     const [loadingChildren, setLoadingChildren] = useState({}) // instanceId → bool
 
@@ -81,17 +114,20 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
     const [loadingDetail, setLoadingDetail] = useState(false)
     const [highlightCompIndex, setHighlightCompIndex] = useState(null)
 
-    // --- 过滤 ---
+    // --- GO 搜索（普通搜索只负责按 GO 名/路径定位，Component/字段/类型交给高级搜索） ---
     const [filterText, setFilterText] = useState('')
-    const [filterMode, setFilterMode] = useState('name') // 'name' | 'type'
-    const [scanResults, setScanResults] = useState(null)  // type 模式结果列表
-    const [scanInfo, setScanInfo] = useState(null)
-    const [scanning, setScanning] = useState(false)
+    const [goSearchResults, setGoSearchResults] = useState(null)
+    const [goSearchInfo, setGoSearchInfo] = useState(null)
+    const [goSearching, setGoSearching] = useState(false)
+    const goSearchSeqRef = useRef(0)
     const [searchOpen, setSearchOpen] = useState(false)
 
     // --- 刷新控制 ---
     const [refreshInterval, setRefreshInterval] = useState(60)
     const [autoRefresh, setAutoRefresh] = useState(true) // 默认开启 60s
+
+    useEffect(() => { childrenMapRef.current = childrenMap }, [childrenMap])
+    useEffect(() => { expandedRef.current = expanded }, [expanded])
 
     // --- Component 类型展开状态（按 typeName 持久化，默认全折叠） ---
     const COMP_EXPAND_KEY = 'hierarchy_expanded_comp_types'
@@ -126,7 +162,11 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         request('children', { instanceId }, (data) => {
             setLoadingChildren(prev => { const n = { ...prev }; delete n[instanceId]; return n })
             if (data?.error) return
-            setChildrenMap(prev => ({ ...prev, [instanceId]: data.children || [] }))
+            setChildrenMap(prev => {
+                const next = { ...prev, [instanceId]: data.children || [] }
+                childrenMapRef.current = next
+                return next
+            })
         })
     }, [request])
 
@@ -172,11 +212,11 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                 next.delete(id)
             } else {
                 next.add(id)
-                if (!childrenMap[id] && (node.childCount ?? 0) > 0) loadChildren(id)
+                if (!childrenMapRef.current[id] && (node.childCount ?? 0) > 0) loadChildren(id)
             }
             return next
         })
-    }, [childrenMap, loadChildren])
+    }, [loadChildren])
 
     // --- 选中节点 ---
     const selectNode = useCallback((id) => {
@@ -193,6 +233,59 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         })
     }, [request, selectedId, loadDetail])
 
+    const applyGoActiveState = useCallback((instanceId, active, activeInHierarchy = active) => {
+        setTree(prev => {
+            if (!prev) return prev
+            return {
+                ...prev,
+                scenes: (prev.scenes || []).map(scene => ({
+                    ...scene,
+                    roots: patchNodeListActive(scene.roots, instanceId, active, activeInHierarchy),
+                })),
+                dontDestroy: patchNodeListActive(prev.dontDestroy, instanceId, active, activeInHierarchy),
+            }
+        })
+        setChildrenMap(prev => {
+            let changed = false
+            const next = {}
+            for (const [key, list] of Object.entries(prev)) {
+                const patched = patchNodeListActive(list, instanceId, active, activeInHierarchy)
+                next[key] = patched
+                if (patched !== list) changed = true
+            }
+            if (changed) childrenMapRef.current = next
+            return changed ? next : prev
+        })
+        setGoSearchResults(prev => prev
+            ? prev.map(row => row.goInstanceId === instanceId ? { ...row, active, activeInHierarchy } : row)
+            : prev
+        )
+        setGoDetail(prev => prev?.instanceId === instanceId ? { ...prev, active, activeInHierarchy } : prev)
+    }, [])
+
+    const setGoActiveById = useCallback((instanceId, active) => {
+        if (!instanceId) return
+        request('set_go_active', { instanceId, active }, (data) => {
+            if (data?.error) return
+            const nextActive = data?.active ?? active
+            const nextActiveInHierarchy = data?.activeInHierarchy ?? nextActive
+            applyGoActiveState(instanceId, nextActive, nextActiveInHierarchy)
+            if (selectedId === instanceId) loadDetail(instanceId)
+        })
+    }, [request, selectedId, loadDetail, applyGoActiveState])
+
+    const setGoActive = useCallback((active) => {
+        if (!selectedId) return
+        setGoActiveById(selectedId, active)
+    }, [selectedId, setGoActiveById])
+
+    const setComponentEnabled = useCallback((compIndex, enabled) => {
+        if (!selectedId) return
+        request('set_component_enabled', { instanceId: selectedId, compIndex, enabled }, () => {
+            loadDetail(selectedId)
+        })
+    }, [request, selectedId, loadDetail])
+
     // --- 调用方法 ---
     const [methodResults, setMethodResults] = useState({}) // "compIdx_methodName" → {result,error}
     const callMethod = useCallback((compIndex, methodName) => {
@@ -204,63 +297,129 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         })
     }, [request, selectedId])
 
-    // --- Type 模式扫描 ---
-    const runTypeScan = useCallback(() => {
-        const tn = filterText.trim()
-        if (!tn) { setScanResults(null); setScanInfo(null); return }
-        setScanning(true)
-        setScanResults([])
-        setScanInfo(null)
-        request('scan', { typeName: tn }, (data) => {
-            setScanning(false)
-            if (data?.error) { setScanResults([]); setScanInfo({ error: data.error }); return }
-            setScanResults(data?.results || [])
-            if (data?.truncated) setScanInfo({ truncated: true, total: data.total, shown: data.shown })
-        })
-    }, [filterText, request])
-
     // --- 高级搜索：复用 Hierarchy 通道，结果点击后走现有 Locate 流程 ---
     const handleSearch = useCallback((params, cb) => {
         request('search', params, (data) => cb && cb(data))
     }, [request])
 
+    // --- 普通搜索：全场景 GO 名/路径搜索，语义贴近 Unity Hierarchy ---
+    useEffect(() => {
+        const q = filterText.trim()
+        const seq = goSearchSeqRef.current + 1
+        goSearchSeqRef.current = seq
+
+        if (!q) {
+            setGoSearching(false)
+            setGoSearchResults(null)
+            setGoSearchInfo(null)
+            return
+        }
+
+        if (!selectedClient || !wsConnected) {
+            setGoSearching(false)
+            setGoSearchResults([])
+            setGoSearchInfo({ error: 'Hierarchy 未连接' })
+            return
+        }
+
+        setGoSearching(true)
+        setGoSearchResults([])
+        setGoSearchInfo(null)
+
+        const normalizeResults = (data) => {
+            const rows = data?.results || data?.hits || []
+            return rows.filter(r => {
+                if (r.goInstanceId == null || r.goInstanceId === -1) return false
+                return !r.memberKind || r.memberKind === 'go'
+            })
+        }
+
+        const applyResult = (data) => {
+            if (seq !== goSearchSeqRef.current) return
+            if (data?.query && data.query !== q) return
+            setGoSearching(false)
+            if (data?.error) {
+                setGoSearchResults([])
+                setGoSearchInfo({ error: data.error })
+                return
+            }
+            setGoSearchResults(normalizeResults(data))
+            setGoSearchInfo({
+                objectCount: data?.objectCount || 0,
+                elapsedMs: data?.elapsedMs || 0,
+                truncated: !!data?.truncated,
+                maxObjects: data?.maxObjects || GO_SEARCH_MAX_OBJECTS,
+            })
+        }
+
+        const timer = setTimeout(() => {
+            request('go_search', {
+                query: q,
+                scope: 'all',
+                includeInactive: true,
+                maxObjects: GO_SEARCH_MAX_OBJECTS,
+            }, applyResult)
+        }, 250)
+
+        return () => clearTimeout(timer)
+    }, [filterText, selectedClient?.id, wsConnected, request])
+
     // --- Locate 流程：展开父链 + 选中目标 ---
     const [locating, setLocating] = useState(false)
-    const locateAndSelect = useCallback((locateParams, onDone) => {
-        setLocating(true)
+    const fetchChildrenForLocate = useCallback((instanceId) => new Promise(resolve => {
+        if (childrenMapRef.current[instanceId]) { resolve(); return }
+        setLoadingChildren(prev => ({ ...prev, [instanceId]: true }))
+        request('children', { instanceId }, (resp) => {
+            setLoadingChildren(prev => { const n = { ...prev }; delete n[instanceId]; return n })
+            if (!resp?.error) {
+                setChildrenMap(prev => {
+                    const next = { ...prev, [instanceId]: resp.children || [] }
+                    childrenMapRef.current = next
+                    return next
+                })
+            }
+            resolve()
+        })
+    }), [request])
+
+    const locateAndSelect = useCallback((locateParams, onDone, options = {}) => {
+        const resetExpanded = !!options.resetExpanded
         const finish = (success) => { setLocating(false); onDone && onDone(success) }
-        request('locate', locateParams, (data) => {
+        const applyLocate = (data) => {
             if (data?.error || !data?.found) { finish(false); return }
             const chain = data.ancestorChain || []
             const target = data.instanceId
+            const parentChain = chain.slice(0, -1)
 
-            // 依次拉取链路上每个节点的 children（前一个未拉取过的）
+            setSelectedId(target)
+            setHighlightCompIndex(null)
+            loadDetail(target)
+            finish(true)
+
+            // 模拟手动逐层展开：每展开一层就让浏览器完成一次绘制，避免整条父链在同一帧压垮 WebView。
             const fetchChain = async () => {
-                const newExpanded = new Set(expanded)
-                for (let i = 0; i < chain.length - 1; i++) {
-                    const id = chain[i]
-                    newExpanded.add(id)
-                    if (!childrenMap[id]) {
-                        await new Promise(resolve => {
-                            setLoadingChildren(prev => ({ ...prev, [id]: true }))
-                            request('children', { instanceId: id }, (resp) => {
-                                setLoadingChildren(prev => { const n = { ...prev }; delete n[id]; return n })
-                                if (!resp?.error) {
-                                    setChildrenMap(prev => ({ ...prev, [id]: resp.children || [] }))
-                                }
-                                resolve()
-                            })
-                        })
-                    }
+                let baseExpanded = resetExpanded ? new Set() : new Set(expandedRef.current)
+                for (let i = 0; i < parentChain.length; i++) {
+                    const id = parentChain[i]
+                    baseExpanded = resetExpanded ? new Set(parentChain.slice(0, i + 1)) : new Set(baseExpanded).add(id)
+                    expandedRef.current = baseExpanded
+                    setExpanded(baseExpanded)
+                    await fetchChildrenForLocate(id)
+                    await waitForNextPaint()
                 }
-                setExpanded(newExpanded)
-                setSelectedId(target)
-                loadDetail(target)
-                finish(true)
             }
             fetchChain()
-        })
-    }, [request, expanded, childrenMap, loadDetail])
+        }
+
+        const directTarget = locateParams?.instanceId || locateParams?.goInstanceId
+        if (directTarget && locateParams?.ancestorChain) {
+            applyLocate({ found: true, instanceId: directTarget, ancestorChain: locateParams.ancestorChain })
+            return
+        }
+
+        setLocating(true)
+        request('locate', locateParams, applyLocate)
+    }, [request, loadDetail, fetchChildrenForLocate])
 
     const locateSearchHit = useCallback((hit) => {
         const compIndex = hit?.compIndex
@@ -268,7 +427,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         if (compIndex != null) params.compIndex = compIndex
         const run = () => locateAndSelect(params, (success) => {
             if (success && compIndex != null) flashHighlight(compIndex)
-        })
+        }, { resetExpanded: true })
         if (tree) {
             run()
             return
@@ -306,8 +465,10 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
 
     // --- 客户端切换 / Tab 激活时初次加载 ---
     useEffect(() => {
+        childrenMapRef.current = {}
+        expandedRef.current = new Set()
         setTree(null); setChildrenMap({}); setExpanded(new Set())
-        setSelectedId(null); setGoDetail(null); setScanResults(null); setScanInfo(null)
+        setSelectedId(null); setGoDetail(null); setGoSearchResults(null); setGoSearchInfo(null); setFilterText('')
     }, [selectedClient?.id])
 
     useEffect(() => {
@@ -361,20 +522,17 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                     </div>
                     <div className="mt-2 flex items-center gap-1">
                         <input type="text" value={filterText} onChange={e => setFilterText(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && filterMode === 'type') runTypeScan() }}
-                            placeholder={filterMode === 'name' ? '过滤已加载节点名...' : '组件类型名 (回车搜索)'}
+                            onKeyDown={e => { if (e.key === 'Escape') setFilterText('') }}
+                            placeholder="搜索 GO 名或路径..."
                             className="flex-1 px-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
                         />
-                        <button onClick={() => { setFilterMode(m => m === 'name' ? 'type' : 'name'); setScanResults(null); setScanInfo(null) }}
-                            className={`px-1.5 py-1 rounded text-[10px] font-medium border transition-colors ${
-                                filterMode === 'type'
-                                    ? 'bg-[var(--caramel)]/20 text-[var(--caramel)] border-[var(--caramel)]/40'
-                                    : 'bg-black/5 text-[var(--coffee-muted)] border-transparent hover:bg-black/10'
-                            }`}
-                            title={filterMode === 'name' ? '切到按 C# 组件类型搜索' : '切回按节点名过滤'}
-                        >
-                            {filterMode === 'name' ? 'Name' : 'Type'}
-                        </button>
+                        {filterText && (
+                            <button onClick={() => setFilterText('')}
+                                className="p-1 rounded text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-black/5"
+                                title="清空 GO 搜索">
+                                <X size={12} />
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -383,41 +541,31 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                     {loadingTree && <div className="flex items-center justify-center gap-1.5 py-4 text-[var(--coffee-muted)]"><Loader2 size={14} className="animate-spin" /><span>加载场景...</span></div>}
                     {!loadingTree && tree?.error && <div className="px-2 py-1.5 mb-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs">{tree.error}</div>}
 
-                    {/* Type 模式：扫描结果列表 */}
-                    {filterMode === 'type' && scanResults != null && (
-                        <div className="mb-2">
-                            {scanInfo?.error && <div className="px-2 py-1.5 mb-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs">{scanInfo.error}</div>}
-                            {scanning && <div className="flex items-center gap-1.5 py-2 text-[var(--coffee-muted)]"><Loader2 size={12} className="animate-spin" /><span>搜索中...</span></div>}
-                            {!scanning && scanResults.length === 0 && !scanInfo?.error && (
-                                <div className="text-center text-[var(--coffee-muted)] py-2">无结果</div>
-                            )}
-                            {scanResults.map((r, i) => (
-                                <button key={i} onClick={() => locateAndSelect({ goInstanceId: r.goInstanceId, compIndex: r.compIndex }, (ok) => { if (ok) flashHighlight(r.compIndex) })}
-                                    className="w-full flex items-center gap-1.5 px-2 py-1 rounded text-left hover:bg-[var(--cream-warm)]/50 mb-0.5">
-                                    <Crosshair size={10} className="text-[var(--coffee-muted)] opacity-40 flex-shrink-0" />
-                                    <span className="truncate font-medium text-[var(--coffee-deep)]">{r.goName}</span>
-                                    {r.parentName && <span className="text-[var(--coffee-muted)] opacity-50 text-[10px] truncate">{r.parentName}</span>}
-                                    <span className="ml-auto text-[10px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">#{r.goInstanceId}</span>
-                                </button>
-                            ))}
-                            {scanInfo?.truncated && (
-                                <div className="mt-1 px-2 py-1 rounded bg-[var(--caramel)]/10 text-[var(--coffee-muted)] text-[10px]">
-                                    截断: 显示 {scanInfo.shown}/{scanInfo.total}
-                                </div>
-                            )}
-                        </div>
+                    {filterText.trim() && (
+                        <GoSearchResults
+                            query={filterText.trim()}
+                            results={goSearchResults}
+                            info={goSearchInfo}
+                            loading={goSearching}
+                            onLocate={(hit) => {
+                                setFilterText('')
+                                locateAndSelect({ instanceId: hit.goInstanceId, ancestorChain: hit.ancestorChain }, () => {}, { resetExpanded: true })
+                            }}
+                            onSetActive={(hit, active) => setGoActiveById(hit.goInstanceId, active)}
+                            onOpenAdvanced={() => setSearchOpen(true)}
+                        />
                     )}
 
-                    {/* Name 模式 / 默认：场景树 */}
-                    {filterMode === 'name' && tree && sceneSections.map(section => (
+                    {!filterText.trim() && tree && sceneSections.map(section => (
                         <SceneSection key={section.key} section={section}
                             selectedId={selectedId}
                             expanded={expanded}
                             childrenMap={childrenMap}
                             loadingChildren={loadingChildren}
-                            filterText={filterText}
+                            filterText=""
                             onToggle={toggleExpand}
                             onSelect={selectNode}
+                            onSetActive={setGoActiveById}
                         />
                     ))}
                 </div>
@@ -443,7 +591,9 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                         onToggleCompType={toggleCompType}
                         methodResults={methodResults}
                         onRefresh={() => loadDetail(selectedId)}
+                        onSetGoActive={setGoActive}
                         onSetProp={setProp}
+                        onSetComponentEnabled={setComponentEnabled}
                         onCallMethod={callMethod}
                         onLoadCollection={loadCollectionItems}
                         onLocate={(instanceId) => locateAndSelect({ instanceId }, () => {})}
@@ -472,10 +622,98 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
     )
 }
 
+function compactHierarchyPath(path) {
+    if (!path) return ''
+    const parts = String(path).split('/').filter(Boolean)
+    if (parts.length <= 3) return path
+    return `${parts[0]}/.../${parts[parts.length - 2]}/${parts[parts.length - 1]}`
+}
+
+function GoSearchResults({ query, results, info, loading, onLocate, onSetActive, onOpenAdvanced }) {
+    const rows = results || []
+    return (
+        <div className="mb-2">
+            <div className="mb-1 flex items-center gap-1.5 px-1 text-[10px] text-[var(--coffee-muted)]">
+                <Search size={10} className={loading ? 'animate-pulse text-[var(--caramel)]' : ''} />
+                <span className="truncate">GO: {query}</span>
+                {info && !info.error && (
+                    <span className="ml-auto flex-shrink-0">
+                        {rows.length} 条 · {info.objectCount || 0} GO · {info.elapsedMs || 0}ms
+                    </span>
+                )}
+            </div>
+
+            {info?.error && (
+                <div className="px-2 py-1.5 mb-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs">
+                    {info.error}
+                </div>
+            )}
+
+            {loading && (
+                <div className="flex items-center gap-1.5 py-2 text-[var(--coffee-muted)]">
+                    <Loader2 size={12} className="animate-spin" />
+                    <span>搜索 GO...</span>
+                </div>
+            )}
+
+            {!loading && rows.length === 0 && !info?.error && (
+                <div className="px-2 py-3 text-center text-[var(--coffee-muted)]">
+                    <div>无匹配 GO</div>
+                    <button onClick={onOpenAdvanced}
+                        className="mt-1 text-[10px] text-[var(--caramel)] hover:underline">
+                        打开高级搜索
+                    </button>
+                </div>
+            )}
+
+            {rows.map((r, i) => {
+                const path = r.hierarchyPath || r.goName || `#${r.goInstanceId}`
+                const compactPath = compactHierarchyPath(path)
+                return (
+                    <div key={`${r.goInstanceId}_${i}`} role="button" tabIndex={0}
+                        onClick={() => onLocate(r)}
+                        onKeyDown={e => { if (e.key === 'Enter') onLocate(r) }}
+                        className="group/go-result w-full px-2 py-1.5 rounded text-left hover:bg-[var(--cream-warm)]/55 mb-0.5 border border-transparent hover:border-[var(--glass-border)] transition-colors cursor-pointer">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            <Crosshair size={10} className="text-[var(--coffee-muted)] opacity-40 flex-shrink-0" />
+                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${r.activeInHierarchy === false ? 'bg-[var(--coffee-muted)]/30' : 'bg-[var(--sage)]'}`} />
+                            <span className="truncate font-medium text-[var(--coffee-deep)]">{r.goName || compactPath}</span>
+                            {r.sceneName && <span className="px-1 rounded bg-black/5 text-[9px] text-[var(--coffee-muted)] flex-shrink-0">{r.sceneName}</span>}
+                            <button
+                                type="button"
+                                onClick={e => {
+                                    e.stopPropagation()
+                                    onSetActive(r, r.active === false)
+                                }}
+                                className="ml-auto p-0.5 rounded text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-black/10 opacity-0 group-hover/go-result:opacity-100 focus:opacity-100 transition-opacity flex-shrink-0"
+                                title={r.active === false ? '显示 GameObject' : '隐藏 GameObject'}
+                            >
+                                {r.active === false ? <Eye size={11} /> : <EyeOff size={11} />}
+                            </button>
+                            <span className="text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">#{r.goInstanceId}</span>
+                        </div>
+                        {path && (
+                            <div className="mt-0.5 pl-4 font-mono text-[10px] text-[var(--coffee-muted)] truncate" title={path}>
+                                {compactPath}
+                            </div>
+                        )}
+                    </div>
+                )
+            })}
+
+            {info?.truncated && (
+                <div className="mt-1 px-2 py-1 rounded bg-[var(--caramel)]/10 text-[var(--coffee-muted)] text-[10px]">
+                    GO 扫描达到 {info.maxObjects || GO_SEARCH_MAX_OBJECTS}，结果可能不全
+                </div>
+            )}
+        </div>
+    )
+}
+
 // ============================================================================
 // 左侧场景分段 + 递归节点
 // ============================================================================
-function SceneSection({ section, selectedId, expanded, childrenMap, loadingChildren, filterText, onToggle, onSelect }) {
+function SceneSection({ section, selectedId, expanded, childrenMap, loadingChildren, filterText, onToggle, onSelect, onSetActive }) {
     const [open, setOpen] = useState(true)
     const filterLower = filterText.toLowerCase()
 
@@ -496,13 +734,15 @@ function SceneSection({ section, selectedId, expanded, childrenMap, loadingChild
                     filterLower={filterLower}
                     onToggle={onToggle}
                     onSelect={onSelect}
+                    onSetActive={onSetActive}
                 />
             ))}
         </div>
     )
 }
 
-function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChildren, filterLower, onToggle, onSelect }) {
+function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChildren, filterLower, onToggle, onSelect, onSetActive }) {
+    const rowRef = useRef(null)
     const isExpanded = expanded.has(node.instanceId)
     const hasChildren = (node.childCount ?? 0) > 0
     const children = childrenMap[node.instanceId]
@@ -516,15 +756,22 @@ function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChild
         return children.filter(c => nodeMatches(c, filterLower, childrenMap))
     }, [children, filterLower, childrenMap])
 
+    useEffect(() => {
+        if (!isSelected || filterLower) return
+        const timer = setTimeout(() => rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 60)
+        return () => clearTimeout(timer)
+    }, [isSelected, filterLower])
+
     if (filterLower && !matchSelf && (!filteredChildren || filteredChildren.length === 0)) {
         return null
     }
 
     return (
         <div>
-            <div className={`flex items-center gap-1 py-0.5 pr-1 rounded text-xs cursor-pointer select-none ${
+            <div className={`group/tree-node flex items-center gap-1 py-0.5 pr-1 rounded text-xs cursor-pointer select-none ${
                 isSelected ? 'bg-[var(--caramel)]/20 text-[var(--coffee-deep)]' : 'hover:bg-[var(--cream-warm)]/50 text-[var(--coffee-deep)]'
             }`}
+                ref={rowRef}
                 style={{ paddingLeft: 4 + depth * 12 }}
                 onClick={() => onSelect(node.instanceId)}>
                 {hasChildren ? (
@@ -537,19 +784,35 @@ function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChild
                 <span className={`truncate ${node.activeInHierarchy === false ? 'opacity-40' : ''}`} title={`#${node.instanceId} ${node.name}`}>
                     {node.name}
                 </span>
-                {hasChildren && <span className="ml-auto text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">{node.childCount}</span>}
+                <button
+                    type="button"
+                    onClick={e => {
+                        e.stopPropagation()
+                        onSetActive(node.instanceId, node.active === false)
+                    }}
+                    className="ml-auto p-0.5 rounded text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-black/10 opacity-0 group-hover/tree-node:opacity-100 focus:opacity-100 transition-opacity flex-shrink-0"
+                    title={node.active === false ? '显示 GameObject' : '隐藏 GameObject'}
+                >
+                    {node.active === false ? <Eye size={10} /> : <EyeOff size={10} />}
+                </button>
+                {hasChildren && <span className="text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">{node.childCount}</span>}
             </div>
-            {isExpanded && filteredChildren && filteredChildren.map(c => (
-                <TreeNode key={c.instanceId} node={c} depth={depth + 1}
-                    selectedId={selectedId}
-                    expanded={expanded}
-                    childrenMap={childrenMap}
-                    loadingChildren={loadingChildren}
-                    filterLower={filterLower}
-                    onToggle={onToggle}
-                    onSelect={onSelect}
-                />
-            ))}
+            {isExpanded && filteredChildren && (
+                <>
+                    {filteredChildren.map(c => (
+                        <TreeNode key={c.instanceId} node={c} depth={depth + 1}
+                            selectedId={selectedId}
+                            expanded={expanded}
+                            childrenMap={childrenMap}
+                            loadingChildren={loadingChildren}
+                            filterLower={filterLower}
+                            onToggle={onToggle}
+                            onSelect={onSelect}
+                            onSetActive={onSetActive}
+                        />
+                    ))}
+                </>
+            )}
         </div>
     )
 }
@@ -565,7 +828,7 @@ function nodeMatches(node, filterLower, childrenMap) {
 // ============================================================================
 // 右侧 Inspector
 // ============================================================================
-function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onToggleCompType, methodResults, onRefresh, onSetProp, onCallMethod, onLoadCollection, onLocate }) {
+function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onToggleCompType, methodResults, onRefresh, onSetGoActive, onSetProp, onSetComponentEnabled, onCallMethod, onLoadCollection, onLocate }) {
     if (loading && !detail) {
         return <div className="flex items-center justify-center gap-2 h-32 text-[var(--coffee-muted)] text-sm"><Loader2 size={16} className="animate-spin" /> 加载中...</div>
     }
@@ -584,7 +847,13 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
             {/* 顶部：GO 信息 */}
             <div className="rounded-lg border border-[var(--glass-border)] bg-white/40 px-3 py-2">
                 <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${detail.activeInHierarchy ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'}`} />
+                    <input type="checkbox"
+                        checked={!!detail.active}
+                        onChange={e => onSetGoActive(e.target.checked)}
+                        className="!w-3.5 !h-3.5 !p-0 accent-[var(--sage)] flex-shrink-0"
+                        title={detail.active ? '隐藏 GameObject (SetActive false)' : '显示 GameObject (SetActive true)'}
+                    />
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${detail.activeInHierarchy ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'}`} title={detail.activeInHierarchy ? 'activeInHierarchy: true' : 'activeInHierarchy: false'} />
                     <span className="text-sm font-semibold text-[var(--coffee-deep)] truncate select-text" title={detail.hierarchyPath}>{detail.name}</span>
                     {detail.activeInHierarchy === false && <span className="text-[10px] text-[var(--caramel)] flex-shrink-0">(inactive)</span>}
                     <button onClick={onRefresh} className="ml-auto p-0.5 rounded hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] flex-shrink-0" title="刷新 Inspector">
@@ -610,6 +879,7 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
                     onToggleExpanded={() => onToggleCompType(comp.typeName)}
                     methodResults={methodResults}
                     onSetProp={onSetProp}
+                    onSetEnabled={onSetComponentEnabled}
                     onCallMethod={onCallMethod}
                     onLoadCollection={onLoadCollection}
                     onLocate={onLocate}
@@ -619,7 +889,7 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
     )
 }
 
-function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResults, onSetProp, onCallMethod, onLoadCollection, onLocate }) {
+function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResults, onSetProp, onSetEnabled, onCallMethod, onLoadCollection, onLocate }) {
     const [filter, setFilter] = useState('')
     const [propsCollapsed, setPropsCollapsed] = useState(false)
     const [methodsCollapsed, setMethodsCollapsed] = useState(true)
@@ -632,6 +902,15 @@ function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResu
         <div className={`rounded-lg border overflow-hidden ${highlight ? 'border-[var(--caramel)] shadow-[0_0_0_2px_var(--caramel-soft)]' : 'border-[var(--glass-border)]'} bg-white/30`}>
             <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--cream-warm)]/30 cursor-pointer select-none" onClick={onToggleExpanded}>
                 {expanded ? <ChevronDown size={14} className="text-[var(--coffee-muted)]" /> : <ChevronRight size={14} className="text-[var(--coffee-muted)]" />}
+                {typeof comp.enabled === 'boolean' && (
+                    <input type="checkbox"
+                        checked={comp.enabled}
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => onSetEnabled(comp.compIndex, e.target.checked)}
+                        className="!w-3.5 !h-3.5 !p-0 accent-[var(--sage)] flex-shrink-0"
+                        title={comp.enabled ? '禁用组件' : '启用组件'}
+                    />
+                )}
                 <span className="text-sm font-medium text-[var(--coffee-deep)]">{comp.typeName}</span>
                 {comp.enabled === false && <span className="text-[10px] text-[var(--caramel)] flex-shrink-0">(disabled)</span>}
                 {comp.error && <span className="text-[10px] text-[var(--terracotta)] flex-shrink-0" title={comp.error}>⚠</span>}

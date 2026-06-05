@@ -1,11 +1,17 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Search, X, Loader2, Crosshair, Clipboard, AlertTriangle, CornerDownRight } from 'lucide-react'
-import { copyText } from '../utils/clipboard'
+import { Search, X, Loader2, Crosshair, AlertTriangle, CornerDownRight } from 'lucide-react'
+import CopyButton from './CopyButton'
 
 const COL_WIDTHS_KEY = 'hierarchy_search_col_widths'
 const DEFAULT_COL_WIDTHS = { path: 420, comp: 180, hit: 340 }
 const MIN_COL_WIDTH = 80
+const RESULT_RENDER_BATCH = 1000
+const SCAN_BUDGETS = {
+    standard: { key: 'standard', label: '标准', maxObjects: 5000, maxMembers: 12000 },
+    deep: { key: 'deep', label: '深度', maxObjects: 10000, maxMembers: 30000 },
+    max: { key: 'max', label: '最大', maxObjects: 20000, maxMembers: 60000 },
+}
 
 function loadColWidths() {
     try {
@@ -27,7 +33,7 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
     const [includeInactive, setIncludeInactive] = useState(true)
     const [searchGoName, setSearchGoName] = useState(true)
     const [searchMembers, setSearchMembers] = useState(true)
-    const [showAdvanced, setShowAdvanced] = useState(false)
+    const [scanBudget, setScanBudget] = useState('standard')
 
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState(null)
@@ -40,6 +46,7 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
     const doSearch = useCallback(() => {
         const q = query.trim()
         if (!q) { setError('请输入搜索内容'); return }
+        const budget = SCAN_BUDGETS[scanBudget] || SCAN_BUDGETS.standard
         setLoading(true)
         setError(null)
         setResult(null)
@@ -49,12 +56,14 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
             includeInactive,
             searchGoName,
             searchMembers,
+            maxObjects: budget.maxObjects,
+            maxMembers: budget.maxMembers,
         }, (data) => {
             setLoading(false)
             if (!data || data.error) { setError(data?.error || '搜索失败'); return }
-            setResult(data)
+            setResult({ ...data, appliedBudget: budget })
         })
-    }, [query, scope, includeInactive, searchGoName, searchMembers, onSearch])
+    }, [query, scope, includeInactive, searchGoName, searchMembers, scanBudget, onSearch])
 
     useEffect(() => {
         if (!open) return
@@ -101,7 +110,7 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
     return createPortal((
         <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
             <div className="glass-card flex flex-col w-[min(1040px,92vw)]"
-                style={{ animation: 'slideUp 0.25s ease', maxHeight: '85vh' }}>
+                style={{ animation: 'slideUp 0.25s ease', height: 'min(760px, 85vh)', maxHeight: '85vh' }}>
                 <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--glass-border)] flex-shrink-0">
                     <div className="flex items-center gap-3">
                         <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[var(--caramel)] to-[var(--caramel-dark)] flex items-center justify-center">
@@ -133,27 +142,32 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
                         <code className="px-1.5 py-0.5 bg-black/5 rounded text-[var(--coffee-deep)]">t:*Button</code>
                         <code className="px-1.5 py-0.5 bg-black/5 rounded text-[var(--coffee-deep)]">go:*Title*</code>
                         <code className="px-1.5 py-0.5 bg-black/5 rounded text-[var(--coffee-deep)]">active:false</code>
-                        <button onClick={() => setShowAdvanced(s => !s)}
-                            className="ml-auto text-[var(--coffee-deep)] hover:text-[var(--caramel)]">
-                            {showAdvanced ? '▼ 高级选项' : '▶ 高级选项'}
-                        </button>
                     </div>
-                    {showAdvanced && (
-                        <div className="flex items-center flex-wrap gap-x-5 gap-y-2 text-xs text-[var(--coffee-muted)] pt-1">
-                            <label className="flex items-center gap-2 whitespace-nowrap">
-                                <span>范围:</span>
-                                <select value={scope} onChange={e => setScope(e.target.value)}
-                                    className="!w-auto !min-w-[160px] !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70">
-                                    <option value="all">全部场景</option>
-                                    {(scenes || []).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-                                    <option value="DontDestroyOnLoad">DontDestroyOnLoad</option>
-                                </select>
-                            </label>
-                            <Toggle checked={includeInactive} onChange={setIncludeInactive} label="包含 inactive" />
-                            <Toggle checked={searchGoName} onChange={setSearchGoName} label="搜索 GO 名/路径" />
-                            <Toggle checked={searchMembers} onChange={setSearchMembers} label="搜索 Component 字段" />
-                        </div>
-                    )}
+                    <div className="flex items-center flex-wrap gap-x-5 gap-y-2 text-xs text-[var(--coffee-muted)] pt-1">
+                        <label className="flex items-center gap-2 whitespace-nowrap">
+                            <span className="text-[10px] font-semibold text-[var(--coffee-deep)]">搜索范围</span>
+                            <select value={scope} onChange={e => setScope(e.target.value)}
+                                className="!w-auto !min-w-[160px] !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70">
+                                <option value="all">全部场景</option>
+                                {(scenes || []).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                                <option value="DontDestroyOnLoad">DontDestroyOnLoad</option>
+                            </select>
+                        </label>
+                        <label className="flex items-center gap-2 whitespace-nowrap">
+                            <span className="text-[10px] font-semibold text-[var(--coffee-deep)]">扫描预算</span>
+                            <select value={scanBudget} onChange={e => setScanBudget(e.target.value)}
+                                className="!w-auto !min-w-[100px] !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70">
+                                {Object.values(SCAN_BUDGETS).map(b => (
+                                    <option key={b.key} value={b.key}>{b.label}</option>
+                                ))}
+                            </select>
+                        </label>
+                        <span className="hidden sm:inline-block w-px h-4 bg-[var(--glass-border)]" />
+                        <span className="text-[10px] font-semibold text-[var(--coffee-deep)]">扫描项</span>
+                        <Toggle checked={includeInactive} onChange={setIncludeInactive} label="包含 inactive" />
+                        <Toggle checked={searchGoName} onChange={setSearchGoName} label="GO 名/路径" />
+                        <Toggle checked={searchMembers} onChange={setSearchMembers} label="Component 字段" />
+                    </div>
                 </div>
 
                 {result && (
@@ -164,7 +178,7 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
                         {result.truncated && (
                             <div className="mt-1.5 flex items-start gap-1.5 px-2 py-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-[11px]">
                                 <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
-                                <span>扫描达到上限，结果可能不全 — 请收紧 query 或缩小范围</span>
+                                <span>{getTruncatedMessage(result)}</span>
                             </div>
                         )}
                     </div>
@@ -175,19 +189,19 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
                     </div>
                 )}
 
-                <div className="overflow-auto bg-[var(--cream-soft)]/30" style={{ minHeight: 0 }}>
+                <div className="flex-1 min-h-0 overflow-auto bg-[var(--cream-soft)]/30">
                     {!result && !loading && !error && (
-                        <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
+                        <div className="flex items-center justify-center h-full min-h-[220px] text-[var(--coffee-muted)] text-sm">
                             输入 query 后回车或点搜索
                         </div>
                     )}
                     {loading && (
-                        <div className="flex items-center justify-center gap-2 h-32 text-[var(--coffee-muted)]">
+                        <div className="flex items-center justify-center gap-2 h-full min-h-[220px] text-[var(--coffee-muted)]">
                             <Loader2 size={16} className="animate-spin" /> 搜索中...
                         </div>
                     )}
                     {result && result.hits.length === 0 && !loading && (
-                        <div className="flex items-center justify-center h-32 text-[var(--coffee-muted)] text-sm">
+                        <div className="flex items-center justify-center h-full min-h-[220px] text-[var(--coffee-muted)] text-sm">
                             无匹配
                         </div>
                     )}
@@ -205,6 +219,24 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
     ), document.body)
 }
 
+function getTruncatedMessage(result) {
+    const objectCount = result?.objectCount || 0
+    const totalScanned = result?.totalScanned || 0
+    const budget = result?.appliedBudget || SCAN_BUDGETS.standard
+    const maxObjects = result?.maxObjects || budget.maxObjects
+    const maxMembers = result?.maxMembers || budget.maxMembers
+    const suffix = budget.key === 'max'
+        ? '已使用最大预算；请收紧 query 或缩小范围。'
+        : '可切换到更大的扫描预算，或收紧 query / 缩小范围。'
+    if (totalScanned >= maxMembers) {
+        return `字段扫描达到当前预算 ${maxMembers}，后续字段未继续扫描；结果可能不全。${suffix}`
+    }
+    if (objectCount >= maxObjects) {
+        return `GO 扫描达到当前预算 ${maxObjects}，后续对象未继续扫描；结果可能不全。${suffix}`
+    }
+    return `扫描达到当前预算，结果可能不全。${suffix}`
+}
+
 function Toggle({ checked, onChange, label }) {
     return (
         <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
@@ -216,7 +248,15 @@ function Toggle({ checked, onChange, label }) {
 }
 
 function ResultsTable({ hits, colWidths, onResize, onLocate }) {
+    const [visibleCount, setVisibleCount] = useState(RESULT_RENDER_BATCH)
+
+    useEffect(() => {
+        setVisibleCount(RESULT_RENDER_BATCH)
+    }, [hits])
+
     const totalWidth = colWidths.path + colWidths.comp + colWidths.hit + 8
+    const visibleHits = hits.length > visibleCount ? hits.slice(0, visibleCount) : hits
+    const remaining = hits.length - visibleHits.length
     return (
         <div className="text-xs" style={{ minWidth: totalWidth }}>
             <div className="flex items-stretch sticky top-0 bg-[var(--cream-warm)] border-b border-[var(--glass-border)] font-semibold text-[var(--coffee-deep)] z-10 shadow-sm">
@@ -226,9 +266,21 @@ function ResultsTable({ hits, colWidths, onResize, onLocate }) {
                 <Resizer onMouseDown={onResize('comp')} />
                 <HeaderCell w={colWidths.hit} label="命中字段" />
             </div>
-            {hits.map((hit, i) => (
+            {visibleHits.map((hit, i) => (
                 <Row key={i} hit={hit} colWidths={colWidths} onLocate={onLocate} alt={i % 2 === 1} />
             ))}
+            {remaining > 0 && (
+                <div className="px-3 py-2 text-[11px] text-[var(--coffee-muted)] bg-[var(--cream-warm)]/40 border-b border-[var(--glass-border)] flex items-center gap-2">
+                    <span>已显示 {visibleHits.length}/{hits.length} 条。</span>
+                    <button
+                        type="button"
+                        onClick={() => setVisibleCount(c => Math.min(c + RESULT_RENDER_BATCH, hits.length))}
+                        className="px-2 py-1 rounded border border-[var(--glass-border)] bg-white/60 text-[var(--coffee-deep)] hover:bg-white"
+                    >
+                        再显示 {Math.min(RESULT_RENDER_BATCH, remaining)} 条
+                    </button>
+                </div>
+            )}
         </div>
     )
 }
@@ -275,11 +327,7 @@ function PathCell({ w, hit, hovered, onLocate }) {
             <span className="font-mono text-[var(--coffee-muted)] truncate min-w-0 select-text" style={{ cursor: 'text' }}>{displayPath}</span>
             {hovered && (
                 <>
-                    <button onClick={(e) => { e.stopPropagation(); copyText(path) }}
-                        className="p-0.5 rounded hover:bg-black/10 text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] flex-shrink-0"
-                        title="复制 GameObject 全路径">
-                        <Clipboard size={11} />
-                    </button>
+                    <CopyButton value={path} title="复制 GameObject 全路径" />
                     <button onClick={(e) => { e.stopPropagation(); onLocate(hit) }}
                         className="p-0.5 rounded hover:bg-[var(--caramel)]/20 text-[var(--coffee-muted)] hover:text-[var(--caramel)] flex-shrink-0"
                         title={`在 Hierarchy 中定位 #${hit.goInstanceId}`}>
