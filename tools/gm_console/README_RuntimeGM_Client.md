@@ -216,14 +216,15 @@ local function StartRuntimeGM()
                 return CS.System.IO.Directory.Exists(authDir)
             end)
             if not ok or not exists then return end
-            local function hasSvnAbove(path)
+            local function hasSvnAbove(rawPath)
+                local path = rawPath:gsub("\\", "/")
                 for _ = 1, 12 do
                     if not path or path == "" then return false end
                     local ok2, ex2 = pcall(function()
                         return CS.System.IO.Directory.Exists(path .. "/.svn")
                     end)
                     if ok2 and ex2 then return true end
-                    local parent = CS.System.IO.Path.GetDirectoryName(path)
+                    local parent = path:match("^(.+)/[^/]+$")
                     if not parent or parent == path then return false end
                     path = parent
                 end
@@ -274,7 +275,7 @@ local function StartRuntimeGM()
             tcp:settimeout(0)
             RuntimeGMClient.Socket = tcp
             pcall(function() RuntimeGMClient.LastRecvTime = CS.UnityEngine.Time.realtimeSinceStartup end)
-            -- HELLO を先に送信（SVN 取得は遅延実行でブロック防止）
+            -- HELLO: 发送已知信息（SVN 作者可能已有值——重连场景）
             RuntimeGMClient.Send({
                 type = "HELLO",
                 pid = RuntimeGMClient.DeviceInfo.pid,
@@ -282,12 +283,11 @@ local function StartRuntimeGM()
                 platform = RuntimeGMClient.DeviceInfo.platform,
                 packageName = RuntimeGMClient.DeviceInfo.packageName,
                 persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
-                svn_author = ""
+                svn_author = RuntimeGMClient.SvnAuthor or ""
             })
-            -- SVN ユーザー名は接続後に遅延取得（次回 HELLO 更新で送信）
-            if RuntimeGMClient.SvnAuthor == "" then
-                RuntimeGMClient._svnFetched = false
-            end
+            -- 始终重置 SVN 标记，让 Update() 在首帧尝试获取（可能立即补发 HELLO）
+            RuntimeGMClient._svnFetched = false
+            RuntimeGMClient._svnRetryAfter = nil
         else
             -- 这里会打印具体的错误原因，比如 "connection refused" 或 "timeout"
             origin_print("[RuntimeGM] 连接失败，错误原因: " .. tostring(err))
@@ -3577,6 +3577,31 @@ local function StartRuntimeGM()
                     persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
                     svn_author = RuntimeGMClient.SvnAuthor
                 })
+            else
+                -- 首次获取为空，标记 3 秒后重试一次
+                RuntimeGMClient._svnRetryAfter = (function()
+                    local t = 0; pcall(function() t = CS.UnityEngine.Time.realtimeSinceStartup end); return t + 10
+                end)()
+            end
+        elseif RuntimeGMClient._svnRetryAfter then
+            -- 延迟重试：连接稳定后仅再尝试 1 次
+            local now = 0
+            pcall(function() now = CS.UnityEngine.Time.realtimeSinceStartup end)
+            if now >= RuntimeGMClient._svnRetryAfter then
+                RuntimeGMClient._svnRetryAfter = nil -- 一次性，不再重试
+                local author = tryGetSvnAuthor()
+                if author ~= "" then
+                    RuntimeGMClient.SvnAuthor = author
+                    RuntimeGMClient.Send({
+                        type = "HELLO",
+                        pid = RuntimeGMClient.DeviceInfo.pid,
+                        device = RuntimeGMClient.DeviceInfo.device,
+                        platform = RuntimeGMClient.DeviceInfo.platform,
+                        packageName = RuntimeGMClient.DeviceInfo.packageName,
+                        persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
+                        svn_author = RuntimeGMClient.SvnAuthor
+                    })
+                end
             end
         end
         if not RuntimeGMClient.GMLoaded then
@@ -5051,6 +5076,11 @@ local function StartRuntimeGM()
         local behaviour = go:GetComponent(typeof(CS.XLuaBehaviour))
         if not behaviour then behaviour = go:AddComponent(typeof(CS.XLuaBehaviour)) end
         behaviour.LuaUpdate = function() RuntimeGMClient.Update() end
+        behaviour.LuaOnDestroy = function()
+            origin_print("[RuntimeGM] OnDestroy: closing connection")
+            RuntimeGMClient.Close()
+            RuntimeGMClient.IsRunning = false
+        end
         origin_print("[RuntimeGM] Client Started (Embed in XMain).")
     end
 

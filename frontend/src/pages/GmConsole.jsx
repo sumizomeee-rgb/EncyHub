@@ -16,47 +16,37 @@ import { useToast } from '../components/Toast'
 const _platformIcons = {
   windows: ({ size, className }) => (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M17.8 20l-12-1.5c-1-.1-1.8-.9-1.8-1.9v-9.2c0-1 .8-1.8 1.8-1.9l12-1.5c1.2-.1 2.2.8 2.2 1.9v12.1c0 1.2-1.1 2.1-2.2 1.9" />
-      <path d="M12 5v14" />
-      <path d="M4 12h16" />
+      fill="currentColor" stroke="none">
+      {/* Windows logo (Simple Icons, CC0) — classic 4-pane window flag */}
+      <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801" />
     </svg>
   ),
   android: ({ size, className }) => (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 10v6" />
-      <path d="M20 10v6" />
-      <path d="M7 9h10v8a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V9a5 5 0 0 1 10 0" />
-      <path d="M8 3l1 2" />
-      <path d="M16 3l-1 2" />
-      <path d="M9 18v3" />
-      <path d="M15 18v3" />
+      fill="currentColor" stroke="none">
+      {/* Android robot (Simple Icons, CC0) — iconic Bugdroid head + body */}
+      <path d="M18.4395 5.5586c-.675 1.1664-1.352 2.3318-2.0274 3.498-.0366-.0155-.0742-.0286-.1113-.043-1.8249-.6957-3.484-.8-4.42-.787-1.8551.0185-3.3544.4643-4.2597.8203-.084-.1494-1.7526-3.021-2.0215-3.4864a1.1451 1.1451 0 0 0-.1406-.1914c-.3312-.364-.9054-.4859-1.379-.203-.475.282-.7136.9361-.3886 1.5019 1.9466 3.3696-.0966-.2158 1.9473 3.3593.0172.031-.4946.2642-1.3926 1.0177C2.8987 12.176.452 14.772 0 18.9902h24c-.119-1.1108-.3686-2.099-.7461-3.0683-.7438-1.9118-1.8435-3.2928-2.7402-4.1836a12.1048 12.1048 0 0 0-2.1309-1.6875c.6594-1.122 1.312-2.2559 1.9649-3.3848.2077-.3615.1886-.7956-.0079-1.1191a1.1001 1.1001 0 0 0-.8515-.5332c-.5225-.0536-.9392.3128-1.0488.5449zm-.0391 8.461c.3944.5926.324 1.3306-.1563 1.6503-.4799.3197-1.188.0985-1.582-.4941-.3944-.5927-.324-1.3307.1563-1.6504.4727-.315 1.1812-.1086 1.582.4941zM7.207 13.5273c.4803.3197.5506 1.0577.1563 1.6504-.394.5926-1.1038.8138-1.584.4941-.48-.3197-.5503-1.0577-.1563-1.6504.4008-.6021 1.1087-.8106 1.584-.4941z" />
     </svg>
   ),
   apple: ({ size, className }) => (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 6.528V3a1 1 0 0 1 1-1" />
-      <path d="M18.237 21A15 15 0 0 0 22 11a6 6 0 0 0-10-4.472A6 6 0 0 0 2 11a15.1 15.1 0 0 0 3.763 10 3 3 0 0 0 3.648.648 5.5 5.5 0 0 1 5.178 0A3 3 0 0 0 18.237 21" />
+      fill="currentColor" stroke="none">
+      {/* Apple logo (Simple Icons, CC0) — iconic bitten apple */}
+      <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701" />
     </svg>
   ),
   mac: ({ size, className }) => (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 4a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4z" />
-      <path d="M3 13h18" />
-      <path d="M8 21h8" />
-      <path d="M10 17l-.5 4" />
-      <path d="M14 17l.5 4" />
+      fill="currentColor" stroke="none">
+      {/* Apple logo (Simple Icons, CC0) — same bitten apple for macOS */}
+      <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701" />
     </svg>
   ),
   unity: ({ size, className }) => (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2l8 5v10l-8 5-8-5V7z" />
-      <path d="M4 7l8 5 8-5" />
-      <path d="M12 12v10" />
+      fill="currentColor" stroke="none">
+      {/* Unity logo (Simple Icons, CC0) — iconic 3D arrowhead pointing left */}
+      <path d="m12.9288 4.2939 3.7997 2.1929c.1366.077.1415.2905 0 .3675l-4.515 2.6076a.4192.4192 0 0 1-.4246 0L7.274 6.8543c-.139-.0745-.1415-.293 0-.3675l3.7972-2.193V0L1.3758 5.5977V16.793l3.7177-2.1456v-4.3858c-.0025-.1565.1813-.2682.318-.1838l4.5148 2.6076a.4252.4252 0 0 1 .2136.3676v5.2127c.0025.1565-.1813.2682-.3179.1838l-3.7996-2.1929-3.7178 2.1457L12 24l9.6954-5.5977-3.7178-2.1457-3.7996 2.1929c-.1341.082-.3229-.0248-.3179-.1838V13.053c0-.1565.087-.2956.2136-.3676l4.5149-2.6076c.134-.082.3228.0224.3179.1838v4.3858l3.7177 2.1456V5.5977L12.9288 0Z" />
     </svg>
   ),
 }
@@ -143,6 +133,7 @@ function GmConsole() {
   const [loading, setLoading] = useState(true)
   const logsContainerRef = useRef(null)
   const wsRef = useRef(null)
+  const clientStateRevRef = useRef(0)
 
   // WS 连接状态: 'connecting' | 'connected' | 'disconnected'
   const [wsStatus, setWsStatus] = useState('connecting')
@@ -264,6 +255,21 @@ function GmConsole() {
   // 搜索过滤
   const [searchFilter, setSearchFilter] = useState('')
 
+  const applyClientSnapshot = useCallback((nextClients, rev) => {
+    if (typeof rev === 'number') {
+      if (rev < clientStateRevRef.current) return false
+      clientStateRevRef.current = rev
+    }
+    const newClients = Array.isArray(nextClients) ? nextClients : []
+    setClients(newClients)
+    setSelectedClient(prev => {
+      if (!prev) return null
+      const updated = newClients.find(c => c.id === prev.id)
+      return updated || null
+    })
+    return true
+  }, [])
+
   // HTTP fallback fetch
   const fetchDataHttp = useCallback(async () => {
     try {
@@ -273,13 +279,7 @@ function GmConsole() {
       ])
       if (clientsRes.ok) {
         const data = await clientsRes.json()
-        const newClients = data.clients || []
-        setClients(newClients)
-        setSelectedClient(prev => {
-          if (!prev) return null
-          const updated = newClients.find(c => c.id === prev.id)
-          return updated || null
-        })
+        applyClientSnapshot(data.clients || [], data.clientStateRev)
       }
       if (logsRes.ok) {
         const data = await logsRes.json()
@@ -297,7 +297,7 @@ function GmConsole() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [applyClientSnapshot])
 
   const fetchCustomGm = useCallback(async () => {
     try {
@@ -315,6 +315,8 @@ function GmConsole() {
   useEffect(() => {
     let ws = null
     let fallbackInterval = null
+    // 保底轮询：即使 WS 正常也每 8 秒 HTTP 刷新客户端列表，防止 WS 事件丢失导致卡片不消失
+    let keepaliveInterval = null
 
     const connectWs = () => {
       const wsUrl = `ws://${window.location.host}/api/gm_console/ws/events`
@@ -343,13 +345,7 @@ function GmConsole() {
           if (event.type === 'init' || event.type === 'update') {
             if (event.listeners) setListeners(event.listeners)
             if (event.clients) {
-              setClients(event.clients)
-              // 客户端重连后自动同步 selectedClient 数据（ID 不变但 gm_tree 等可能更新）
-              setSelectedClient(prev => {
-                if (!prev) return null
-                const updated = event.clients.find(c => c.id === prev.id)
-                return updated || null
-              })
+              applyClientSnapshot(event.clients, event.clientStateRev)
             }
             if (event.logs) {
               const serverLogs = event.logs.map(log => ({
@@ -367,6 +363,11 @@ function GmConsole() {
               type: log.level === 'info' ? 'info' : 'error',
               text: `[${log.time}] ${log.msg}`,
             }])
+            // 防御：收到断开日志时，500ms 后主动刷新客户端列表，
+            // 确保即使 update 事件丢失，卡片也会消失
+            if (log.msg && log.msg.includes('客户端断开')) {
+              setTimeout(() => fetchDataHttp(), 500)
+            }
           } else if (event.type === 'screenshot') {
             setScreenshot({
               client_id: event.client_id,
@@ -403,14 +404,27 @@ function GmConsole() {
     fetchCustomGm()
     connectWs()
 
-    // 低频 fallback 轮询（WS 连接成功后会被清除）
+    // WS 断开时的降级轮询
     fallbackInterval = setInterval(fetchDataHttp, 3000)
+
+    // 保底轮询：即使 WS 正常也低频刷新客户端列表（8秒），防止 WS 事件丢失
+    keepaliveInterval = setInterval(() => {
+      fetch('/api/gm_console/clients')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data?.clients) {
+            applyClientSnapshot(data.clients, data.clientStateRev)
+          }
+        })
+        .catch(() => {})
+    }, 8000)
 
     return () => {
       if (ws) ws.close()
       if (fallbackInterval) clearInterval(fallbackInterval)
+      if (keepaliveInterval) clearInterval(keepaliveInterval)
     }
-  }, [fetchDataHttp, fetchCustomGm])
+  }, [fetchDataHttp, fetchCustomGm, applyClientSnapshot])
 
   useEffect(() => {
     const el = logsContainerRef.current

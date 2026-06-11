@@ -71,6 +71,7 @@ class ServerMgr:
         self.logs: List[Log] = []
         self.cmd_id = 1000
         self.on_update: Optional[Callable] = None
+        self.on_disconnect: Optional[Callable] = None  # async callback: await on_disconnect(client_id)
         self.on_log: Optional[Callable[[Log], None]] = None
         self.on_client_data_update: Optional[Callable[[str], None]] = None
         self._animator_list_cache = {}      # client_id -> animator list
@@ -89,6 +90,7 @@ class ServerMgr:
         self.on_screenshot = None           # Callback for SCREENSHOT_RESP
         self._pending_execs: Dict[int, dict] = {}
         self._temp_seq = 0                  # 临时 ID 序号（保证 accept 阶段唯一）
+        self.client_state_rev = 0
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -123,6 +125,10 @@ class ServerMgr:
         except Exception as e:
             print(f"[ServerMgr] 端口 {port} 清理异常: {e}")
 
+    def _mark_clients_changed(self):
+        """递增客户端列表版本，用于前端忽略旧 HTTP/WS 快照。"""
+        self.client_state_rev += 1
+
     async def add_listener(self, port: int) -> tuple[bool, str]:
         """添加监听端口（支持重启）"""
         # 如果端口已在监听，先关闭（支持重启）
@@ -139,6 +145,8 @@ class ServerMgr:
             if cid in self.clients:
                 c = self.clients.pop(cid)
                 self._add_log("info", f"清理端口 {port} 的旧客户端: {cid}", cid)
+        if dead_clients:
+            self._mark_clients_changed()
         if dead_clients and self.on_update:
             self.on_update()
 
@@ -190,12 +198,41 @@ class ServerMgr:
                 except:
                     pass
 
+        if to_remove:
+            self._mark_clients_changed()
         if self.on_update:
             self.on_update()
         return True, f"已移除监听端口 {port}"
 
+    # 客户端 15s 发送一次 PING；超过 3 个心跳周期无任何数据则断开
+    CLIENT_READ_TIMEOUT = 45
+
+    def _set_tcp_keepalive(self, writer: asyncio.StreamWriter):
+        """在已接受的 TCP socket 上启用 keepalive，加速检测半开连接"""
+        try:
+            sock = writer.get_extra_info('socket')
+            if sock is None:
+                return
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if sys.platform == 'win32':
+                # Windows: (enable, idle_ms, interval_ms)
+                sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 10000, 3000))
+            else:
+                # Linux/macOS
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 3)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except (AttributeError, OSError):
+                    pass
+        except Exception as e:
+            print(f"[ServerMgr] 设置 TCP keepalive 失败: {e}")
+
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
         """处理客户端连接"""
+        # 启用 TCP keepalive 加速检测半开连接
+        self._set_tcp_keepalive(writer)
+
         addr = writer.get_extra_info("peername")
         ip = addr[0]
         # 两段式 ID：accept 阶段先用临时 ID（唯一），等 HELLO 携带 pid 后 rekey 到 {ip}#{pid}
@@ -204,6 +241,7 @@ class ServerMgr:
 
         client_obj = Client(id=temp_id, port=port, writer=writer, ip=ip)
         self.clients[temp_id] = client_obj
+        self._mark_clients_changed()
         self._add_log("info", f"客户端连接(待识别): {temp_id}", temp_id)
         print(f"[ServerMgr] TCP 客户端连接: {temp_id} (remote={ip}:{addr[1]}, port={port}), 当前客户端数={len(self.clients)}")
         if self.on_update:
@@ -212,7 +250,11 @@ class ServerMgr:
         disconnect_reason = "unknown"
         try:
             while True:
-                line = await reader.readline()
+                try:
+                    line = await asyncio.wait_for(reader.readline(), timeout=self.CLIENT_READ_TIMEOUT)
+                except asyncio.TimeoutError:
+                    disconnect_reason = f"超时无数据 ({self.CLIENT_READ_TIMEOUT}s)"
+                    break
                 if not line:
                     disconnect_reason = "远端关闭连接"
                     break
@@ -235,11 +277,25 @@ class ServerMgr:
             # 仅当 dict 中仍是本次连接的对象时才删除（用当前生效 id，rekey 后已是确定 ID），
             # 避免误删被同 IP+pid 新连接 rekey 占位的新客户端
             cur_id = client_obj.id
+            removed = False
             if self.clients.get(cur_id) is client_obj:
                 del self.clients[cur_id]
+                self._mark_clients_changed()
+                removed = True
             self._add_log("info", f"客户端断开: {cur_id} ({disconnect_reason})", cur_id)
             print(f"[ServerMgr] TCP 客户端断开: {cur_id}, 原因={disconnect_reason}, 剩余={len(self.clients)}")
-            if self.on_update:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception as e:
+                print(f"[ServerMgr] 关闭客户端连接失败: {cur_id}, error={e}")
+            # 断开时必须 await 广播，确保前端卡片立即消失
+            if self.on_disconnect and removed:
+                try:
+                    await self.on_disconnect(cur_id)
+                except Exception as e:
+                    print(f"[ServerMgr] on_disconnect 回调失败: {e}")
+            elif self.on_update:
                 self.on_update()
 
     def _rekey_client(self, client_obj: "Client", new_id: str):
@@ -309,6 +365,7 @@ class ServerMgr:
                 f"package={c.package_name or '-'}, author={c.svn_author or '-'}"
             )
             if self.on_update:
+                self._mark_clients_changed()
                 self.on_update()
             return
         elif t == "LOG":
@@ -335,6 +392,7 @@ class ServerMgr:
         elif t == "GM_LIST":
             c.gm_tree = pkt.get("data", [])
             print(f"[ServerMgr] GM_LIST: {len(c.gm_tree)} 个节点")
+            self._mark_clients_changed()
             if self.on_client_data_update:
                 self.on_client_data_update(cid)
             else:
@@ -419,6 +477,7 @@ class ServerMgr:
             # 发送失败时清理该客户端
             if client_id in self.clients:
                 self.clients.pop(client_id)
+                self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（发送失败）: {client_id}", client_id)
                 if self.on_update:
                     self.on_update()
@@ -443,6 +502,7 @@ class ServerMgr:
             del self._pending_execs[cmd_id]
             if client_id in self.clients:
                 self.clients.pop(client_id)
+                self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（发送失败）: {client_id}", client_id)
                 if self.on_update:
                     self.on_update()
@@ -481,6 +541,7 @@ class ServerMgr:
             # 发送失败时清理该客户端
             if client_id in self.clients:
                 self.clients.pop(client_id)
+                self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（GM发送失败）: {client_id}", client_id)
                 if self.on_update:
                     self.on_update()
@@ -501,6 +562,7 @@ class ServerMgr:
         for cid in dead_clients:
             if cid in self.clients:
                 c = self.clients.pop(cid)
+                self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（broadcast检测）: {cid}", cid)
                 if self.on_update:
                     self.on_update()
@@ -526,6 +588,7 @@ class ServerMgr:
         for cid in dead_clients:
             if cid in self.clients:
                 c = self.clients.pop(cid)
+                self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（broadcast GM检测）: {cid}", cid)
                 if self.on_update:
                     self.on_update()

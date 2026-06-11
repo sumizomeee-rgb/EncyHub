@@ -38,13 +38,16 @@ async def broadcast_event(event: dict):
         print(f"[GmConsole] 广播跳过: 无 WS 连接 (event.type={event.get('type')})")
         return
     print(f"[GmConsole] 广播事件: type={event.get('type')}, ws连接数={len(ws_connections)}, clients={len(event.get('clients', []))}")
+    sent = 0
     for ws in ws_connections[:]:
         try:
             await ws.send_json(event)
+            sent += 1
         except Exception as e:
             print(f"[GmConsole] WS 广播失败, 移除连接: {e}")
             if ws in ws_connections:
                 ws_connections.remove(ws)
+    print(f"[GmConsole] 广播完成: type={event.get('type')}, 成功={sent}/{len(ws_connections)+sent}")
 
 
 @asynccontextmanager
@@ -70,6 +73,7 @@ async def lifespan(app: FastAPI):
             "type": "update",
             "listeners": server_mgr.get_listeners_info(),
             "clients": server_mgr.get_clients_info(),
+            "clientStateRev": server_mgr.client_state_rev,
         }))
 
     def on_log(log):
@@ -81,11 +85,23 @@ async def lifespan(app: FastAPI):
     server_mgr.on_update = on_update
     server_mgr.on_log = on_log
 
+    async def on_disconnect(client_id: str):
+        """客户端断开时直接 await 广播，确保前端卡片立即消失（不依赖 create_task 调度）"""
+        await broadcast_event({
+            "type": "update",
+            "listeners": server_mgr.get_listeners_info(),
+            "clients": server_mgr.get_clients_info(),
+            "clientStateRev": server_mgr.client_state_rev,
+        })
+
+    server_mgr.on_disconnect = on_disconnect
+
     def on_client_data_update(client_id):
         asyncio.create_task(broadcast_event({
             "type": "update",
             "listeners": server_mgr.get_listeners_info(),
             "clients": server_mgr.get_clients_info(),
+            "clientStateRev": server_mgr.client_state_rev,
         }))
 
     server_mgr.on_client_data_update = on_client_data_update
@@ -271,7 +287,10 @@ class CustomGmRequest(BaseModel):
 @app.get("/clients")
 async def get_clients():
     """获取已连接客户端"""
-    return {"clients": server_mgr.get_clients_info()}
+    return {
+        "clients": server_mgr.get_clients_info(),
+        "clientStateRev": server_mgr.client_state_rev,
+    }
 
 
 @app.post("/clients/{client_id}/exec")
@@ -902,6 +921,7 @@ async def websocket_events(websocket: WebSocket):
         "type": "init",
         "listeners": server_mgr.get_listeners_info(),
         "clients": server_mgr.get_clients_info(),
+        "clientStateRev": server_mgr.client_state_rev,
         "logs": server_mgr.get_logs(50),
     }
     print(f"[GmConsole] 发送 init: listeners={len(init_data['listeners'])}, clients={len(init_data['clients'])}")
