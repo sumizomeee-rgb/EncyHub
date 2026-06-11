@@ -12,6 +12,7 @@ sys.path.insert(0, BASE_DIR)
 GM_MAIN_PY = os.path.join(BASE_DIR, "tools", "gm_console", "main.py")
 INJECT_RUNTIME_GM_PY = os.path.join(BASE_DIR, "tools", "gm_console", "inject_runtime_gm.py")
 RUNTIME_GM_LUA = os.path.join(BASE_DIR, "tools", "gm_console", "runtime_gm_client.lua")
+RUN_INJECT_RUNTIME_GM_BAT = os.path.join(BASE_DIR, "tools", "gm_console", "run_inject_runtime_gm.bat")
 GM_CONSOLE_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "GmConsole.jsx")
 ANIMATOR_VIEWER_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "AnimatorViewer.jsx")
 LUA_UI_INSPECTOR_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "LuaUiInspector.jsx")
@@ -116,6 +117,16 @@ def test_inject_script_uses_runtime_lua_source_not_readme():
     assert 'GM_HOST = "10.101.0.8"' not in content
     assert "extract_lua_from_readme" not in content
     assert "README_RuntimeGM_Client" not in content
+
+
+def test_run_inject_runtime_gm_bat_executes_inject_script():
+    assert os.path.isfile(RUN_INJECT_RUNTIME_GM_BAT)
+    content = read_file(RUN_INJECT_RUNTIME_GM_BAT)
+
+    assert "inject_runtime_gm.py" in content
+    assert ".venv\\Scripts\\python.exe" in content
+    assert "pushd" in content
+    assert "pause" in content
 
 
 def test_main_exposes_runtime_gm_code_endpoint():
