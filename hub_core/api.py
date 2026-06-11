@@ -173,6 +173,23 @@ async def restart_hub():
 
 # 代理路由 - 转发请求到工具子进程
 proxy_router = APIRouter()
+proxy_http_client: Optional[httpx.AsyncClient] = None
+
+
+def get_proxy_http_client() -> httpx.AsyncClient:
+    """复用 Hub 到工具子进程的 HTTP 连接，避免高频轮询反复建连。"""
+    global proxy_http_client
+    if proxy_http_client is None or proxy_http_client.is_closed:
+        proxy_http_client = httpx.AsyncClient(timeout=300.0)
+    return proxy_http_client
+
+
+async def close_proxy_http_client():
+    """关闭复用的代理 HTTP 连接池。"""
+    global proxy_http_client
+    if proxy_http_client is not None and not proxy_http_client.is_closed:
+        await proxy_http_client.aclose()
+    proxy_http_client = None
 
 
 @proxy_router.api_route(
@@ -197,51 +214,51 @@ async def proxy_to_tool(tool_id: str, path: str, request: Request):
         target_url += f"?{request.url.query}"
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            content_type = request.headers.get("content-type", "")
+        client = get_proxy_http_client()
+        content_type = request.headers.get("content-type", "")
 
-            # multipart/form-data 需要特殊处理：解析后用 httpx files 重新编码
-            if "multipart/form-data" in content_type:
-                form = await request.form()
-                files = []
-                data = {}
-                for key in form:
-                    value = form[key]
-                    if hasattr(value, "read"):  # UploadFile
-                        file_bytes = await value.read()
-                        files.append((key, (value.filename, file_bytes, value.content_type or "application/octet-stream")))
-                    else:
-                        data[key] = value
-                resp = await client.request(
-                    method=request.method,
-                    url=target_url,
-                    files=files if files else None,
-                    data=data if data else None,
-                )
-                await form.close()
-            else:
-                # 普通请求：转发原始 body
-                body = await request.body()
-                headers = dict(request.headers)
-                for h in ("host", "transfer-encoding", "connection", "content-length", "expect"):
-                    headers.pop(h, None)
-                resp = await client.request(
-                    method=request.method,
-                    url=target_url,
-                    content=body,
-                    headers=headers,
-                )
-
-            # 移除响应中的 hop-by-hop 头
-            resp_headers = dict(resp.headers)
-            for h in ("transfer-encoding", "connection", "content-length"):
-                resp_headers.pop(h, None)
-
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=resp_headers,
+        # multipart/form-data 需要特殊处理：解析后用 httpx files 重新编码
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            files = []
+            data = {}
+            for key in form:
+                value = form[key]
+                if hasattr(value, "read"):  # UploadFile
+                    file_bytes = await value.read()
+                    files.append((key, (value.filename, file_bytes, value.content_type or "application/octet-stream")))
+                else:
+                    data[key] = value
+            resp = await client.request(
+                method=request.method,
+                url=target_url,
+                files=files if files else None,
+                data=data if data else None,
             )
+            await form.close()
+        else:
+            # 普通请求：转发原始 body
+            body = await request.body()
+            headers = dict(request.headers)
+            for h in ("host", "transfer-encoding", "connection", "content-length", "expect"):
+                headers.pop(h, None)
+            resp = await client.request(
+                method=request.method,
+                url=target_url,
+                content=body,
+                headers=headers,
+            )
+
+        # 移除响应中的 hop-by-hop 头
+        resp_headers = dict(resp.headers)
+        for h in ("transfer-encoding", "connection", "content-length"):
+            resp_headers.pop(h, None)
+
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=resp_headers,
+        )
     except httpx.ConnectError:
         raise HTTPException(503, f"无法连接到工具: {tool_id}")
     except Exception as e:
@@ -287,15 +304,12 @@ async def proxy_websocket(websocket: WebSocket, tool_id: str, path: str):
                         # 字典格式：{"type": "websocket.receive"|"websocket.disconnect", "text": "...", "bytes": b"..."}
                         msg_type = msg.get("type")
                         if msg_type == "websocket.disconnect":
-                            print(f"[Hub WS] 前端断开连接")
                             break
                         if "text" in msg:
-                            print(f"[Hub WS] 前端→后端 文本: {msg['text'][:50]}...")
                             await upstream_ws.send(msg["text"])
                         elif "bytes" in msg:
                             await upstream_ws.send(msg["bytes"])
                     elif isinstance(msg, str):
-                        print(f"[Hub WS] 前端→后端 字符串: {msg[:50]}...")
                         await upstream_ws.send(msg)
                     elif isinstance(msg, bytes):
                         await upstream_ws.send(msg)
@@ -306,7 +320,6 @@ async def proxy_websocket(websocket: WebSocket, tool_id: str, path: str):
             """工具子进程 → 前端"""
             try:
                 async for message in upstream_ws:
-                    print(f"[Hub WS] 上游收到消息: type={type(message)}, len={len(message) if isinstance(message, (str, bytes)) else 'N/A'}")
                     if isinstance(message, str):
                         await websocket.send_text(message)
                     elif isinstance(message, bytes):

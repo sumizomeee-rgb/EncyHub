@@ -23,6 +23,7 @@ function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
   const lastUpdateRef = useRef(0)
 
   const fetchAnimators = useCallback(async () => {
+    if (!active) return
     const targets = selectedClient ? [selectedClient] : clients
     if (targets.length === 0) return
     setListLoading(true)
@@ -38,7 +39,7 @@ function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
     } finally {
       setListLoading(false)
     }
-  }, [selectedClient, clients])
+  }, [active, selectedClient?.id, clients])
 
   const subscribe = useCallback(async (animatorId) => {
     if (!selectedClient) return
@@ -78,9 +79,12 @@ function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
 
   // --- WebSocket ---
   useEffect(() => {
+    if (!active || !selectedClient) return
+    let closed = false
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/api/gm_console/ws/animator`
     const connect = () => {
+      if (closed) return
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
       let pingTimer = null
@@ -116,13 +120,23 @@ function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
           }
         } catch (e) { console.error('WS parse error:', e) }
       }
-      ws.onclose = () => { if (pingTimer) clearInterval(pingTimer); setWsStatus('disconnected'); setTimeout(connect, 3000) }
+      ws.onclose = () => {
+        if (pingTimer) clearInterval(pingTimer)
+        setWsStatus('disconnected')
+        if (!closed) setTimeout(connect, 3000)
+      }
       ws.onerror = () => ws.close()
     }
     connect()
     const heartbeat = setInterval(() => { if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send('ping') }, 30000)
-    return () => { clearInterval(heartbeat); wsRef.current?.close() }
-  }, [selectedAnimator])
+    return () => {
+      closed = true
+      clearInterval(heartbeat)
+      wsRef.current?.close()
+      wsRef.current = null
+      setWsStatus('disconnected')
+    }
+  }, [selectedClient?.id, selectedAnimator, active])
 
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => { autoRefreshRef.current = autoRefresh }, [autoRefresh])
@@ -134,7 +148,11 @@ function AnimatorViewer({ clients, selectedClient, broadcastMode, active }) {
     setStateHistory([...historyRef.current])
   }, [fetchAnimators])
 
-  useEffect(() => { fetchAnimators(); return () => { unsubscribe() } }, [selectedClient])
+  useEffect(() => {
+    if (!active) return
+    fetchAnimators()
+    return () => { unsubscribe() }
+  }, [selectedClient?.id, active])
 
   const filteredAnimators = filter
     ? animators.filter(a => a.name.toLowerCase().includes(filter.toLowerCase()) || (a.controllerName || '').toLowerCase().includes(filter.toLowerCase()))

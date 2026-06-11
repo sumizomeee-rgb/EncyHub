@@ -1,48 +1,3 @@
-# RuntimeGMClient - Lua 嵌入代码
-
-## 说明
-
-将以下代码追加到客户端 Lua 入口文件末尾即可启用 EncyHub GM Console 的全部功能。具体嵌入位置视项目而定（如 `XMain.lua`、`XLaunchModule.lua` 等均可，只要在 Lua 环境初始化完成后执行即可）：
-
-- **GM Console**: 远程执行 Lua 代码、GM 按钮面板
-- **Animator Viewer**: 远程查看 Animator 状态机、参数、转场（真机可用）
-- **Lua UI Inspector**: 远程查看/编辑 Lua UI（XLuaUi）实例的 self 表数据（真机可用）
-  - `INSPECTOR_MAX_FIELDS = 200` — 限制根级字段数量，防止大型 UI 返回过大响应
-  - `CallMethod` — 可从 Web Inspector 调用 Lua 方法（实例方法 + 元表 class 方法）
-  - `GetNodeData` 返回 `truncated`/`totalKeys`/`shownKeys` 字段截断信息
-- **PlayerPrefs Viewer**: 远程查看/编辑 PlayerPrefs 持久化数据
-- **AV Monitor**: 远程监控 CRI Audio（音量/静音/活跃音频列表/CueId 查询/Debug 开关）和视频播放器（状态/时间轴/Seek/速度/事件日志）
-  - Windows (Editor/Standalone): 通过注册表枚举所有 key，支持过滤搜索
-  - Android: 通过读取 SharedPreferences XML 枚举所有 key
-  - iOS: 仅支持手动输入 key 查询（无法枚举），支持收藏和最近记录
-- **Table Monitor**: 远程查看游戏配表（XTable）运行时数据
-  - 枚举所有 XTable 定义（~2970 张表），显示字段名/类型/主键
-  - 加载行数据浏览（分页/搜索/排序，Lua 侧执行）
-  - 自动检测 int/string 主键、无主键表、无 XTable 前缀表
-  - 可选：HaruPerformanceMonitor 统计（已加载表数/内存/行数，仅 debug 包）
-  - 30 秒无操作自动休眠释放缓存，页签不活跃时零开销
-- **Log 截获**: 远程查看 `print()` 输出
-- **TCP 心跳保活**: 每 15 秒发送 PING，防止 NAT/防火墙超时断开连接
-- **断线自动重连**: 超过 45 秒无响应自动断开并每 3 秒重试，服务端重启后无需重启游戏
-
-## 使用方法
-
-1. 打开目标分支的 Lua 入口文件（如 `XMain.lua`、`XLaunchModule.lua` 等）
-2. 将下方代码块完整粘贴到文件末尾
-3. **只需修改 IP** 为你的开发机地址（运行 EncyHub 的电脑）；端口固定为握手端口 `12581`，所有分支统一，无需修改
-4. 热更或重新打包
-
-## 注意事项
-
-- IP 地址 `10.101.0.8` 需改为你自己运行 EncyHub 的电脑 IP
-- 端口 `12581` 是 EncyHub GM Console 的**固定握手端口**（`main.py` 中 `DEFAULT_TCP_PORT = 12581`）。所有分支 / 所有设备统一连接此端口，**无需为不同分支配不同端口**——多设备靠服务端的 `IP + pid` 会话标识自动区分，可同时挂载
-- 代码使用 `rawget`/`rawset` 绕过 `LuaLockG()`，兼容任意分支
-- 代码使用 `pcall` 保护所有外部调用，不会影响游戏正常运行
-- 如果 `socket.core` 不可用（部分裁剪包），RuntimeGM 会静默跳过
-
-## 代码
-
-```lua
 -- 2. RuntimeGMClient 核心逻辑 (内嵌版)
 -- 将 RuntimeGMClient 的内容封装在这里，避免污染全局，但最后会 rawset 到 _G 以供调用
 local function StartRuntimeGM()
@@ -5094,9 +5049,7 @@ end
 local ok, gmClient = pcall(StartRuntimeGM)
 local isOpen = true
 if isOpen and ok and gmClient then
-    -- 如果同事是在真机/其他电脑运行，这里的 localhost 可能需要改成你的 IP
-    gmClient.Start("10.101.0.8", 12581)
+    gmClient.Start(gmClient.Host, gmClient.Port)
 else
     print("RuntimeGM Init Failed")
 end
-```

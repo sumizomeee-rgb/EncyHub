@@ -38,13 +38,13 @@ function patchNodeListActive(list, instanceId, active, activeInHierarchy) {
 // ============================================================================
 // WebSocket Hook（与 LuaUiInspector 同款）
 // ============================================================================
-function useHierarchyWs(selectedClient) {
+function useHierarchyWs(selectedClient, active) {
     const listenersRef = useRef({})
     const wsRef = useRef(null)
     const [wsConnected, setWsConnected] = useState(false)
 
     useEffect(() => {
-        if (!selectedClient) return
+        if (!active || !selectedClient) return
         let closed = false
         const connect = () => {
             if (closed) return
@@ -75,7 +75,7 @@ function useHierarchyWs(selectedClient) {
         }
         connect()
         return () => { closed = true; wsRef.current?.close(); wsRef.current = null }
-    }, [selectedClient?.id])
+    }, [selectedClient?.id, active])
 
     const request = useCallback((action, params, onResponse) => {
         if (!selectedClient) return
@@ -93,7 +93,7 @@ function useHierarchyWs(selectedClient) {
 // 主组件
 // ============================================================================
 function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateConsumed, active }) {
-    const { request, wsConnected } = useHierarchyWs(selectedClient)
+    const { request, wsConnected } = useHierarchyWs(selectedClient, active)
 
     // --- 拖拽分栏 ---
     const [leftWidth, setLeftWidth] = useState(280)

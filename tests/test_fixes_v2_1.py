@@ -124,6 +124,11 @@ class TestLogcatConnectionFix:
         assert "WS 代理连接失败" in self.hub, \
             "Hub WS 代理应记录连接失败日志"
 
+    def test_hub_ws_proxy_no_per_message_debug_logs(self):
+        assert "上游收到消息" not in self.hub
+        assert "前端→后端 文本" not in self.hub
+        assert "前端→后端 字符串" not in self.hub
+
 
 # ============================================================================
 # 2.1 [P1] GM 按钮高度降低

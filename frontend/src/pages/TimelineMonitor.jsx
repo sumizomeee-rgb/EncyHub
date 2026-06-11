@@ -49,7 +49,7 @@ function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
 
     // --- WebSocket ---
     useEffect(() => {
-        if (!selectedClient) return
+        if (!active || !selectedClient) return
         let closed = false
         const connect = () => {
             if (closed) return
@@ -103,7 +103,7 @@ function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
         }
         connect()
         return () => { closed = true; wsRef.current?.close(); wsRef.current = null }
-    }, [selectedClient?.id])
+    }, [selectedClient?.id, active])
 
     // --- Commands ---
     const sendCmd = useCallback(async (action, params = {}) => {

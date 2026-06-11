@@ -266,6 +266,10 @@ class TestHubProxyTimeout:
         assert "timeout=30.0" not in self.content, \
             "不应存在旧的 30 秒超时"
 
+    def test_proxy_reuses_http_client(self):
+        assert "proxy_http_client" in self.content, \
+            "Hub 代理应复用 httpx.AsyncClient，避免高频请求反复建连"
+
 
 # ============================================================================
 # 1.2 [P0] 设备文件夹 (path_utils)

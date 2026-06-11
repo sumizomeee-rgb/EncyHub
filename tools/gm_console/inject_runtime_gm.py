@@ -5,21 +5,25 @@ inject_runtime_gm.py — 一键注入 RuntimeGMClient 到游戏 Lua 入口文件
   1. 在下方 TARGET_LUA_FILES 列表中维护要注入的 Lua 入口文件路径（支持多分支）
      - 临时跳过某个分支：把对应行注释掉即可
      - 所有分支统一连同一个固定握手端口 GM_PORT（多设备靠 IP+pid 会话标识区分，可同时挂载）
-  2. 修改下方 GM_HOST / GM_PORT 为你运行 EncyHub 的电脑 IP 和握手端口
+  2. 自动探测本机 LAN IPv4，并写入 RuntimeGM 连接地址
   3. 运行: python inject_runtime_gm.py
 
 脚本会对列表里的每个文件依次执行:
   1. svn revert（还原到干净状态）
-  2. 从 README_RuntimeGM_Client.md 中提取 Lua 代码块（仅一次）
+  2. 读取 runtime_gm_client.lua 权威 Lua 源文件
   3. 替换代码中的 IP 和端口为你的配置（所有分支统一为 GM_PORT）
   4. 追加到目标文件末尾
 单文件失败（缺失/IO 错误）不会阻断后续文件，最终输出汇总。
 """
 
 import os
-import re
 import subprocess
 import sys
+
+try:
+    from .runtime_gm_code import RUNTIME_GM_LUA_PATH, build_runtime_gm_code, detect_local_lan_ip, read_runtime_gm_source
+except ImportError:
+    from runtime_gm_code import RUNTIME_GM_LUA_PATH, build_runtime_gm_code, detect_local_lan_ip, read_runtime_gm_source
 
 # ============================================================
 # ★★★ 修改这里 ★★★
@@ -32,57 +36,7 @@ TARGET_LUA_FILES = [
     # r"F:\HaruBranch_Bar\Product\Lua\Launch\XLaunchModule.lua",
 ]
 
-# EncyHub GM Console 的连接地址
-GM_HOST = "10.101.0.8"
 GM_PORT = 12581  # 固定握手端口：所有分支 / 所有设备统一连接此端口
-
-# ============================================================
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-README_PATH = os.path.join(SCRIPT_DIR, "README_RuntimeGM_Client.md")
-
-
-def extract_lua_from_readme(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    match = re.search(r"```lua\n(.*?)```", content, re.DOTALL)
-    if not match:
-        # fallback: 从 ```lua 到文件末尾
-        idx = content.find("```lua\n")
-        if idx == -1:
-            print("[ERROR] README 中未找到 ```lua 代码块")
-            sys.exit(1)
-        lua_code = content[idx + len("```lua\n"):]
-        # 去掉末尾可能的 ```
-        if lua_code.rstrip().endswith("```"):
-            lua_code = lua_code.rstrip()[:-3]
-    else:
-        lua_code = match.group(1)
-
-    return lua_code
-
-
-def patch_host_port(lua_code: str, host: str, port: int) -> str:
-    # 替换 Start("x.x.x.x", 12581) 中的 IP 和端口
-    lua_code = re.sub(
-        r'(gmClient\.Start\()"[^"]*",\s*\d+\)',
-        rf'\1"{host}", {port})',
-        lua_code,
-    )
-    # 也替换 RuntimeGMClient.Host / .Port 默认值（如果存在）
-    lua_code = re.sub(
-        r'(RuntimeGMClient\.Host\s*=\s*)"[^"]*"',
-        rf'\1"{host}"',
-        lua_code,
-    )
-    lua_code = re.sub(
-        r'(RuntimeGMClient\.Port\s*=\s*)\d+',
-        rf'\g<1>{port}',
-        lua_code,
-    )
-    return lua_code
-
 
 def svn_revert(filepath: str):
     print(f"[SVN] revert {filepath}")
@@ -105,15 +59,13 @@ def svn_revert(filepath: str):
         print("[SVN] revert 超时，跳过")
 
 
-def inject_one(target: str, base_lua_code: str, host: str, port: int) -> tuple[bool, str]:
+def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
     """对单个目标文件执行注入。返回 (成功?, 描述)。失败时只记录、不抛异常。"""
     if not os.path.isfile(target):
         return False, "文件不存在"
 
     try:
         svn_revert(target)
-        # 所有分支统一 patch 成固定握手端口（多设备靠 IP+pid 区分，无需按分支分端口）
-        lua_code = patch_host_port(base_lua_code, host, port)
         with open(target, "r", encoding="utf-8") as f:
             original = f.read()
 
@@ -135,20 +87,22 @@ def main():
         print("[ERROR] TARGET_LUA_FILES 为空，请至少配置一个目标文件")
         sys.exit(1)
 
-    if not os.path.isfile(README_PATH):
-        print(f"[ERROR] README 不存在: {README_PATH}")
+    if not os.path.isfile(RUNTIME_GM_LUA_PATH):
+        print(f"[ERROR] RuntimeGM Lua 源文件不存在: {RUNTIME_GM_LUA_PATH}")
         sys.exit(1)
 
-    # 提取一次（所有目标共享同一份原始 Lua，统一 patch 成固定握手端口）
-    base_lua_code = extract_lua_from_readme(README_PATH)
-    print(f"[EXTRACT] 提取了 {len(base_lua_code)} 字符的 Lua 代码")
-    print(f"[PLAN] {len(targets)} 个目标文件，统一握手端口 {GM_PORT}（多设备靠 IP+pid 区分）")
+    # 读取一次，所有目标共享同一份生成后的 Lua，统一 patch 成固定握手端口
+    base_lua_code = read_runtime_gm_source()
+    resolved_host = detect_local_lan_ip()
+    lua_code = build_runtime_gm_code(resolved_host, GM_PORT)
+    print(f"[SOURCE] 读取了 {len(base_lua_code)} 字符的 RuntimeGM Lua 代码")
+    print(f"[PLAN] {len(targets)} 个目标文件，连接地址 {resolved_host}:{GM_PORT}（多设备靠 IP+pid 区分）")
     print()
 
     results = []
     for i, target in enumerate(targets):
         print(f"--- [{i+1}/{len(targets)}] {target}  (port={GM_PORT}) ---")
-        ok, info = inject_one(target, base_lua_code, GM_HOST, GM_PORT)
+        ok, info = inject_one(target, lua_code, GM_PORT)
         results.append((target, GM_PORT, ok, info))
         print(f"[{'DONE' if ok else 'SKIP'}] {info}\n")
 
@@ -160,7 +114,7 @@ def main():
         # 用 ASCII 标记避免 Windows GBK 控制台 UnicodeEncodeError
         flag = "[OK]" if ok else "[FAIL]"
         print(f"  {flag} [port {port}] {target}  ({info})")
-    print(f"连接地址: {GM_HOST}:{GM_PORT}")
+    print(f"连接地址: {resolved_host}:{GM_PORT}")
 
     # 全部失败时返回非零退出码，便于脚本化串联
     if ok_count == 0:

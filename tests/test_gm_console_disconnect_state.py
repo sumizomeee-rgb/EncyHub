@@ -11,7 +11,7 @@ sys.path.insert(0, BASE_DIR)
 GM_MAIN_PY = os.path.join(BASE_DIR, "tools", "gm_console", "main.py")
 SERVER_MGR_PY = os.path.join(BASE_DIR, "tools", "gm_console", "server_mgr.py")
 GM_CONSOLE_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "GmConsole.jsx")
-RUNTIME_GM_README = os.path.join(BASE_DIR, "tools", "gm_console", "README_RuntimeGM_Client.md")
+RUNTIME_GM_LUA = os.path.join(BASE_DIR, "tools", "gm_console", "runtime_gm_client.lua")
 
 
 def read_file(path):
@@ -43,18 +43,21 @@ class TestClientListRevision:
     def test_frontend_ignores_stale_client_snapshots(self):
         assert "clientStateRevRef" in self.frontend
         assert "applyClientSnapshot" in self.frontend
-        assert "rev < clientStateRevRef.current" in self.frontend
+        assert "rev <= clientStateRevRef.current" in self.frontend
+
+    def test_frontend_ignores_duplicate_client_snapshots(self):
+        assert "rev <= clientStateRevRef.current" in self.frontend
 
 
 class TestRuntimeGmEditorDisconnect:
     """RuntimeGM must hook XLuaBehaviour's real destroy callback."""
 
     def setup_method(self):
-        self.readme = read_file(RUNTIME_GM_README)
+        self.runtime_lua = read_file(RUNTIME_GM_LUA)
 
     def test_uses_xlua_on_destroy_callback(self):
-        assert "behaviour.LuaOnDestroy = function()" in self.readme
-        assert "behaviour.LuaDestroy = function()" not in self.readme
+        assert "behaviour.LuaOnDestroy = function()" in self.runtime_lua
+        assert "behaviour.LuaDestroy = function()" not in self.runtime_lua
 
 
 class FakeReader:

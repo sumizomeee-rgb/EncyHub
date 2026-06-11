@@ -18,14 +18,14 @@ function saveExpandedCategories(set) {
 // ============================================================================
 // WebSocket 通信 Hook
 // ============================================================================
-function useInspectorWs(selectedClient) {
+function useInspectorWs(selectedClient, active) {
     const listenersRef = useRef({})
     const wsRef = useRef(null)
     const [wsConnected, setWsConnected] = useState(false)
     const reconnectTimer = useRef(null)
 
     useEffect(() => {
-        if (!selectedClient) return
+        if (!active || !selectedClient) return
         let closed = false
 
         const connect = () => {
@@ -78,7 +78,7 @@ function useInspectorWs(selectedClient) {
             if (wsRef.current) { wsRef.current.close(); wsRef.current = null }
             setWsConnected(false)
         }
-    }, [selectedClient?.id])
+    }, [selectedClient?.id, active])
 
     const request = useCallback((action, params, onResponse) => {
         if (!selectedClient) return
@@ -174,7 +174,7 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
     const [expandedCategories, setExpandedCategories] = useState(() => loadExpandedCategories())
 
     // --- 通信 ---
-    const { request, wsConnected } = useInspectorWs(selectedClient)
+    const { request, wsConnected } = useInspectorWs(selectedClient, active)
 
     // --- 请求 UI 列表 ---
     const refreshUiList = useCallback(() => {

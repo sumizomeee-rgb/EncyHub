@@ -38,6 +38,7 @@ from hub_core import (
     router as hub_router,
     proxy_router,
 )
+from hub_core.api import close_proxy_http_client
 from hub_core.config import FRONTEND_DIST
 
 
@@ -138,6 +139,7 @@ async def lifespan(app: FastAPI):
     # 关闭时停止所有工具
     print("\n[EncyHub] 正在关闭...")
     health_check_task.cancel()
+    await close_proxy_http_client()
     await process_manager.shutdown_all()
     print("[EncyHub] 已关闭")
 

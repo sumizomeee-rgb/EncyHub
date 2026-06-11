@@ -5,9 +5,10 @@ import {
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw,
   PanelLeftClose, PanelLeftOpen, Package, Database, Zap, Settings,
-  Film, Video, Clock, Table2, Camera
+  Film, Video, Clock, Table2, Camera, Clipboard, Check, AlertCircle
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
+import { copyText } from '../utils/clipboard'
 
 // ============================================================================
 // 平台 SVG 图标（24x24 viewBox，stroke-width=2，匹配 Lucide/Tabler 视觉权重）
@@ -71,6 +72,25 @@ function PlatformIcon({ platform, size, className }) {
   }
   const IconFn = _platformIcons[key]
   return <IconFn size={size} className={className} />
+}
+
+function RuntimeGmBridgeIcon({ size = 16, className = '' }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className}
+      fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3.5" y="4" width="8" height="7" rx="1.5" />
+      <path d="M6.2 7.5h2.6" />
+      <path d="M7.5 6.2v2.6" />
+      <rect x="12.5" y="13" width="8" height="7" rx="1.5" />
+      <path d="M15.1 16.5h2.8" />
+      <path d="M7.5 11v2.2a2.3 2.3 0 0 0 2.3 2.3h2.7" />
+      <path d="M11.2 15.5l1.3-1.3" />
+      <path d="M11.2 15.5l1.3 1.3" />
+      <circle cx="17.2" cy="7.3" r="1.8" />
+      <path d="M13.2 7.3h2.2" />
+      <path d="M19 7.3h1.5" />
+    </svg>
+  )
 }
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
@@ -251,13 +271,14 @@ function GmConsole() {
   // 弹窗规格：null = 关闭；{ editingIndex, initial } = 打开。
   // 表单内部 state 收敛在 <CustomGmModal> 里，避免敲键盘触发顶层 GmConsole 重渲染。
   const [customGmModal, setCustomGmModal] = useState(null)
+  const [runtimeGmModalOpen, setRuntimeGmModalOpen] = useState(false)
 
   // 搜索过滤
   const [searchFilter, setSearchFilter] = useState('')
 
   const applyClientSnapshot = useCallback((nextClients, rev) => {
     if (typeof rev === 'number') {
-      if (rev < clientStateRevRef.current) return false
+      if (rev <= clientStateRevRef.current) return false
       clientStateRevRef.current = rev
     }
     const newClients = Array.isArray(nextClients) ? nextClients : []
@@ -762,9 +783,14 @@ end`
               {/* Collapsed view - desktop only when collapsed */}
               <div className={`${sidebarCollapsed ? 'lg:flex' : 'lg:hidden'} hidden flex-col items-center gap-3`}>
                 <div className="glass-card p-2 w-full flex justify-center">
-                  <div className="relative" title={`握手端口 ${handshakePort}`}>
-                    <Radio size={18} className="text-[var(--sage)]" />
-                  </div>
+                  <button
+                    type="button"
+                    className="relative p-1 rounded-lg text-[var(--sage)] hover:bg-[var(--cream-warm)] transition-colors"
+                    title={`RuntimeGM Bridge 代码 · 握手端口 ${handshakePort}`}
+                    onClick={() => setRuntimeGmModalOpen(true)}
+                  >
+                    <RuntimeGmBridgeIcon size={18} />
+                  </button>
                 </div>
                 <div className="glass-card p-2.5 w-full">
                   <div className="flex flex-col items-center gap-1.5">
@@ -816,9 +842,19 @@ end`
                     </div>
                     <h2 className="font-display text-base font-semibold text-[var(--coffee-deep)]">握手端口</h2>
                   </div>
-                  <div className="flex items-center gap-1.5" title="所有分支 / 设备统一连接此固定端口">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
-                    <span className="font-mono text-sm font-semibold text-[var(--coffee-deep)]">:{handshakePort}</span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setRuntimeGmModalOpen(true)}
+                      className="p-1.5 rounded-lg text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors"
+                      title="RuntimeGM Bridge 代码"
+                    >
+                      <RuntimeGmBridgeIcon size={15} />
+                    </button>
+                    <div className="flex items-center gap-1.5" title="所有分支 / 设备统一连接此固定端口">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
+                      <span className="font-mono text-sm font-semibold text-[var(--coffee-deep)]">:{handshakePort}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1480,11 +1516,183 @@ end`
         onClose={() => setCustomGmModal(null)}
         onSaved={() => { setCustomGmModal(null); fetchCustomGm() }}
       />
+      <RuntimeGmCodeModal
+        open={runtimeGmModalOpen}
+        handshakePort={handshakePort}
+        onClose={() => setRuntimeGmModalOpen(false)}
+      />
     </div>
   )
 }
 
 export default GmConsole
+
+
+// ============================================================================
+// RuntimeGM 代码复制弹窗
+// ============================================================================
+function RuntimeGmCodeModal({ open, handshakePort, onClose }) {
+  const port = handshakePort || 12581
+  const [host, setHost] = useState('')
+  const [code, setCode] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [copyStatus, setCopyStatus] = useState('idle')
+  const copyTimerRef = useRef(null)
+  const cachedCodeRef = useRef('')
+  const cachedHostRef = useRef('')
+  const cachedPortRef = useRef(null)
+
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+  }, [])
+
+  const loadRuntimeGmCode = useCallback(async (force = false) => {
+    if (!force && cachedCodeRef.current && cachedPortRef.current === port) {
+      setCode(cachedCodeRef.current)
+      setHost(cachedHostRef.current)
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const params = new URLSearchParams({ port: String(port) })
+      const res = await fetch(`/api/gm_console/runtime-gm-code?${params}`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || '获取 RuntimeGM Bridge 代码失败')
+      const nextCode = data.code || ''
+      cachedCodeRef.current = nextCode
+      cachedHostRef.current = data.host || ''
+      cachedPortRef.current = port
+      setCode(nextCode)
+      setHost(data.host || '')
+    } catch (err) {
+      if (!cachedCodeRef.current) setCode('')
+      setError(err.message || '获取 RuntimeGM Bridge 代码失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [port])
+
+  useEffect(() => {
+    if (!open) return
+    setCopyStatus('idle')
+    loadRuntimeGmCode(false)
+  }, [open, loadRuntimeGmCode])
+
+  useEffect(() => {
+    if (!open) return
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose?.()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  const handleCopy = async (e) => {
+    e?.stopPropagation?.()
+    e?.preventDefault?.()
+    if (!code) return
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    try {
+      await copyText(code)
+      setCopyStatus('copied')
+    } catch (err) {
+      console.error('[RuntimeGM] copy failed:', err)
+      setCopyStatus('error')
+    }
+    copyTimerRef.current = setTimeout(() => setCopyStatus('idle'), 1100)
+  }
+
+  const CopyIcon = copyStatus === 'copied' ? Check : (copyStatus === 'error' ? AlertCircle : Clipboard)
+  const copyLabel = copyStatus === 'copied' ? '已复制' : (copyStatus === 'error' ? '复制失败' : '复制')
+
+  return (
+    <div
+      className="fixed inset-0 z-[1100] flex items-center justify-center p-4"
+      style={{ background: 'rgba(74, 64, 58, 0.38)' }}
+      onMouseDown={onClose}
+    >
+      <div
+        className="relative w-[min(1180px,94vw)] max-h-[calc(100vh-40px)] overflow-hidden rounded-lg border border-[var(--glass-border)] bg-[rgba(255,252,247,0.97)] shadow-2xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-[var(--glass-border)]">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--sage)] to-[var(--sage-soft)] flex items-center justify-center shrink-0">
+              <RuntimeGmBridgeIcon size={17} className="text-white" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="font-display text-base font-semibold text-[var(--coffee-deep)] truncate">RuntimeGM Bridge 代码</h3>
+              <p className="text-xs text-[var(--coffee-muted)] truncate">粘贴到客户端 Lua 入口文件，建立与当前 GM Console 的连接。</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 rounded-lg text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors"
+            title="关闭"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2">
+            <div className="min-w-0">
+              <span className="block mb-1 text-[10px] font-medium text-[var(--coffee-muted)]">Host</span>
+              <div className="w-full px-3 py-2 rounded-lg border border-[var(--glass-border)] bg-white/70 font-mono text-sm text-[var(--coffee-deep)] truncate">
+                {host || (loading ? '检测中...' : '-')}
+              </div>
+            </div>
+            <div>
+              <span className="block mb-1 text-[10px] font-medium text-[var(--coffee-muted)]">Port</span>
+              <div className="px-3 py-2 rounded-lg border border-[var(--glass-border)] bg-[var(--cream-warm)]/60 font-mono text-sm font-semibold text-[var(--coffee-deep)]">
+                {port}
+              </div>
+            </div>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={handleCopy}
+                onMouseDown={(e) => e.stopPropagation()}
+                disabled={!code}
+                className={`h-[38px] px-3 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  copyStatus === 'copied'
+                    ? 'bg-[var(--sage)]/15 text-[var(--sage)]'
+                    : copyStatus === 'error'
+                      ? 'bg-[var(--terracotta)]/12 text-[var(--terracotta)]'
+                      : 'bg-[var(--coffee-deep)] text-white hover:bg-[var(--caramel)]'
+                }`}
+                title="复制完整 Lua 代码"
+              >
+                <CopyIcon size={15} />
+                <span>{copyLabel}</span>
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs">
+              <AlertCircle size={14} />
+              <span className="truncate">{error}</span>
+            </div>
+          )}
+
+          <textarea
+            readOnly
+            spellCheck={false}
+            value={code}
+            placeholder={loading ? '正在生成 RuntimeGM Bridge 代码...' : ''}
+            className="w-full h-[min(62vh,620px)] resize-none rounded-lg border border-[var(--glass-border)] bg-[#1f2524] p-4 font-mono text-[11px] leading-relaxed text-[#e9f0ea] placeholder:text-[#9aa39b] focus:outline-none"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
 
 
 // ============================================================================

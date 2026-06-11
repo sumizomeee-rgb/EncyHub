@@ -14,6 +14,7 @@ import uvicorn
 from .server_mgr import ServerMgr
 from .custom_gm import CustomGmManager
 from .proto_parser import ProtoParser, validate_haruroot, generate_lua_code, parse_log_file
+from .runtime_gm_code import build_runtime_gm_code, detect_local_lan_ip
 
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
@@ -278,6 +279,27 @@ class ExecGmRequest(BaseModel):
 class CustomGmRequest(BaseModel):
     name: str
     cmd: str
+
+
+# ============================================================================
+# RuntimeGM Code API
+# ============================================================================
+
+@app.get("/runtime-gm-code")
+async def get_runtime_gm_code(port: int = DEFAULT_TCP_PORT):
+    """获取可直接粘贴到客户端入口文件的 RuntimeGM Lua 代码。"""
+    try:
+        host = detect_local_lan_ip()
+        code = build_runtime_gm_code(host, port)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError:
+        raise HTTPException(500, "RuntimeGM Lua 源文件不存在")
+    return {
+        "code": code,
+        "host": host,
+        "port": port,
+    }
 
 
 # ============================================================================
