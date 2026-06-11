@@ -202,6 +202,18 @@ async def lifespan(app: FastAPI):
 
     server_mgr.on_table_monitor_data = on_table_monitor_data
 
+    # --- Screenshot ---
+    def on_screenshot(client_id, pkt):
+        asyncio.create_task(broadcast_event({
+            "type": "screenshot",
+            "client_id": client_id,
+            "image": pkt.get("image", ""),
+            "width": pkt.get("width", 0),
+            "height": pkt.get("height", 0),
+        }))
+
+    server_mgr.on_screenshot = on_screenshot
+
     # 启动默认监听
     success, msg = await server_mgr.add_listener(DEFAULT_TCP_PORT)
     if success:
@@ -314,6 +326,13 @@ async def broadcast_gm(req: ExecGmRequest):
     print(f"[GmConsole API] broadcast_gm 接收: gm_id={req.gm_id} (type={gm_id_type}), value={val_repr} (type={val_type})")
     await server_mgr.broadcast_gm(req.gm_id, req.value)
     return {"message": "已广播 GM 指令"}
+
+
+@app.post("/clients/{client_id}/screenshot")
+async def request_screenshot(client_id: str):
+    """请求客户端截图"""
+    await server_mgr.send_screenshot_request(client_id)
+    return {"message": "已请求截图"}
 
 
 # ============================================================================

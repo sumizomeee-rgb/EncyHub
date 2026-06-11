@@ -94,6 +94,10 @@ local function StartRuntimeGM()
 
     RuntimeGMClient.DeviceInfo = getDeviceInfo()
 
+    -- 获取当前 SVN 认证用户名（延迟到 Connect() 成功後に実行、初期化を軽量化）
+    -- 原理：%APPDATA%/Subversion/auth/svn.simple/ 下の認証キャッシュから最多出現ユーザー名を採用
+    RuntimeGMClient.SvnAuthor = ""
+
     -- 保存原始 print
     local origin_print = print
 
@@ -201,6 +205,51 @@ local function StartRuntimeGM()
         })
     end
 
+    -- 获取 SVN 用户名（定义在 Connect 内，遅延実行で初期化を妨げない）
+    local function tryGetSvnAuthor()
+        local author = ""
+        pcall(function()
+            local appdata = os.getenv("APPDATA") or ""
+            if appdata == "" then return end
+            local authDir = appdata .. "/Subversion/auth/svn.simple"
+            local ok, exists = pcall(function()
+                return CS.System.IO.Directory.Exists(authDir)
+            end)
+            if not ok or not exists then return end
+            local function hasSvnAbove(path)
+                for _ = 1, 12 do
+                    if not path or path == "" then return false end
+                    local ok2, ex2 = pcall(function()
+                        return CS.System.IO.Directory.Exists(path .. "/.svn")
+                    end)
+                    if ok2 and ex2 then return true end
+                    local parent = CS.System.IO.Path.GetDirectoryName(path)
+                    if not parent or parent == path then return false end
+                    path = parent
+                end
+                return false
+            end
+            if not hasSvnAbove(CS.UnityEngine.Application.dataPath) then return end
+            local files = CS.System.IO.Directory.GetFiles(authDir)
+            local counts = {}
+            local bestUser, bestCount = "", 0
+            for i = 0, files.Length - 1 do
+                local txt = CS.System.IO.File.ReadAllText(files[i])
+                txt = txt:gsub("\r\n", "\n"):gsub("\r", "\n")
+                local _, user = txt:match("username\nV (%d+)\n([^\n]+)")
+                if user and #user > 0 then
+                    counts[user] = (counts[user] or 0) + 1
+                    if counts[user] > bestCount or (counts[user] == bestCount and #user > #bestUser) then
+                        bestUser = user
+                        bestCount = counts[user]
+                    end
+                end
+            end
+            author = bestUser
+        end)
+        return author
+    end
+
     function RuntimeGMClient.Connect()
         if RuntimeGMClient.Socket then return end
         if not RuntimeGMClient.SocketLibrary then return end
@@ -225,14 +274,20 @@ local function StartRuntimeGM()
             tcp:settimeout(0)
             RuntimeGMClient.Socket = tcp
             pcall(function() RuntimeGMClient.LastRecvTime = CS.UnityEngine.Time.realtimeSinceStartup end)
+            -- HELLO を先に送信（SVN 取得は遅延実行でブロック防止）
             RuntimeGMClient.Send({
                 type = "HELLO",
                 pid = RuntimeGMClient.DeviceInfo.pid,
                 device = RuntimeGMClient.DeviceInfo.device,
                 platform = RuntimeGMClient.DeviceInfo.platform,
                 packageName = RuntimeGMClient.DeviceInfo.packageName,
-                persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath
+                persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
+                svn_author = ""
             })
+            -- SVN ユーザー名は接続後に遅延取得（次回 HELLO 更新で送信）
+            if RuntimeGMClient.SvnAuthor == "" then
+                RuntimeGMClient._svnFetched = false
+            end
         else
             -- 这里会打印具体的错误原因，比如 "connection refused" 或 "timeout"
             origin_print("[RuntimeGM] 连接失败，错误原因: " .. tostring(err))
@@ -3508,6 +3563,22 @@ local function StartRuntimeGM()
             end
             return
         end
+        -- 接続確立後に SVN ユーザー名を遅延取得（connect 時のブロック防止）
+        if not RuntimeGMClient._svnFetched then
+            RuntimeGMClient._svnFetched = true
+            RuntimeGMClient.SvnAuthor = tryGetSvnAuthor()
+            if RuntimeGMClient.SvnAuthor ~= "" then
+                RuntimeGMClient.Send({
+                    type = "HELLO",
+                    pid = RuntimeGMClient.DeviceInfo.pid,
+                    device = RuntimeGMClient.DeviceInfo.device,
+                    platform = RuntimeGMClient.DeviceInfo.platform,
+                    packageName = RuntimeGMClient.DeviceInfo.packageName,
+                    persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
+                    svn_author = RuntimeGMClient.SvnAuthor
+                })
+            end
+        end
         if not RuntimeGMClient.GMLoaded then
             RuntimeGMClient.GMRetryTimer = (RuntimeGMClient.GMRetryTimer or 0) + CS.UnityEngine.Time.unscaledDeltaTime
             if RuntimeGMClient.GMRetryTimer > 1.0 then
@@ -4941,6 +5012,23 @@ local function StartRuntimeGM()
             if not ok then
                 origin_print("[RuntimeGM] TABLE_MONITOR command error: " .. tostring(err))
             end
+        elseif type == "SCREENSHOT" then
+            pcall(function()
+                local tex = CS.UnityEngine.ScreenCapture.CaptureScreenshotAsTexture()
+                if tex then
+                    local bytes = CS.UnityEngine.ImageConversion.EncodeToJPG(tex, 60)
+                    CS.UnityEngine.Object.Destroy(tex)
+                    if bytes and bytes.Length > 0 then
+                        local base64 = CS.System.Convert.ToBase64String(bytes)
+                        RuntimeGMClient.Send({
+                            type = "SCREENSHOT_RESP",
+                            image = base64,
+                            width = CS.UnityEngine.Screen.width,
+                            height = CS.UnityEngine.Screen.height
+                        })
+                    end
+                end
+            end)
         end
     end
 

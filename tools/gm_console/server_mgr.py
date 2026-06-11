@@ -26,6 +26,7 @@ class Client:
     pid: int = 0
     package_name: str = ""
     persistent_data_path: str = ""
+    svn_author: str = ""
     gm_tree: List[Any] = field(default_factory=list)
     ui_states: Dict[str, Any] = field(default_factory=dict)
 
@@ -40,6 +41,7 @@ class Client:
             "packageName": self.package_name,
             "persistentDataPath": self.persistent_data_path,
             "gm_tree": self.gm_tree,
+            "svnAuthor": self.svn_author,
         }
 
 
@@ -84,6 +86,7 @@ class ServerMgr:
         self.on_av_monitor_data = None      # Callback for AV_MONITOR_RESP
         self.on_proto_call_resp = None      # Callback for PROTO_CALL_RESP
         self.on_table_monitor_data = None   # Callback for TABLE_MONITOR_RESP
+        self.on_screenshot = None           # Callback for SCREENSHOT_RESP
         self._pending_execs: Dict[int, dict] = {}
         self._temp_seq = 0                  # 临时 ID 序号（保证 accept 阶段唯一）
 
@@ -290,6 +293,7 @@ class ServerMgr:
             c.pid = pkt.get("pid", 0) or 0
             c.package_name = pkt.get("packageName", "") or pkt.get("package_name", "") or ""
             c.persistent_data_path = pkt.get("persistentDataPath", "") or pkt.get("persistent_data_path", "") or ""
+            c.svn_author = pkt.get("svn_author", "") or ""
             # 计算确定 ID 并 rekey（pid 缺失时按 device 兜底，见 spec §3.4）
             # 用 "-" 分隔避免 "#" 在 HTTP 路径/代理中被误认为 fragment
             if c.pid > 0:
@@ -302,7 +306,7 @@ class ServerMgr:
                 self._rekey_client(c, new_id)
             print(
                 f"[ServerMgr] HELLO: id={c.id}, device={c.device}, platform={c.platform}, "
-                f"package={c.package_name or '-'}"
+                f"package={c.package_name or '-'}, author={c.svn_author or '-'}"
             )
             if self.on_update:
                 self.on_update()
@@ -383,6 +387,10 @@ class ServerMgr:
             print(f"[ServerMgr] TABLE_MONITOR_RESP: action={action}, error={pkt.get('error', 'none')}")
             if self.on_table_monitor_data:
                 self.on_table_monitor_data(cid, pkt)
+        elif t == "SCREENSHOT_RESP":
+            print(f"[ServerMgr] SCREENSHOT_RESP: cid={cid}, size={len(pkt.get('image', ''))}")
+            if self.on_screenshot:
+                self.on_screenshot(cid, pkt)
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -697,6 +705,18 @@ class ServerMgr:
             await c.writer.drain()
         except Exception as e:
             self._add_log("error", f"Send TABLE_MONITOR failed: {e}", client_id)
+
+    async def send_screenshot_request(self, client_id: str):
+        """发送截图命令到客户端"""
+        c = self.clients.get(client_id)
+        if not c:
+            return
+        msg = json.dumps({"type": "SCREENSHOT"}) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+        except Exception as e:
+            self._add_log("error", f"Send SCREENSHOT failed: {e}", client_id)
 
     async def shutdown(self):
         """关闭所有连接并清理端口"""

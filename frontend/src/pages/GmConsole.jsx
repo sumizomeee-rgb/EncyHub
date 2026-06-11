@@ -5,7 +5,7 @@ import {
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw,
   PanelLeftClose, PanelLeftOpen, Package, Database, Zap, Settings,
-  Film, Video, Clock, Table2
+  Film, Video, Clock, Table2, Camera
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
@@ -51,14 +51,25 @@ const _platformIcons = {
       <path d="M14 17l.5 4" />
     </svg>
   ),
+  unity: ({ size, className }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className}
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2l8 5v10l-8 5-8-5V7z" />
+      <path d="M4 7l8 5 8-5" />
+      <path d="M12 12v10" />
+    </svg>
+  ),
 }
 
 function getPlatformKey(platform) {
   if (!platform) return null
   const p = platform.toLowerCase()
+  // Editor は Unity キューブアイコンで Player と区別
+  if (p.includes('windowseditor')) return 'unity'
   if (p.includes('windows')) return 'windows'
   if (p.includes('android')) return 'android'
   if (p.includes('iphone')) return 'apple'
+  if (p.includes('osxeditor')) return 'unity'
   if (p.includes('osx')) return 'mac'
   return null
 }
@@ -122,6 +133,7 @@ function GmConsole() {
   const [listeners, setListeners] = useState([])
   const [clients, setClients] = useState([])
   const [selectedClient, setSelectedClient] = useState(null)
+  const [screenshot, setScreenshot] = useState(null) // { client_id, image, width, height }
   // 被系统自动选中的客户端 id；用于在格子上渲染发光边框，提示"这是系统帮你选的"
   const [autoSelectedClientId, setAutoSelectedClientId] = useState(null)
   const [broadcastMode, setBroadcastMode] = useState(false)
@@ -355,6 +367,13 @@ function GmConsole() {
               type: log.level === 'info' ? 'info' : 'error',
               text: `[${log.time}] ${log.msg}`,
             }])
+          } else if (event.type === 'screenshot') {
+            setScreenshot({
+              client_id: event.client_id,
+              image: event.image,
+              width: event.width,
+              height: event.height,
+            })
           }
         } catch {}
       }
@@ -536,6 +555,21 @@ end`
   }
 
   // 执行 GM 命令 (fire-and-forget 减少延迟)
+  // 请求客户端截图
+  const handleRequestScreenshot = async (clientId) => {
+    try {
+      const res = await fetch(`/api/gm_console/clients/${encodeURIComponent(clientId)}/screenshot`, { method: 'POST' })
+      if (res.ok) {
+        toast.success('已请求截图，等待客户端响应...')
+      } else {
+        const data = await res.json().catch(() => ({}))
+        toast.error(data.detail || '请求失败')
+      }
+    } catch (err) {
+      toast.error('请求截图失败: ' + err.message)
+    }
+  }
+
   const handleExecGm = (gmId, value = null) => {
     if (!selectedClient && !broadcastMode) {
       toast.warning('请先选择一个客户端或广播模式')
@@ -805,7 +839,7 @@ end`
                     {clients.map(client => (
                       <div
                         key={client.id}
-                        className={`flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${
+                        className={`group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${
                           selectedClient?.id === client.id && !broadcastMode
                             ? 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-l-[3px] border-[var(--caramel)]'
                             : 'bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)]'
@@ -816,22 +850,38 @@ end`
                         }`}
                         onClick={() => handleSelectClient(client)}
                       >
-                        <PlatformIcon platform={client.platform} size={14}
-                          className="text-[var(--caramel)] shrink-0" />
+                        <span title={`${client.device || 'Unknown'}\n${client.ip || ''} · #${client.pid || '?'} · ${client.platform || ''}${client.svnAuthor ? '\n' + client.svnAuthor : ''}`}>
+                          <PlatformIcon platform={client.platform} size={14}
+                            className="text-[var(--caramel)] shrink-0" />
+                        </span>
                         <div className="flex-1 min-w-0">
                           <div className="font-medium text-xs text-[var(--coffee-deep)] truncate">
                             {client.device || 'Unknown'}
                           </div>
-                          <div className="text-[10px] text-[var(--coffee-muted)]">
-                            {client.pid > 0 && (
-                              <span className="font-mono text-[var(--coffee-light)]">#{client.pid}</span>
-                            )}
-                            {client.pid > 0 && client.ip ? ' · ' : ''}
+                          <div className="text-[10px] text-[var(--coffee-muted)] overflow-hidden whitespace-nowrap">
                             {client.ip && (
                               <span className="font-mono text-[var(--coffee-deep)]">{client.ip}</span>
                             )}
+                            {client.ip && client.pid > 0 ? ' · ' : ''}
+                            {client.pid > 0 && (
+                              <span className="font-mono text-[var(--coffee-light)]">#{client.pid}</span>
+                            )}
+                            {(client.ip || client.pid > 0) && client.svnAuthor ? ' · ' : ''}
+                            {client.svnAuthor && (
+                              <span className="inline-block max-w-[80px] overflow-hidden text-ellipsis whitespace-nowrap align-bottom" title={client.svnAuthor}>{client.svnAuthor}</span>
+                            )}
                           </div>
                         </div>
+                        <button
+                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--cream-warm)] transition-all shrink-0"
+                          title="抓取截图"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleRequestScreenshot(client.id)
+                          }}
+                        >
+                          <Camera size={12} className="text-[var(--coffee-muted)]" />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1382,6 +1432,33 @@ end`
           </div>
         )}
       </main>
+
+      {/* Screenshot Modal */}
+      {screenshot && (
+        <div className="modal-overlay" onMouseDown={() => setScreenshot(null)}>
+          <div className="glass-card p-4 max-w-[90vw] max-h-[90vh]" onClick={e => e.stopPropagation()}
+            style={{ animation: 'slideUp 0.3s ease' }}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--caramel)] to-[var(--caramel-light)] flex items-center justify-center">
+                  <Camera size={14} className="text-white" />
+                </div>
+                <h3 className="font-display text-sm font-semibold text-[var(--coffee-deep)]">
+                  截图 · {clients.find(c => c.id === screenshot.client_id)?.device || screenshot.client_id}
+                </h3>
+              </div>
+              <button onClick={() => setScreenshot(null)}
+                className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]">
+                <X size={20} />
+              </button>
+            </div>
+            <img src={`data:image/jpeg;base64,${screenshot.image}`}
+              alt="客户端截图"
+              className="rounded-lg max-h-[70vh] object-contain"
+              style={{ width: screenshot.width, maxWidth: '100%', height: 'auto' }} />
+          </div>
+        </div>
+      )}
 
       {/* Custom GM Modal */}
       <CustomGmModal
