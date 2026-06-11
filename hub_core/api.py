@@ -174,6 +174,7 @@ async def restart_hub():
 # 代理路由 - 转发请求到工具子进程
 proxy_router = APIRouter()
 proxy_http_client: Optional[httpx.AsyncClient] = None
+WEBSOCKET_PROXY_MAX_SIZE = 32 * 1024 * 1024  # 截图等工具事件会超过 websockets 默认 1MiB 上限
 
 
 def get_proxy_http_client() -> httpx.AsyncClient:
@@ -292,7 +293,7 @@ async def proxy_websocket(websocket: WebSocket, tool_id: str, path: str):
 
     upstream_ws = None
     try:
-        upstream_ws = await websockets.connect(target_url)
+        upstream_ws = await websockets.connect(target_url, max_size=WEBSOCKET_PROXY_MAX_SIZE)
 
         async def forward_to_upstream():
             """前端 → 工具子进程"""

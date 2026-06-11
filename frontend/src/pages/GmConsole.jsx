@@ -78,17 +78,18 @@ function RuntimeGmBridgeIcon({ size = 16, className = '' }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
       fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3.5" y="4" width="8" height="7" rx="1.5" />
-      <path d="M6.2 7.5h2.6" />
-      <path d="M7.5 6.2v2.6" />
-      <rect x="12.5" y="13" width="8" height="7" rx="1.5" />
-      <path d="M15.1 16.5h2.8" />
-      <path d="M7.5 11v2.2a2.3 2.3 0 0 0 2.3 2.3h2.7" />
-      <path d="M11.2 15.5l1.3-1.3" />
-      <path d="M11.2 15.5l1.3 1.3" />
-      <circle cx="17.2" cy="7.3" r="1.8" />
-      <path d="M13.2 7.3h2.2" />
-      <path d="M19 7.3h1.5" />
+      {/* Left endpoint */}
+      <rect x="2" y="8" width="5" height="8" rx="1.2" />
+      <path d="M3.8 11.5h1.4" />
+      <path d="M3.8 13.5h1.4" />
+      {/* Right endpoint */}
+      <rect x="17" y="8" width="5" height="8" rx="1.2" />
+      <path d="M18.8 11.5h1.4" />
+      <path d="M18.8 13.5h1.4" />
+      {/* Bridge arch connecting both */}
+      <path d="M7 12c0-3.5 2.2-5 5-5s5 1.5 5 5" />
+      {/* Bridge deck */}
+      <path d="M7 12h10" />
     </svg>
   )
 }
@@ -144,6 +145,9 @@ function GmConsole() {
   const [clients, setClients] = useState([])
   const [selectedClient, setSelectedClient] = useState(null)
   const [screenshot, setScreenshot] = useState(null) // { client_id, image, width, height }
+  // 截图请求中的客户端 id 集合（per-client 锁，防止重复点击）
+  const [screenshotLoadingIds, setScreenshotLoadingIds] = useState(new Set())
+  const screenshotLoadingRef = useRef(new Set()) // ref 同步，避免闭包过期
   // 被系统自动选中的客户端 id；用于在格子上渲染发光边框，提示"这是系统帮你选的"
   const [autoSelectedClientId, setAutoSelectedClientId] = useState(null)
   const [broadcastMode, setBroadcastMode] = useState(false)
@@ -396,6 +400,9 @@ function GmConsole() {
               width: event.width,
               height: event.height,
             })
+            // 收到截图响应，清除该客户端的 loading 状态
+            screenshotLoadingRef.current.delete(event.client_id)
+            setScreenshotLoadingIds(new Set(screenshotLoadingRef.current))
           }
         } catch {}
       }
@@ -590,8 +597,13 @@ end`
   }
 
   // 执行 GM 命令 (fire-and-forget 减少延迟)
-  // 请求客户端截图
+  // 请求客户端截图（per-client 防重复 + 超时兜底）
+  const SCREENSHOT_TIMEOUT_MS = 10000
   const handleRequestScreenshot = async (clientId) => {
+    // 防重复：该客户端已有截图请求在飞行中
+    if (screenshotLoadingRef.current.has(clientId)) return
+    screenshotLoadingRef.current.add(clientId)
+    setScreenshotLoadingIds(new Set(screenshotLoadingRef.current))
     try {
       const res = await fetch(`/api/gm_console/clients/${encodeURIComponent(clientId)}/screenshot`, { method: 'POST' })
       if (res.ok) {
@@ -599,10 +611,24 @@ end`
       } else {
         const data = await res.json().catch(() => ({}))
         toast.error(data.detail || '请求失败')
+        screenshotLoadingRef.current.delete(clientId)
+        setScreenshotLoadingIds(new Set(screenshotLoadingRef.current))
+        return
       }
     } catch (err) {
       toast.error('请求截图失败: ' + err.message)
+      screenshotLoadingRef.current.delete(clientId)
+      setScreenshotLoadingIds(new Set(screenshotLoadingRef.current))
+      return
     }
+    // 超时兜底：如果客户端在 N 秒内未响应，自动解除 loading
+    setTimeout(() => {
+      if (screenshotLoadingRef.current.has(clientId)) {
+        screenshotLoadingRef.current.delete(clientId)
+        setScreenshotLoadingIds(new Set(screenshotLoadingRef.current))
+        toast.warning('截图响应超时，客户端可能未支持截图功能')
+      }
+    }, SCREENSHOT_TIMEOUT_MS)
   }
 
   const handleExecGm = (gmId, value = null) => {
@@ -923,14 +949,23 @@ end`
                           </div>
                         </div>
                         <button
-                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--cream-warm)] transition-all shrink-0"
-                          title="抓取截图"
+                          className={`p-1 rounded transition-all shrink-0 ${
+                            screenshotLoadingIds.has(client.id)
+                              ? 'opacity-100 cursor-wait'
+                              : 'opacity-0 group-hover:opacity-100 hover:bg-[var(--cream-warm)]'
+                          }`}
+                          title={screenshotLoadingIds.has(client.id) ? '截图中...' : '抓取截图'}
+                          disabled={screenshotLoadingIds.has(client.id)}
                           onClick={(e) => {
                             e.stopPropagation()
                             handleRequestScreenshot(client.id)
                           }}
                         >
-                          <Camera size={12} className="text-[var(--coffee-muted)]" />
+                          {screenshotLoadingIds.has(client.id) ? (
+                            <RefreshCw size={12} className="text-[var(--caramel)] animate-spin" />
+                          ) : (
+                            <Camera size={12} className="text-[var(--coffee-muted)]" />
+                          )}
                         </button>
                       </div>
                     ))}

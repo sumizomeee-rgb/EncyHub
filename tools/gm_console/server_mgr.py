@@ -88,6 +88,7 @@ class ServerMgr:
         self.on_proto_call_resp = None      # Callback for PROTO_CALL_RESP
         self.on_table_monitor_data = None   # Callback for TABLE_MONITOR_RESP
         self.on_screenshot = None           # Callback for SCREENSHOT_RESP
+        self._screenshot_parts: Dict[str, dict] = {}  # 分片截图重组缓冲
         self._pending_execs: Dict[int, dict] = {}
         self._temp_seq = 0                  # 临时 ID 序号（保证 accept 阶段唯一）
         self.client_state_rev = 0
@@ -446,9 +447,31 @@ class ServerMgr:
             if self.on_table_monitor_data:
                 self.on_table_monitor_data(cid, pkt)
         elif t == "SCREENSHOT_RESP":
-            print(f"[ServerMgr] SCREENSHOT_RESP: cid={cid}, size={len(pkt.get('image', ''))}")
-            if self.on_screenshot:
-                self.on_screenshot(cid, pkt)
+            part = pkt.get("part")
+            totalParts = pkt.get("totalParts")
+            if part and totalParts and totalParts > 1:
+                # 分片截图：重组
+                key = cid
+                if key not in self._screenshot_parts:
+                    self._screenshot_parts[key] = {"parts": {}, "total": totalParts, "width": pkt.get("width"), "height": pkt.get("height")}
+                buf = self._screenshot_parts[key]
+                buf["parts"][part] = pkt.get("image", "")
+                print(f"[ServerMgr] SCREENSHOT_RESP part {part}/{totalParts}: cid={cid}, chunk_size={len(pkt.get('image', ''))}")
+                if len(buf["parts"]) >= buf["total"]:
+                    # 所有分片到达，拼接
+                    full_image = ""
+                    for i in range(1, buf["total"] + 1):
+                        full_image += buf["parts"].get(i, "")
+                    full_pkt = {"type": "SCREENSHOT_RESP", "image": full_image, "width": buf["width"], "height": buf["height"]}
+                    print(f"[ServerMgr] SCREENSHOT_RESP complete: cid={cid}, total_size={len(full_image)}")
+                    if self.on_screenshot:
+                        self.on_screenshot(cid, full_pkt)
+                    del self._screenshot_parts[key]
+            else:
+                # 单片截图（兼容旧客户端）
+                print(f"[ServerMgr] SCREENSHOT_RESP: cid={cid}, size={len(pkt.get('image', ''))}")
+                if self.on_screenshot:
+                    self.on_screenshot(cid, pkt)
 
     def _add_log(self, level: str, msg: str, client_id: Optional[str] = None):
         """添加日志"""
@@ -773,11 +796,13 @@ class ServerMgr:
         """发送截图命令到客户端"""
         c = self.clients.get(client_id)
         if not c:
+            self._add_log("error", f"Send SCREENSHOT failed: 客户端 {client_id} 不存在")
             return
         msg = json.dumps({"type": "SCREENSHOT"}) + "\n"
         try:
             c.writer.write(msg.encode())
             await c.writer.drain()
+            self._add_log("info", "已发送截图请求到客户端", client_id)
         except Exception as e:
             self._add_log("error", f"Send SCREENSHOT failed: {e}", client_id)
 

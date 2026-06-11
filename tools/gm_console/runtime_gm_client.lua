@@ -128,26 +128,52 @@ local function StartRuntimeGM()
         return result
     end
 
-    function RuntimeGMClient.Send(data)
+    function RuntimeGMClient.Send(data, timeout)
         if not RuntimeGMClient.Socket then return end
         local success, packet = pcall(jsonEncode, data)
         if not success then
             origin_print("[RuntimeGM] JSON Encode Error: " .. tostring(packet))
             return
         end
+        local payload = packet .. "\n"
+        local len = #payload
+        -- 小包直接发，大包用更长超时 + 更多重试
+        local sendTimeout = timeout or ( len > 65536 and 5.0 or 0.1 )
+        local maxRetries = len > 65536 and 15 or 3
         local ok, err = pcall(function()
-            -- 给send一个短暂的超时窗口，避免被Update的settimeout(0)影响
-            RuntimeGMClient.Socket:settimeout(0.05)
-            RuntimeGMClient.Socket:send(packet .. "\n")
+            local lastByte = 0
+            local retries = 0
+            while lastByte < len do
+                RuntimeGMClient.Socket:settimeout(sendTimeout)
+                local sent, sendErr, partialByte = RuntimeGMClient.Socket:send(payload, lastByte + 1)
+                if sent then
+                    lastByte = sent
+                    retries = 0
+                else
+                    if sendErr == "closed" then error("closed") end
+                    -- timeout: partialByte 是绝对索引
+                    if partialByte and partialByte > lastByte then
+                        lastByte = partialByte
+                        retries = 0
+                    else
+                        retries = retries + 1
+                        if retries > maxRetries then
+                            error("timeout after " .. maxRetries .. " retries at byte " .. lastByte .. "/" .. len)
+                        end
+                    end
+                end
+            end
+            RuntimeGMClient.Socket:settimeout(0)
         end)
         if not ok then
+            pcall(function() RuntimeGMClient.Socket:settimeout(0) end)
             local errStr = tostring(err)
             if errStr:find("closed") or errStr:find("refused") or errStr:find("reset") then
-                -- 连接已断开，执行关闭
                 origin_print("[RuntimeGM] Send Fatal: " .. errStr)
                 RuntimeGMClient.Close()
+            else
+                origin_print("[RuntimeGM] Send warning (packet discarded): " .. errStr)
             end
-            -- timeout/buffer full: 丢弃这条消息，保持连接
         end
     end
 
@@ -227,10 +253,10 @@ local function StartRuntimeGM()
 
         if res then
             origin_print("[RuntimeGM] 连接成功！")
-            tcp:settimeout(0)
             RuntimeGMClient.Socket = tcp
             pcall(function() RuntimeGMClient.LastRecvTime = CS.UnityEngine.Time.realtimeSinceStartup end)
-            -- HELLO: 发送已知信息（SVN 作者可能已有值——重连场景）
+            -- HELLO: 用短暂阻塞超时确保能发出去
+            tcp:settimeout(0.5)
             RuntimeGMClient.Send({
                 type = "HELLO",
                 pid = RuntimeGMClient.DeviceInfo.pid,
@@ -240,6 +266,8 @@ local function StartRuntimeGM()
                 persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
                 svn_author = RuntimeGMClient.SvnAuthor or ""
             })
+            -- 发完 HELLO 后切回非阻塞
+            tcp:settimeout(0)
             -- 始终重置 SVN 标记，让 Update() 在首帧尝试获取（可能立即补发 HELLO）
             RuntimeGMClient._svnFetched = false
             RuntimeGMClient._svnRetryAfter = nil
@@ -4994,19 +5022,60 @@ local function StartRuntimeGM()
             end
         elseif type == "SCREENSHOT" then
             pcall(function()
-                local tex = CS.UnityEngine.ScreenCapture.CaptureScreenshotAsTexture()
+                local w = CS.UnityEngine.Screen.width
+                local h = CS.UnityEngine.Screen.height
+                origin_print("[RuntimeGM] SCREENSHOT: start " .. w .. "x" .. h)
+                local tex = nil
+
+                -- 方案1: CaptureScreenshotAsTexture (Windows/Editor xLua 导出)
+                local ok1, tex1 = pcall(function()
+                    return CS.UnityEngine.ScreenCapture.CaptureScreenshotAsTexture()
+                end)
+                if ok1 and tex1 then
+                    tex = tex1
+                    origin_print("[RuntimeGM] SCREENSHOT: CaptureAsTexture ok")
+                else
+                    -- 方案2: ReadPixels 从屏幕缓冲区
+                    -- 注意：ReadPixels 在渲染帧外调用会有 Unity warning，但仍能获取截图数据
+                    CS.UnityEngine.RenderTexture.active = nil
+                    tex = CS.UnityEngine.Texture2D(w, h, CS.UnityEngine.TextureFormat.RGB24, false)
+                    pcall(function()
+                        tex:ReadPixels(CS.UnityEngine.Rect(0, 0, w, h), 0, 0)
+                    end)
+                    tex:Apply()
+                    origin_print("[RuntimeGM] SCREENSHOT: ReadPixels fallback")
+                end
+
                 if tex then
-                    local bytes = CS.UnityEngine.ImageConversion.EncodeToJPG(tex, 60)
+                    local jpgStr = tex:EncodeToJPG(60)
                     CS.UnityEngine.Object.Destroy(tex)
-                    if bytes and bytes.Length > 0 then
-                        local base64 = CS.System.Convert.ToBase64String(bytes)
-                        RuntimeGMClient.Send({
-                            type = "SCREENSHOT_RESP",
-                            image = base64,
-                            width = CS.UnityEngine.Screen.width,
-                            height = CS.UnityEngine.Screen.height
-                        })
+                    origin_print("[RuntimeGM] SCREENSHOT: EncodeToJPG size=" .. tostring(jpgStr and #jpgStr or 0))
+                    if jpgStr and #jpgStr > 0 then
+                        -- 大包分片发送：每片 256KB base64
+                        local base64 = CS.System.Convert.ToBase64String(jpgStr)
+                        local b64len = #base64
+                        local PART = 256 * 1024
+                        local totalParts = math.ceil(b64len / PART)
+                        origin_print("[RuntimeGM] SCREENSHOT: base64 size=" .. b64len .. " parts=" .. totalParts)
+                        for i = 1, totalParts do
+                            local s = (i - 1) * PART + 1
+                            local e = math.min(i * PART, b64len)
+                            local chunk = base64:sub(s, e)
+                            RuntimeGMClient.Send({
+                                type = "SCREENSHOT_RESP",
+                                image = chunk,
+                                width = w,
+                                height = h,
+                                part = i,
+                                totalParts = totalParts
+                            })
+                        end
+                        origin_print("[RuntimeGM] SCREENSHOT: all parts sent")
+                    else
+                        origin_print("[RuntimeGM] SCREENSHOT: EncodeToJPG returned empty")
                     end
+                else
+                    origin_print("[RuntimeGM] SCREENSHOT: no texture")
                 end
             end)
         end
