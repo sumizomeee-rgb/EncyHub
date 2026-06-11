@@ -4,14 +4,14 @@ inject_runtime_gm.py — 一键注入 RuntimeGMClient 到游戏 Lua 入口文件
 使用方法:
   1. 在下方 TARGET_LUA_FILES 列表中维护要注入的 Lua 入口文件路径（支持多分支）
      - 临时跳过某个分支：把对应行注释掉即可
-     - 多分支会自动分配递增端口（第 N 个使用 GM_PORT + N-1）
-  2. 修改下方 GM_HOST / GM_PORT 为你运行 EncyHub 的电脑 IP 和起始端口
+     - 所有分支统一连同一个固定握手端口 GM_PORT（多设备靠 IP+pid 会话标识区分，可同时挂载）
+  2. 修改下方 GM_HOST / GM_PORT 为你运行 EncyHub 的电脑 IP 和握手端口
   3. 运行: python inject_runtime_gm.py
 
 脚本会对列表里的每个文件依次执行:
   1. svn revert（还原到干净状态）
   2. 从 README_RuntimeGM_Client.md 中提取 Lua 代码块（仅一次）
-  3. 替换代码中的 IP 和端口为你的配置（端口按列表序号递增）
+  3. 替换代码中的 IP 和端口为你的配置（所有分支统一为 GM_PORT）
   4. 追加到目标文件末尾
 单文件失败（缺失/IO 错误）不会阻断后续文件，最终输出汇总。
 """
@@ -34,7 +34,7 @@ TARGET_LUA_FILES = [
 
 # EncyHub GM Console 的连接地址
 GM_HOST = "10.101.0.8"
-GM_PORT = 12581
+GM_PORT = 12581  # 固定握手端口：所有分支 / 所有设备统一连接此端口
 
 # ============================================================
 
@@ -112,7 +112,7 @@ def inject_one(target: str, base_lua_code: str, host: str, port: int) -> tuple[b
 
     try:
         svn_revert(target)
-        # 每个文件用各自的端口号 patch 一次（不同分支可用同一台 EncyHub 不同端口区分来源）
+        # 所有分支统一 patch 成固定握手端口（多设备靠 IP+pid 区分，无需按分支分端口）
         lua_code = patch_host_port(base_lua_code, host, port)
         with open(target, "r", encoding="utf-8") as f:
             original = f.read()
@@ -139,22 +139,17 @@ def main():
         print(f"[ERROR] README 不存在: {README_PATH}")
         sys.exit(1)
 
-    # 提取一次（所有目标共享同一份原始 Lua，patch 在每个文件循环里按各自端口做）
+    # 提取一次（所有目标共享同一份原始 Lua，统一 patch 成固定握手端口）
     base_lua_code = extract_lua_from_readme(README_PATH)
     print(f"[EXTRACT] 提取了 {len(base_lua_code)} 字符的 Lua 代码")
-    end_port = GM_PORT + len(targets) - 1
-    if len(targets) == 1:
-        print(f"[PLAN] 1 个目标文件，端口 {GM_PORT}")
-    else:
-        print(f"[PLAN] {len(targets)} 个目标文件，端口分配 {GM_PORT} ~ {end_port}（按列表顺序递增）")
+    print(f"[PLAN] {len(targets)} 个目标文件，统一握手端口 {GM_PORT}（多设备靠 IP+pid 区分）")
     print()
 
     results = []
     for i, target in enumerate(targets):
-        port = GM_PORT + i
-        print(f"--- [{i+1}/{len(targets)}] {target}  (port={port}) ---")
-        ok, info = inject_one(target, base_lua_code, GM_HOST, port)
-        results.append((target, port, ok, info))
+        print(f"--- [{i+1}/{len(targets)}] {target}  (port={GM_PORT}) ---")
+        ok, info = inject_one(target, base_lua_code, GM_HOST, GM_PORT)
+        results.append((target, GM_PORT, ok, info))
         print(f"[{'DONE' if ok else 'SKIP'}] {info}\n")
 
     # 汇总
@@ -165,7 +160,7 @@ def main():
         # 用 ASCII 标记避免 Windows GBK 控制台 UnicodeEncodeError
         flag = "[OK]" if ok else "[FAIL]"
         print(f"  {flag} [port {port}] {target}  ({info})")
-    print(f"主连接地址: {GM_HOST}:{GM_PORT}" + (f" ~ {end_port}" if len(targets) > 1 else ""))
+    print(f"连接地址: {GM_HOST}:{GM_PORT}")
 
     # 全部失败时返回非零退出码，便于脚本化串联
     if ok_count == 0:

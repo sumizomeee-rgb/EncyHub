@@ -29,13 +29,13 @@
 
 1. 打开目标分支的 Lua 入口文件（如 `XMain.lua`、`XLaunchModule.lua` 等）
 2. 将下方代码块完整粘贴到文件末尾
-3. **修改 IP 和端口**为你的开发机地址（运行 EncyHub 的电脑）
+3. **只需修改 IP** 为你的开发机地址（运行 EncyHub 的电脑）；端口固定为握手端口 `12581`，所有分支统一，无需修改
 4. 热更或重新打包
 
 ## 注意事项
 
 - IP 地址 `10.101.0.8` 需改为你自己运行 EncyHub 的电脑 IP
-- 端口 `12581` 对应 EncyHub GM Console 的 TCP 端口（`main.py` 中 `DEFAULT_TCP_PORT = 12581`）
+- 端口 `12581` 是 EncyHub GM Console 的**固定握手端口**（`main.py` 中 `DEFAULT_TCP_PORT = 12581`）。所有分支 / 所有设备统一连接此端口，**无需为不同分支配不同端口**——多设备靠服务端的 `IP + pid` 会话标识自动区分，可同时挂载
 - 代码使用 `rawget`/`rawset` 绕过 `LuaLockG()`，兼容任意分支
 - 代码使用 `pcall` 保护所有外部调用，不会影响游戏正常运行
 - 如果 `socket.core` 不可用（部分裁剪包），RuntimeGM 会静默跳过
@@ -49,7 +49,7 @@ local function StartRuntimeGM()
     local RuntimeGMClient = {}
     RuntimeGMClient.Socket = nil
     RuntimeGMClient.Host = "localhost"
-    RuntimeGMClient.Port = 12581
+    RuntimeGMClient.Port = 12581  -- 固定握手端口，所有分支统一，勿改
     RuntimeGMClient.IsRunning = false
     RuntimeGMClient.ReconnectTimer = 0
     RuntimeGMClient.SocketLibrary = nil

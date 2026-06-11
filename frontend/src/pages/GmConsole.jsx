@@ -8,6 +8,69 @@ import {
   Film, Video, Clock, Table2
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
+
+// ============================================================================
+// 平台 SVG 图标（24x24 viewBox，stroke-width=2，匹配 Lucide/Tabler 视觉权重）
+// 参考：Tabler Icons (MIT) / Lucide (ISC) — brand-android, brand-windows, apple, device-imac
+// ============================================================================
+const _platformIcons = {
+  windows: ({ size, className }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className}
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.8 20l-12-1.5c-1-.1-1.8-.9-1.8-1.9v-9.2c0-1 .8-1.8 1.8-1.9l12-1.5c1.2-.1 2.2.8 2.2 1.9v12.1c0 1.2-1.1 2.1-2.2 1.9" />
+      <path d="M12 5v14" />
+      <path d="M4 12h16" />
+    </svg>
+  ),
+  android: ({ size, className }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className}
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 10v6" />
+      <path d="M20 10v6" />
+      <path d="M7 9h10v8a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V9a5 5 0 0 1 10 0" />
+      <path d="M8 3l1 2" />
+      <path d="M16 3l-1 2" />
+      <path d="M9 18v3" />
+      <path d="M15 18v3" />
+    </svg>
+  ),
+  apple: ({ size, className }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className}
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 6.528V3a1 1 0 0 1 1-1" />
+      <path d="M18.237 21A15 15 0 0 0 22 11a6 6 0 0 0-10-4.472A6 6 0 0 0 2 11a15.1 15.1 0 0 0 3.763 10 3 3 0 0 0 3.648.648 5.5 5.5 0 0 1 5.178 0A3 3 0 0 0 18.237 21" />
+    </svg>
+  ),
+  mac: ({ size, className }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className}
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 4a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4z" />
+      <path d="M3 13h18" />
+      <path d="M8 21h8" />
+      <path d="M10 17l-.5 4" />
+      <path d="M14 17l.5 4" />
+    </svg>
+  ),
+}
+
+function getPlatformKey(platform) {
+  if (!platform) return null
+  const p = platform.toLowerCase()
+  if (p.includes('windows')) return 'windows'
+  if (p.includes('android')) return 'android'
+  if (p.includes('iphone')) return 'apple'
+  if (p.includes('osx')) return 'mac'
+  return null
+}
+
+function PlatformIcon({ platform, size, className }) {
+  const key = getPlatformKey(platform)
+  if (!key || !_platformIcons[key]) {
+    return <Smartphone size={size} className={className} />
+  }
+  const IconFn = _platformIcons[key]
+  return <IconFn size={size} className={className} />
+}
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
@@ -149,6 +212,9 @@ function GmConsole() {
     return Array.isArray(selectedClient.gm_tree) ? selectedClient.gm_tree : []
   }, [selectedClient, broadcastMode])
 
+  // 握手端口：从后端 listeners 读取（单端口固定），后端未就绪时回退 12581
+  const handshakePort = useMemo(() => listeners[0]?.port || 12581, [listeners])
+
   // 沿 breadcrumbPath 在 gmTree 里走，返回 { nodes(经过的节点), currentNodes, validPath }
   // 如果路径中某段在新 gmTree 中失效（例如刚刷新 GM 后子目录消失），在该处截断
   const breadcrumbResolved = useMemo(() => {
@@ -183,25 +249,16 @@ function GmConsole() {
   // 表单内部 state 收敛在 <CustomGmModal> 里，避免敲键盘触发顶层 GmConsole 重渲染。
   const [customGmModal, setCustomGmModal] = useState(null)
 
-  // 添加监听弹窗
-  const [showAddListener, setShowAddListener] = useState(false)
-  const [newPort, setNewPort] = useState('12581')
-
   // 搜索过滤
   const [searchFilter, setSearchFilter] = useState('')
 
   // HTTP fallback fetch
   const fetchDataHttp = useCallback(async () => {
     try {
-      const [listenersRes, clientsRes, logsRes] = await Promise.all([
-        fetch('/api/gm_console/listeners'),
+      const [clientsRes, logsRes] = await Promise.all([
         fetch('/api/gm_console/clients'),
         fetch('/api/gm_console/logs?limit=50'),
       ])
-      if (listenersRes.ok) {
-        const data = await listenersRes.json()
-        setListeners(data.listeners || [])
-      }
       if (clientsRes.ok) {
         const data = await clientsRes.json()
         const newClients = data.clients || []
@@ -402,49 +459,6 @@ function GmConsole() {
     setBreadcrumbPath(prev => prev.slice(0, index + 1))
     setSearchFilter('')
   }, [navigateToRoot])
-
-  // 添加监听端口
-  const handleAddListener = async () => {
-    const port = parseInt(newPort)
-    if (isNaN(port) || port < 1 || port > 65535) {
-      toast.warning('请输入有效端口号 (1-65535)')
-      return
-    }
-    try {
-      const res = await fetch('/api/gm_console/listeners', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ port }),
-      })
-      if (res.ok) {
-        setShowAddListener(false)
-        setNewPort('12581')
-        fetchDataHttp()
-        toast.success(`端口 ${port} 监听已添加`)
-      } else {
-        const data = await res.json()
-        toast.error(data.detail || '添加失败')
-      }
-    } catch (err) {
-      toast.error('添加失败: ' + err.message)
-    }
-  }
-
-  // 移除监听端口
-  const handleRemoveListener = async (port) => {
-    try {
-      const res = await fetch(`/api/gm_console/listeners/${port}`, { method: 'DELETE' })
-      if (res.ok) {
-        fetchDataHttp()
-        toast.success(`端口 ${port} 已移除`)
-      } else {
-        const data = await res.json()
-        toast.error(data.detail || '移除失败')
-      }
-    } catch (err) {
-      toast.error('移除失败: ' + err.message)
-    }
-  }
 
   // 执行 Lua 命令
   const handleExec = async () => {
@@ -676,13 +690,6 @@ end`
               </span>
             </div>
           </div>
-          <button
-            className="btn-primary flex items-center gap-2"
-            onClick={() => setShowAddListener(true)}
-          >
-            <Plus size={16} />
-            添加监听
-          </button>
         </div>
       </header>
 
@@ -707,13 +714,8 @@ end`
               {/* Collapsed view - desktop only when collapsed */}
               <div className={`${sidebarCollapsed ? 'lg:flex' : 'lg:hidden'} hidden flex-col items-center gap-3`}>
                 <div className="glass-card p-2 w-full flex justify-center">
-                  <div className="relative" title={`${listeners.length} 个监听端口`}>
+                  <div className="relative" title={`握手端口 ${handshakePort}`}>
                     <Radio size={18} className="text-[var(--sage)]" />
-                    {listeners.length > 0 && (
-                      <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 bg-[var(--sage)] text-white text-[8px] rounded-full flex items-center justify-center font-bold leading-none">
-                        {listeners.length}
-                      </span>
-                    )}
                   </div>
                 </div>
                 <div className="glass-card p-2.5 w-full">
@@ -738,13 +740,14 @@ end`
                             : ''
                         }`}
                         onClick={() => handleSelectClient(client)}
-                        title={`${client.device || 'Unknown'}\n${client.platform || ''} · ${client.ip || ''}:${client.port || ''}`}
+                        title={`${client.device || 'Unknown'}\n#${client.pid || '?'} · ${client.ip || ''} · ${client.platform || ''}`}
                       >
-                        <Smartphone size={14} className={
-                          selectedClient?.id === client.id && !broadcastMode
-                            ? 'text-[var(--caramel)]'
-                            : 'text-[var(--coffee-muted)]'
-                        } />
+                        <PlatformIcon platform={client.platform} size={14}
+                          className={
+                            selectedClient?.id === client.id && !broadcastMode
+                              ? 'text-[var(--caramel)]'
+                              : 'text-[var(--coffee-muted)]'
+                          } />
                       </div>
                     ))}
                     {clients.length === 0 && (
@@ -756,45 +759,20 @@ end`
 
               {/* Expanded view - always on mobile, conditional on desktop */}
               <div className={`space-y-4 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
-              {/* Listeners */}
+              {/* Handshake Port (read-only) */}
               <div className="glass-card p-5 animate-fade-in">
-                <div className="flex items-center gap-2 mb-3">
-                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--sage)] to-[var(--sage-soft)] flex items-center justify-center">
-                    <Radio size={14} className="text-white" />
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--sage)] to-[var(--sage-soft)] flex items-center justify-center">
+                      <Radio size={14} className="text-white" />
+                    </div>
+                    <h2 className="font-display text-base font-semibold text-[var(--coffee-deep)]">握手端口</h2>
                   </div>
-                  <h2 className="font-display text-base font-semibold text-[var(--coffee-deep)]">监听端口</h2>
+                  <div className="flex items-center gap-1.5" title="所有分支 / 设备统一连接此固定端口">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
+                    <span className="font-mono text-sm font-semibold text-[var(--coffee-deep)]">:{handshakePort}</span>
+                  </div>
                 </div>
-                {listeners.length === 0 ? (
-                  <div className="text-[var(--coffee-muted)] text-xs py-3 text-center">无监听端口</div>
-                ) : (
-                  <div className="space-y-1.5">
-                    {listeners.map(listener => (
-                      <div
-                        key={listener.port}
-                        className="flex items-center justify-between p-2 bg-[var(--cream-warm)]/50 rounded-lg group"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
-                          <span className="font-mono text-xs text-[var(--coffee-deep)]">:{listener.port}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] text-[var(--coffee-muted)] bg-[var(--cream-warm)] px-1.5 py-0.5 rounded-full">
-                            {listener.client_count || 0}
-                          </span>
-                          <button
-                            className="p-1 rounded text-[var(--coffee-muted)] hover:text-[var(--terracotta)] hover:bg-[var(--error-soft)] opacity-0 group-hover:opacity-100 transition-all"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleRemoveListener(listener.port)
-                            }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
 
               {/* Clients */}
@@ -838,15 +816,20 @@ end`
                         }`}
                         onClick={() => handleSelectClient(client)}
                       >
-                        <Smartphone size={14} className="text-[var(--caramel)] shrink-0" />
+                        <PlatformIcon platform={client.platform} size={14}
+                          className="text-[var(--caramel)] shrink-0" />
                         <div className="flex-1 min-w-0">
                           <div className="font-medium text-xs text-[var(--coffee-deep)] truncate">
                             {client.device || 'Unknown'}
                           </div>
-                          <div className="text-[10px] text-[var(--coffee-muted)] truncate">
-                            {client.platform}
-                            {client.ip ? ` · ${client.ip}` : ''}
-                            {client.port ? `:${client.port}` : ''}
+                          <div className="text-[10px] text-[var(--coffee-muted)]">
+                            {client.pid > 0 && (
+                              <span className="font-mono text-[var(--coffee-light)]">#{client.pid}</span>
+                            )}
+                            {client.pid > 0 && client.ip ? ' · ' : ''}
+                            {client.ip && (
+                              <span className="font-mono text-[var(--coffee-deep)]">{client.ip}</span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1399,51 +1382,6 @@ end`
           </div>
         )}
       </main>
-
-      {/* Add Listener Modal */}
-      {showAddListener && (
-        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowAddListener(false) }}>
-          <div
-            className="glass-card p-6 w-96"
-            style={{ animation: 'slideUp 0.3s ease' }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[var(--sage)] to-[var(--sage-soft)] flex items-center justify-center">
-                  <Radio size={20} className="text-white" />
-                </div>
-                <h3 className="font-display text-lg font-semibold">添加监听端口</h3>
-              </div>
-              <button
-                onClick={() => setShowAddListener(false)}
-                className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
-              >
-                <X size={20} />
-              </button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm text-[var(--coffee-light)] mb-2">端口号</label>
-                <input
-                  type="number"
-                  value={newPort}
-                  onChange={e => setNewPort(e.target.value)}
-                  placeholder="12581"
-                  min="1"
-                  max="65535"
-                  className="font-mono"
-                  onKeyDown={e => { if (e.key === 'Enter') handleAddListener() }}
-                />
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button className="btn-secondary flex-1" onClick={() => setShowAddListener(false)}>取消</button>
-                <button className="btn-primary flex-1" onClick={handleAddListener}>添加</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Custom GM Modal */}
       <CustomGmModal

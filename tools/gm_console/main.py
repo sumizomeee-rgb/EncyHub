@@ -233,10 +233,6 @@ app.add_middleware(
 # API Models
 # ============================================================================
 
-class AddListenerRequest(BaseModel):
-    port: int
-
-
 class ExecRequest(BaseModel):
     cmd: str
 
@@ -254,34 +250,6 @@ class ExecGmRequest(BaseModel):
 class CustomGmRequest(BaseModel):
     name: str
     cmd: str
-
-
-# ============================================================================
-# Listeners API
-# ============================================================================
-
-@app.get("/listeners")
-async def get_listeners():
-    """获取监听端口列表"""
-    return {"listeners": server_mgr.get_listeners_info()}
-
-
-@app.post("/listeners")
-async def add_listener(req: AddListenerRequest):
-    """添加监听端口"""
-    success, msg = await server_mgr.add_listener(req.port)
-    if not success:
-        raise HTTPException(400, msg)
-    return {"message": msg}
-
-
-@app.delete("/listeners/{port}")
-async def remove_listener(port: int):
-    """移除监听端口"""
-    success, msg = await server_mgr.remove_listener(port)
-    if not success:
-        raise HTTPException(400, msg)
-    return {"message": msg}
 
 
 # ============================================================================

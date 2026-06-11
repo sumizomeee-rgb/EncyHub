@@ -20,6 +20,7 @@ class Client:
     id: str
     port: int
     writer: asyncio.StreamWriter
+    ip: str = ""
     device: str = "Unknown"
     platform: str = "Unknown"
     pid: int = 0
@@ -32,6 +33,7 @@ class Client:
         return {
             "id": self.id,
             "port": self.port,
+            "ip": self.ip,
             "device": self.device,
             "platform": self.platform,
             "pid": self.pid,
@@ -83,6 +85,7 @@ class ServerMgr:
         self.on_proto_call_resp = None      # Callback for PROTO_CALL_RESP
         self.on_table_monitor_data = None   # Callback for TABLE_MONITOR_RESP
         self._pending_execs: Dict[int, dict] = {}
+        self._temp_seq = 0                  # 临时 ID 序号（保证 accept 阶段唯一）
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -191,23 +194,15 @@ class ServerMgr:
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
         """处理客户端连接"""
         addr = writer.get_extra_info("peername")
-        # 使用 IP:服务器监听端口 作为稳定 ID，避免客户端重连后临时端口变化导致 ID 失效
-        cid = f"{addr[0]}:{port}"
+        ip = addr[0]
+        # 两段式 ID：accept 阶段先用临时 ID（唯一），等 HELLO 携带 pid 后 rekey 到 {ip}#{pid}
+        self._temp_seq += 1
+        temp_id = f"temp:{ip}:{addr[1]}:{self._temp_seq}"
 
-        # 断开同端口的旧连接
-        for ocid in [k for k, v in self.clients.items() if v.port == port]:
-            oc = self.clients.pop(ocid)
-            try:
-                oc.writer.close()
-                await oc.writer.wait_closed()
-                self._add_log("info", f"断开旧连接: {ocid}", ocid)
-            except Exception as e:
-                print(f"[ServerMgr] 断开旧连接失败 {ocid}: {e}")
-
-        client_obj = Client(id=cid, port=port, writer=writer)
-        self.clients[cid] = client_obj
-        self._add_log("info", f"客户端连接: {cid}", cid)
-        print(f"[ServerMgr] TCP 客户端连接: {cid} (remote={addr[0]}:{addr[1]}, port={port}), 当前客户端数={len(self.clients)}")
+        client_obj = Client(id=temp_id, port=port, writer=writer, ip=ip)
+        self.clients[temp_id] = client_obj
+        self._add_log("info", f"客户端连接(待识别): {temp_id}", temp_id)
+        print(f"[ServerMgr] TCP 客户端连接: {temp_id} (remote={ip}:{addr[1]}, port={port}), 当前客户端数={len(self.clients)}")
         if self.on_update:
             self.on_update()
 
@@ -220,7 +215,7 @@ class ServerMgr:
                     break
                 try:
                     pkt = json.loads(line.decode().strip())
-                    self._process_packet(cid, pkt)
+                    self._process_packet(client_obj, pkt)
                 except json.JSONDecodeError as e:
                     print(f"[ServerMgr] JSON 解析失败: {e}, data={line.decode().strip()[:200]}")
                 except Exception as e:
@@ -234,20 +229,52 @@ class ServerMgr:
         except Exception as e:
             disconnect_reason = f"异常: {type(e).__name__}: {e}"
         finally:
-            # 仅当 dict 中仍是本次连接的对象时才删除，避免误删重连后的新客户端
-            if self.clients.get(cid) is client_obj:
-                del self.clients[cid]
-            self._add_log("info", f"客户端断开: {cid} ({disconnect_reason})", cid)
-            print(f"[ServerMgr] TCP 客户端断开: {cid}, 原因={disconnect_reason}, 剩余={len(self.clients)}")
+            # 仅当 dict 中仍是本次连接的对象时才删除（用当前生效 id，rekey 后已是确定 ID），
+            # 避免误删被同 IP+pid 新连接 rekey 占位的新客户端
+            cur_id = client_obj.id
+            if self.clients.get(cur_id) is client_obj:
+                del self.clients[cur_id]
+            self._add_log("info", f"客户端断开: {cur_id} ({disconnect_reason})", cur_id)
+            print(f"[ServerMgr] TCP 客户端断开: {cur_id}, 原因={disconnect_reason}, 剩余={len(self.clients)}")
             if self.on_update:
                 self.on_update()
 
-    def _process_packet(self, cid: str, pkt: dict):
+    def _rekey_client(self, client_obj: "Client", new_id: str):
+        """HELLO 后把客户端从临时 ID 迁移到确定 ID（严格顺序，见 spec §3.3）"""
+        old_id = client_obj.id
+        if new_id == old_id:
+            return
+        # 1) 踢除同确定 ID 的上一条残留连接（同 IP+pid 重连场景）
+        existing = self.clients.get(new_id)
+        if existing is not None and existing is not client_obj:
+            try:
+                existing.writer.close()
+            except Exception:
+                pass
+            # 从主表移除旧对象（其读循环 finally 会因 get(new_id) is existing 为 False 而不再重复删）
+            if self.clients.get(new_id) is existing:
+                del self.clients[new_id]
+            self._add_log("info", f"踢除同会话旧连接: {new_id}", new_id)
+        # 2) 删除临时键
+        if self.clients.get(old_id) is client_obj:
+            del self.clients[old_id]
+        # 3) 更新对象 id
+        client_obj.id = new_id
+        # 4) 写入确定键
+        self.clients[new_id] = client_obj
+        # 5) 迁移以 client_id 为键的附属状态
+        if old_id in self._animator_list_cache:
+            self._animator_list_cache[new_id] = self._animator_list_cache.pop(old_id)
+        for pe in self._pending_execs.values():
+            if pe.get("client_id") == old_id:
+                pe["client_id"] = new_id
+        print(f"[ServerMgr] rekey: {old_id} -> {new_id}")
+
+    def _process_packet(self, client_obj: "Client", pkt: dict):
         """处理客户端数据包"""
         t = pkt.get("type")
-        c = self.clients.get(cid)
-        if not c:
-            return
+        c = client_obj
+        cid = client_obj.id
 
         print(f"[ServerMgr] 收到数据包: cid={cid}, type={t}")
 
@@ -263,12 +290,23 @@ class ServerMgr:
             c.pid = pkt.get("pid", 0) or 0
             c.package_name = pkt.get("packageName", "") or pkt.get("package_name", "") or ""
             c.persistent_data_path = pkt.get("persistentDataPath", "") or pkt.get("persistent_data_path", "") or ""
+            # 计算确定 ID 并 rekey（pid 缺失时按 device 兜底，见 spec §3.4）
+            # 用 "-" 分隔避免 "#" 在 HTTP 路径/代理中被误认为 fragment
+            if c.pid > 0:
+                new_id = f"{c.ip}-{c.pid}"
+            elif c.device and c.device != "Unknown":
+                new_id = f"{c.ip}-dev:{c.device}"
+            else:
+                new_id = None  # 无法确定身份，保留临时 ID
+            if new_id:
+                self._rekey_client(c, new_id)
             print(
-                f"[ServerMgr] HELLO: device={c.device}, platform={c.platform}, "
+                f"[ServerMgr] HELLO: id={c.id}, device={c.device}, platform={c.platform}, "
                 f"package={c.package_name or '-'}"
             )
             if self.on_update:
                 self.on_update()
+            return
         elif t == "LOG":
             level = pkt.get("level", "info")
             msg = pkt.get("msg", "")
@@ -356,33 +394,6 @@ class ServerMgr:
         if self.on_log:
             self.on_log(log)
 
-    async def send_to_port(self, port: Optional[int], cmd: str) -> tuple[bool, str]:
-        """发送命令到指定端口的客户端"""
-        if port is None:
-            await self.broadcast(cmd)
-            return True, "已广播"
-
-        client = next((c for c in self.clients.values() if c.port == port), None)
-        if not client:
-            return False, f"端口 {port} 无设备连接"
-
-        try:
-            data = json.dumps({"type": "EXEC", "id": self.cmd_id, "cmd": cmd}, ensure_ascii=False) + "\n"
-            client.writer.write(data.encode())
-            await client.writer.drain()
-            self.cmd_id += 1
-            return True, f"已发送到 {client.device}"
-        except Exception as e:
-            print(f"[ServerMgr] send_to_port 发送失败: port={port}, error={e}")
-            # 发送失败时清理该客户端
-            client_id = next((cid for cid, c in self.clients.items() if c.port == port), None)
-            if client_id and client_id in self.clients:
-                self.clients.pop(client_id)
-                self._add_log("warning", f"客户端断开（端口发送失败）: {client_id}", client_id)
-                if self.on_update:
-                    self.on_update()
-            return False, str(e)
-
     async def send_to_client(self, client_id: str, cmd: str) -> tuple[bool, str]:
         """发送命令到指定客户端"""
         client = self.clients.get(client_id)
@@ -437,35 +448,6 @@ class ServerMgr:
 
         del self._pending_execs[cmd_id]
         return pe["error"] is None, pe["logs"], pe["error"]
-
-    async def send_gm_to_port(self, port: Optional[int], gm_id: str, val: Any = None) -> tuple[bool, str]:
-        """发送 GM 指令到指定端口"""
-        if port is None:
-            await self.broadcast_gm(gm_id, val)
-            return True, "已广播 GM 指令"
-
-        client = next((c for c in self.clients.values() if c.port == port), None)
-        if not client:
-            return False, f"端口 {port} 无设备连接"
-
-        if val is not None:
-            client.ui_states[gm_id] = val
-
-        try:
-            data = json.dumps({"type": "EXEC_GM", "id": gm_id, "value": val}, ensure_ascii=False) + "\n"
-            client.writer.write(data.encode())
-            await client.writer.drain()
-            return True, f"GM 指令已发送到 {client.device}"
-        except Exception as e:
-            print(f"[ServerMgr] send_gm_to_port 发送失败: port={port}, error={e}")
-            # 发送失败时清理该客户端
-            client_id = next((cid for cid, c in self.clients.items() if c.port == port), None)
-            if client_id and client_id in self.clients:
-                self.clients.pop(client_id)
-                self._add_log("warning", f"客户端断开（端口GM发送失败）: {client_id}", client_id)
-                if self.on_update:
-                    self.on_update()
-            return False, str(e)
 
     async def send_gm_to_client(self, client_id: str, gm_id: str, val: Any = None) -> tuple[bool, str]:
         """发送 GM 指令到指定客户端"""

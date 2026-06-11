@@ -65,21 +65,28 @@ accept 连接
   └─ 以临时 ID 注册 Client，立即可收发（此时 device/pid 未知）
 
 收到 HELLO（携带 pid/device/...）
-  └─ 计算「确定 ID」：{ip}#{pid}
-  └─ rekey：把 Client 从临时 ID 迁移到确定 ID
-     ├─ 若确定 ID 已存在旧 Client（同 IP+pid 的上一条连接残留）→ 先踢除旧连接（关闭其 writer）
-     ├─ 迁移所有以 client_id 为键的附属状态（见 4.3）
-     └─ 触发 on_update / on_client_data_update
+  └─ 计算「确定 ID」：{ip}-{pid}
+  └─ rekey：把 Client 从临时 ID 迁移到确定 ID（严格顺序，见下）
+     ├─ 1) 若确定 ID 已存在旧 Client（同 IP+pid 的上一条连接残留）→ 先踢除旧连接（close 其 writer + 从 clients 移除）
+     ├─ 2) 从 self.clients 删除临时 ID 键
+     ├─ 3) 更新 client_obj.id = 确定 ID
+     ├─ 4) self.clients[确定 ID] = client_obj
+     ├─ 5) 迁移所有以 client_id 为键的附属状态（见 4.3）
+     └─ 6) 触发 on_update / on_client_data_update
 ```
 
-**ID 格式**：建议 `{ip}#{pid}`（用 `#` 分隔，避免与 IPv6 的 `:` 冲突；前端只做相等比较与 URL 编码，格式自由）。
+**ID 格式**：`{ip}-{pid}`（用 `-` 分隔。当初考虑过 `#` 更易读，但 `#` 是 URL 的 fragment 分隔符——即使用 `encodeURIComponent` 编码为 `%23`，httpx 等 HTTP 客户端在转发时仍可能将 `%23` 解码为 `#` 并截断其后的路径，导致 `/api/{tool_id}/inspector/{client_id}/command` 等路由 404。`-` 方案无此歧义，前端依旧把 id 当不透明 token 处理，无需改动）。
+
+**关键实现约束（避免自踢/误删）**：
+- 步骤 1 踢旧连接时，旧连接的读循环会进入 finally；其 finally 必须用 `self.clients.get(旧obj.id) is 旧obj` 校验后才删除——因为此刻确定 ID 键可能已被本次新连接占用，校验能防止误删新对象（沿用现有 `:238` 模式）。asyncio 单事件循环下 rekey 是原子的（不会被打断），步骤顺序保证安全。
+- `_handle_client` 的读循环**不得**再用局部变量 `cid` 去 `self.clients.get(cid)`——rekey 后该键已失效。**改为把 `client_obj` 自身传入 `_process_packet`**，内部一律用 `client_obj`（其 `.id` 永远指向当前生效 ID），彻底规避"rekey 后按旧键查不到"的问题。
 
 ### 3.4 pid 缺失的兜底
 `HELLO` 中 pid 可能为 `0`（`server_mgr.py:263` 已有 `or 0`）——例如部分平台 `Process.GetCurrentProcess().Id` 取不到。
 
 兜底策略（spec 决策）：
-- pid 有效（> 0）→ 确定 ID = `{ip}#{pid}`。
-- pid == 0 → 确定 ID 退化为 `{ip}#dev:{device}`（device 也空则保留临时 ID 不 rekey）。
+- pid 有效（> 0）→ 确定 ID = `{ip}-{pid}`。
+- pid == 0 → 确定 ID 退化为 `{ip}-dev:{device}`（device 也空则保留临时 ID 不 rekey）。
 - 该退化路径下"重连身份不变"可能无法保证（device 字符串若不稳定），属可接受降级，仅影响个别异常平台。
 
 ### 3.5 旧"同端口踢除"逻辑的置换
@@ -100,8 +107,9 @@ accept 连接
 | `_handle_client:195` | `cid = f"{addr[0]}:{port}"` | 改为生成临时 ID 注册 |
 | `_handle_client:198-205` | accept 时按 port 踢旧连接 | **删除**，踢除逻辑移至 rekey |
 | `_handle_client:207` | `Client(id=cid, port=port, ...)` | 记录 `ip`、临时 id；`port` 字段语义弱化（恒为 12581） |
-| `_handle_client:236-239` | finally 按 `cid` 删除 | 改为按"当前生效 id"删除（rekey 后 id 已变，需用 client 对象自身记录的 id） |
-| `_process_packet:260 (HELLO)` | 仅填充字段 | **新增 rekey 逻辑**：计算确定 ID、踢旧、迁移附属状态、改 `self.clients` 键 |
+| `_handle_client:236-239` | finally 按 `cid` 删除 | 改为按 `client_obj.id` 删除 + `self.clients.get(client_obj.id) is client_obj` 校验 |
+| 读循环 `_process_packet(cid, pkt)` (`:223`) | 按局部 `cid` 传入，内部 `self.clients.get(cid)` | **改签名为 `_process_packet(client_obj, pkt)`**，内部统一用 `client_obj`（`.id` 永远最新），规避 rekey 后旧键失效 |
+| `_process_packet:260 (HELLO)` | 仅填充字段 | **新增 rekey 逻辑**：计算确定 ID、踢旧、迁移附属状态、改 `self.clients` 键、更新 `client_obj.id`（严格按 §3.3 顺序） |
 | `Client` dataclass:18 | 有 `port` 无 `ip` | **新增 `ip` 字段**；`to_dict` 输出 `ip`（前端 `GmConsole.jsx:741` 已引用 `client.ip` 但当前未提供，顺带修复） |
 | `send_to_port:359` / `send_gm_to_port:441` | 按 port 寻址 | **删除**（main 未引用，确认为死代码） |
 | `add_listener` / `remove_listener` | 多端口管理 | 保留 `add_listener` 供启动时拉起 12581；`remove_listener` 仅 shutdown 用。移除"重启同端口"等多端口语义可简化 |
@@ -139,17 +147,18 @@ accept 连接
 └───────────────────────┘
 ```
 
-**(B) 客户端卡片 —— IP 完整优先，机型名可截断**
-- 第一行：机型名 `client.device`，`truncate`（太长省略，不影响 IP）。
-- 第二行：`{ip} · {platform}` —— **IP 在前用 mono 字体完整显示**（不 truncate），platform 在后。IPv4 最多 15 字，侧栏 ~240px 宽度可完整容纳。
-- 原 `:${client.port}`（恒 12581，无区分度）**整体移除**。
-- 折叠态卡片 tooltip（`:741`）：`${device}\n${platform} · ${ip}`（去掉 `:port`）。
+**(B) 客户端卡片 —— IP 完整优先，pid 区分同机多实例，机型名可截断**
+- 第一行：机型名 `client.device`，`truncate`（太长省略）。
+- 第二行：`#{pid} · {mono IP} · {platform}` —— **pid 先頭に `#` 付きで表示**（同 IP 同機器で複数クライアント起動時に pid で一目区別可）、IP は mono 字体で完整（truncate しない）、platform を末尾に。pid は `text-[var(--coffee-light)]` でやや淡色にし、IP(`text-[var(--coffee-deep)]`)より目立たせすぎない。
+- pid=0 の場合は pid を表示しない（退避パス。通常は > 0）。
+- 原 `:${client.port}`（恒 12581，無区分度）**整体移除**。
+- 折叠態卡片 tooltip：`${device}\n#${pid} · ${ip} · ${platform}`。
 
 ```
-┌─────────────────────────┐
-│ 📱 Redmi K60 Ultra…       │  ← device truncate
-│    10.101.0.8 · Android   │  ← mono 完整 IP · platform
-└─────────────────────────┘
+┌─────────────────────────────┐
+│ 📱 Redmi K60 Ultra…         │  ← device truncate
+│    #105596 · 10.101.0.8 · Android │  ← #pid · mono IP · platform
+└─────────────────────────────┘
 ```
 
 **需删除的多端口 UI / 逻辑（前端）**：
@@ -239,7 +248,7 @@ rekey（临时 ID → 确定 ID）时，所有**以 client_id 为键**的状态�
 7. **前端 - 客户端展示**：端口展示改为 `ip` / `#pid`；原多端口角标位置替换为只读"握手端口 12581" chip。
 8. **Lua 注入工具**：`inject_runtime_gm.py` 删除递增端口逻辑，所有分支统一 patch 成 12581（§4.4.1）。
 9. **文档**：更新 `README_RuntimeGM_Client.md` 文案（§4.4.3）。
-9. **验证**：见第 7 节。
+10. **验证**：见第 7 节。
 
 ---
 
