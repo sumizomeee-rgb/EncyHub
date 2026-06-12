@@ -3,6 +3,7 @@ GM Console - FastAPI 入口
 """
 import os
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from typing import Optional, Any
 
@@ -30,25 +31,62 @@ custom_gm_mgr: Optional[CustomGmManager] = None
 proto_parser: Optional[ProtoParser] = None
 
 # WebSocket 连接池
-ws_connections: list[WebSocket] = []
+ws_connections: list[dict[str, Any]] = []
+pending_screenshot_sessions: dict[str, list[dict[str, Any]]] = {}
+SCREENSHOT_REQUEST_TTL = 30.0
 
 
-async def broadcast_event(event: dict):
+def _prune_screenshot_sessions(client_id: str):
+    now = time.monotonic()
+    queue = pending_screenshot_sessions.get(client_id, [])
+    queue = [item for item in queue if now - item["created_at"] <= SCREENSHOT_REQUEST_TTL]
+    if queue:
+        pending_screenshot_sessions[client_id] = queue
+    else:
+        pending_screenshot_sessions.pop(client_id, None)
+
+
+def _remember_screenshot_session(client_id: str, session_id: Optional[str]):
+    if not session_id:
+        return
+    _prune_screenshot_sessions(client_id)
+    pending_screenshot_sessions.setdefault(client_id, []).append({
+        "session_id": session_id,
+        "created_at": time.monotonic(),
+    })
+
+
+def _pop_screenshot_session(client_id: str) -> Optional[str]:
+    _prune_screenshot_sessions(client_id)
+    queue = pending_screenshot_sessions.get(client_id)
+    if not queue:
+        return None
+    item = queue.pop(0)
+    if not queue:
+        pending_screenshot_sessions.pop(client_id, None)
+    return item.get("session_id")
+
+
+async def broadcast_event(event: dict, target_session_id: Optional[str] = None):
     """广播事件到所有 WebSocket 连接"""
     if not ws_connections:
         print(f"[GmConsole] 广播跳过: 无 WS 连接 (event.type={event.get('type')})")
         return
-    print(f"[GmConsole] 广播事件: type={event.get('type')}, ws连接数={len(ws_connections)}, clients={len(event.get('clients', []))}")
+    target_info = f", target_session={target_session_id}" if target_session_id else ""
+    print(f"[GmConsole] 广播事件: type={event.get('type')}, ws连接数={len(ws_connections)}, clients={len(event.get('clients', []))}{target_info}")
     sent = 0
-    for ws in ws_connections[:]:
+    for entry in ws_connections[:]:
+        if target_session_id and entry.get("session_id") != target_session_id:
+            continue
+        ws = entry["ws"]
         try:
             await ws.send_json(event)
             sent += 1
         except Exception as e:
             print(f"[GmConsole] WS 广播失败, 移除连接: {e}")
-            if ws in ws_connections:
-                ws_connections.remove(ws)
-    print(f"[GmConsole] 广播完成: type={event.get('type')}, 成功={sent}/{len(ws_connections)+sent}")
+            if entry in ws_connections:
+                ws_connections.remove(entry)
+    print(f"[GmConsole] 广播完成: type={event.get('type')}, 成功={sent}")
 
 
 @asynccontextmanager
@@ -221,13 +259,14 @@ async def lifespan(app: FastAPI):
 
     # --- Screenshot ---
     def on_screenshot(client_id, pkt):
+        target_session_id = _pop_screenshot_session(client_id)
         asyncio.create_task(broadcast_event({
             "type": "screenshot",
             "client_id": client_id,
             "image": pkt.get("image", ""),
             "width": pkt.get("width", 0),
             "height": pkt.get("height", 0),
-        }))
+        }, target_session_id=target_session_id))
 
     server_mgr.on_screenshot = on_screenshot
 
@@ -370,8 +409,9 @@ async def broadcast_gm(req: ExecGmRequest):
 
 
 @app.post("/clients/{client_id}/screenshot")
-async def request_screenshot(client_id: str):
+async def request_screenshot(client_id: str, session_id: Optional[str] = None):
     """请求客户端截图"""
+    _remember_screenshot_session(client_id, session_id)
     await server_mgr.send_screenshot_request(client_id)
     return {"message": "已请求截图"}
 
@@ -935,8 +975,10 @@ async def websocket_subpkg_monitor(websocket: WebSocket):
 async def websocket_events(websocket: WebSocket):
     """实时事件流"""
     await websocket.accept()
-    ws_connections.append(websocket)
-    print(f"[GmConsole] WS 客户端连接, 当前连接数={len(ws_connections)}")
+    session_id = websocket.query_params.get("session_id") or None
+    entry = {"ws": websocket, "session_id": session_id}
+    ws_connections.append(entry)
+    print(f"[GmConsole] WS 客户端连接, session={session_id or '-'}, 当前连接数={len(ws_connections)}")
 
     # 发送初始状态
     init_data = {
@@ -958,8 +1000,8 @@ async def websocket_events(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        if websocket in ws_connections:
-            ws_connections.remove(websocket)
+        if entry in ws_connections:
+            ws_connections.remove(entry)
         print(f"[GmConsole] WS 客户端断开, 剩余连接数={len(ws_connections)}")
 
 

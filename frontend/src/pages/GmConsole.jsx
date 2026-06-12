@@ -262,6 +262,11 @@ function GridControlSlider({ value, min, max, step = 1, onChange, className = ''
   )
 }
 
+function createBrowserSessionId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return `gm-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 function GmConsole() {
   const navigate = useNavigate()
   const toast = useToast()
@@ -282,6 +287,7 @@ function GmConsole() {
   const logsContainerRef = useRef(null)
   const wsRef = useRef(null)
   const clientStateRevRef = useRef(0)
+  const browserSessionIdRef = useRef(createBrowserSessionId())
 
   // WS 连接状态: 'connecting' | 'connected' | 'disconnected'
   const [wsStatus, setWsStatus] = useState('connecting')
@@ -468,7 +474,7 @@ function GmConsole() {
     let keepaliveInterval = null
 
     const connectWs = () => {
-      const wsUrl = `ws://${window.location.host}/api/gm_console/ws/events`
+      const wsUrl = `ws://${window.location.host}/api/gm_console/ws/events?session_id=${encodeURIComponent(browserSessionIdRef.current)}`
       ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
@@ -751,7 +757,8 @@ end`
     screenshotLoadingRef.current.add(clientId)
     setScreenshotLoadingIds(new Set(screenshotLoadingRef.current))
     try {
-      const res = await fetch(`/api/gm_console/clients/${encodeURIComponent(clientId)}/screenshot`, { method: 'POST' })
+      const params = new URLSearchParams({ session_id: browserSessionIdRef.current })
+      const res = await fetch(`/api/gm_console/clients/${encodeURIComponent(clientId)}/screenshot?${params}`, { method: 'POST' })
       if (res.ok) {
         toast.success('已请求截图，等待客户端响应...')
       } else {
