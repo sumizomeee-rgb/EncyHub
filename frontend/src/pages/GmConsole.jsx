@@ -77,19 +77,19 @@ function PlatformIcon({ platform, size, className }) {
 function RuntimeGmBridgeIcon({ size = 16, className = '' }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      {/* Left endpoint */}
-      <rect x="2" y="8" width="5" height="8" rx="1.2" />
-      <path d="M3.8 11.5h1.4" />
-      <path d="M3.8 13.5h1.4" />
-      {/* Right endpoint */}
-      <rect x="17" y="8" width="5" height="8" rx="1.2" />
-      <path d="M18.8 11.5h1.4" />
-      <path d="M18.8 13.5h1.4" />
-      {/* Bridge arch connecting both */}
-      <path d="M7 12c0-3.5 2.2-5 5-5s5 1.5 5 5" />
-      {/* Bridge deck */}
-      <path d="M7 12h10" />
+      fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.5 8.25h3.25c.97 0 1.75.78 1.75 1.75v4c0 .97-.78 1.75-1.75 1.75H4.5A2.5 2.5 0 0 1 2 13.25v-2.5a2.5 2.5 0 0 1 2.5-2.5Z" />
+      <path d="M16.25 8.25h3.25a2.5 2.5 0 0 1 2.5 2.5v2.5a2.5 2.5 0 0 1-2.5 2.5h-3.25c-.97 0-1.75-.78-1.75-1.75v-4c0-.97.78-1.75 1.75-1.75Z" />
+      <path d="M9.6 12h4.8" />
+      <path d="M11.05 9.95 13.1 12l-2.05 2.05" />
+      <path d="M5.3 11.1h1.5" />
+      <path d="M5.3 12.9h1.5" />
+      <path d="M17.2 11.1h1.5" />
+      <path d="M17.2 12.9h1.5" />
+      <path d="M12 4.2v2.05" />
+      <path d="M10.6 5.6h2.8" />
+      <path d="M12 17.75v2.05" />
+      <path d="M10.6 18.4h2.8" />
     </svg>
   )
 }
@@ -136,6 +136,130 @@ function loadTabOrder() {
     }
     return order
   } catch { return DEFAULT_TAB_ORDER }
+}
+
+function GridControlSlider({ value, min, max, step = 1, onChange, className = '', title }) {
+  const trackRef = useRef(null)
+  const draggingRef = useRef(false)
+
+  const clamp = useCallback((v) => Math.max(min, Math.min(max, v)), [min, max])
+  const snap = useCallback((v) => {
+    const stepped = min + Math.round((v - min) / step) * step
+    return clamp(stepped)
+  }, [clamp, min, step])
+  const setFromClientX = useCallback((clientX) => {
+    const rect = trackRef.current?.getBoundingClientRect()
+    if (!rect?.width) return
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    onChange?.(snap(min + ratio * (max - min)))
+  }, [max, min, onChange, snap])
+
+  const handlePointerDown = (e) => {
+    e.preventDefault()
+    draggingRef.current = true
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    document.body.style.userSelect = 'none'
+    setFromClientX(e.clientX)
+  }
+  const handlePointerMove = (e) => {
+    if (!draggingRef.current) return
+    e.preventDefault()
+    setFromClientX(e.clientX)
+  }
+  const clearDrag = (e) => {
+    draggingRef.current = false
+    e?.currentTarget?.releasePointerCapture?.(e.pointerId)
+    document.body.style.userSelect = ''
+  }
+  const stopDrag = (e) => {
+    if (!draggingRef.current) return
+    setFromClientX(e.clientX)
+    clearDrag(e)
+  }
+  const cancelDrag = (e) => {
+    if (!draggingRef.current) return
+    clearDrag(e)
+  }
+  const handleKeyDown = (e) => {
+    const nextByKey = {
+      ArrowLeft: value - step,
+      ArrowDown: value - step,
+      ArrowRight: value + step,
+      ArrowUp: value + step,
+      Home: min,
+      End: max,
+    }[e.key]
+    if (nextByKey == null) return
+    e.preventDefault()
+    onChange?.(snap(nextByKey))
+  }
+
+  const pct = max > min ? `${((clamp(value) - min) / (max - min)) * 100}%` : '0%'
+
+  return (
+    <div
+      ref={trackRef}
+      role="slider"
+      tabIndex={0}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={value}
+      title={title}
+      className={`focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--caramel)]/35 ${className}`}
+      style={{
+        position: 'relative',
+        width: 80,
+        height: 16,
+        display: 'flex',
+        alignItems: 'center',
+        flexShrink: 0,
+        cursor: 'pointer',
+        borderRadius: 9999,
+        userSelect: 'none',
+        touchAction: 'none',
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={stopDrag}
+      onPointerCancel={cancelDrag}
+      onLostPointerCapture={cancelDrag}
+      onKeyDown={handleKeyDown}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          height: 6,
+          borderRadius: 9999,
+          background: 'var(--glass-border)',
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          width: pct,
+          height: 6,
+          borderRadius: 9999,
+          background: 'var(--caramel)',
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          left: pct,
+          width: 12,
+          height: 12,
+          borderRadius: 9999,
+          background: 'var(--caramel)',
+          border: '2px solid white',
+          boxShadow: '0 1px 2px rgba(74, 64, 58, 0.15)',
+          transform: 'translateX(-50%)',
+        }}
+      />
+    </div>
+  )
 }
 
 function GmConsole() {
@@ -520,6 +644,28 @@ function GmConsole() {
     setBreadcrumbPath(prev => prev.slice(0, index + 1))
     setSearchFilter('')
   }, [navigateToRoot])
+
+  const handleRefreshLuaGmTree = useCallback(async () => {
+    const cmd = 'RuntimeGMClient.ReloadGM(true)'
+    if (broadcastMode) {
+      await fetch('/api/gm_console/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd }),
+      })
+    } else if (selectedClient) {
+      setAutoSelectedClientId(null) // 对当前客户端发命令，消光
+      await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd }),
+      })
+    } else {
+      toast.warning('请先选择客户端或广播模式')
+      return
+    }
+    toast.success('已发送刷新GM信号')
+  }, [broadcastMode, selectedClient, toast])
 
   // 执行 Lua 命令
   const handleExec = async () => {
@@ -1053,47 +1199,27 @@ end`
                     })}
                     </div>
                   </div>
-                  {activeTab === 'lua_gm' && (
-                    <button
-                      className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
-                      onClick={async () => {
-                        const cmd = 'RuntimeGMClient.ReloadGM(true)'
-                        if (broadcastMode) {
-                          await fetch('/api/gm_console/broadcast', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ cmd }),
-                          })
-                        } else if (selectedClient) {
-                          setAutoSelectedClientId(null) // 对当前客户端发命令，消光
-                          await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ cmd }),
-                          })
-                        } else {
-                          toast.warning('请先选择客户端或广播模式')
-                          return
-                        }
-                        toast.success('已发送刷新GM信号')
-                      }}
-                      title="刷新 LuaGM 树"
-                    >
-                      <RefreshCw size={16} />
-                    </button>
-                  )}
                 </div>
 
                 {TAB_META[activeTab]?.gridSlider && (
                   <div className="flex items-center gap-2 mb-3 px-1">
                     <ZoomOut size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.max(60, w - 4))} />
-                    <input type="range" min="60" max="300" step="4" value={btnMinWidth} onChange={e => setBtnMinWidth(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮最小宽度" />
+                    <GridControlSlider value={btnMinWidth} min={60} max={300} step={4} onChange={setBtnMinWidth} className="w-20 shrink-0" title="按钮最小宽度" />
                     <ZoomIn size={14} className="text-[var(--coffee-muted)] shrink-0 cursor-pointer hover:text-[var(--coffee-deep)]" onClick={() => setBtnMinWidth(w => Math.min(300, w + 4))} />
                     <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnMinWidth}</span>
                     <span className="w-px h-3 bg-[var(--glass-border)]" />
                     <span className="text-[10px] text-[var(--coffee-muted)]">H</span>
-                    <input type="range" min="32" max="128" step="4" value={btnHeight} onChange={e => setBtnHeight(parseInt(e.target.value))} className="w-20 h-1 accent-[var(--caramel)]" title="按钮高度" />
+                    <GridControlSlider value={btnHeight} min={32} max={128} step={4} onChange={setBtnHeight} className="w-20 shrink-0" title="按钮高度" />
                     <span className="text-[10px] text-[var(--coffee-muted)] w-5 text-center">{btnHeight}</span>
+                    {activeTab === 'lua_gm' && (
+                      <button
+                        className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                        onClick={handleRefreshLuaGmTree}
+                        title="刷新 LuaGM 树"
+                      >
+                        <RefreshCw size={16} />
+                      </button>
+                    )}
                   </div>
                 )}
 
