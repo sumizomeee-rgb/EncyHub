@@ -2724,24 +2724,67 @@ local function StartRuntimeGM()
 
     function LuaUiInspector.GetOpenUiList()
         local result = {}
-        local ok, allList = pcall(function() return CS.XUiManager.Instance:GetAllList() end)
-        if not ok or not allList then
-            return { error = "Failed to get UI list: " .. tostring(allList) }
-        end
         local seen = {}
-        for i = 0, allList.Count - 1 do
-            local xok, info = pcall(function()
-                local xui = allList[i]
-                local uiName = xui.UiData.UiName
-                if seen[uiName] then return nil end
-                seen[uiName] = true
-                local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
-                if not luaUi then return nil end
-                return { name = uiName, active = xui.IsEnable }
-            end)
-            if xok and info then result[#result + 1] = info end
+        local activeMap = {}
+
+        local allOk, allList = pcall(function() return CS.XUiManager.Instance:GetAllList() end)
+        if allOk and allList then
+            for i = 0, allList.Count - 1 do
+                pcall(function()
+                    local xui = allList[i]
+                    local uiName = tostring(xui.UiData.UiName)
+                    activeMap[uiName] = xui.IsEnable
+                end)
+            end
         end
-        table.sort(result, function(a, b) return a.name < b.name end)
+
+        local function pushUi(uiName)
+            uiName = tostring(uiName or "")
+            if uiName == "" or seen[uiName] then return end
+            seen[uiName] = true
+            local luaUi = nil
+            pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(uiName) end)
+            if not luaUi then return end
+            result[#result + 1] = {
+                name = uiName,
+                active = activeMap[uiName] ~= false,
+            }
+        end
+
+        local stackOk, stack = pcall(function() return XLuaUiManager:GetUiStack() end)
+        if stackOk and stack then
+            for i = 0, stack.Count - 1 do
+                pcall(function()
+                    local item = stack[i]
+                    if item and item.Name then pushUi(item.Name) end
+                end)
+            end
+        end
+
+        if #result == 0 then
+            if not allOk or not allList then
+                return { error = "Failed to get UI list: " .. tostring(allList) }
+            end
+            for i = 0, allList.Count - 1 do
+                pcall(function()
+                    local xui = allList[i]
+                    if xui and xui.UiData then pushUi(xui.UiData.UiName) end
+                end)
+            end
+        end
+
+        -- 兜底补齐：保留 GetUiStack 的真实栈顺序，同时追加栈里缺失但仍打开的 UI。
+        if allOk and allList then
+            for i = 0, allList.Count - 1 do
+                pcall(function()
+                    local xui = allList[i]
+                    if xui and xui.UiData then pushUi(xui.UiData.UiName) end
+                end)
+            end
+        end
+
+        for i, info in ipairs(result) do info.order = i end
+
         -- 清理已关闭 UI 的 _OriginalValues
         local validNames = {}
         for _, info in ipairs(result) do validNames[info.name] = true end

@@ -1214,6 +1214,15 @@ end`
                     {activeTab === 'lua_gm' && (
                       <button
                         className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                        onClick={navigateToRoot}
+                        title="回到 LuaGM 根目录"
+                      >
+                        <Home size={16} />
+                      </button>
+                    )}
+                    {activeTab === 'lua_gm' && (
+                      <button
+                        className="p-1.5 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
                         onClick={handleRefreshLuaGmTree}
                         title="刷新 LuaGM 树"
                       >
@@ -1228,15 +1237,9 @@ end`
                   <div>
                     {/* Breadcrumb */}
                     <div className="flex items-center gap-1 mb-3 flex-wrap">
-                      <button
-                        className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-[var(--cream-warm)] hover:bg-[var(--caramel-light)] hover:text-white transition-all text-[var(--coffee-deep)]"
-                        onClick={navigateToRoot}
-                      >
-                        <Home size={12} />
-                      </button>
                       {breadcrumb.map((node, i) => (
                         <div key={i} className="flex items-center gap-1">
-                          <ChevronRight size={12} className="text-[var(--coffee-muted)]" />
+                          {i > 0 && <ChevronRight size={12} className="text-[var(--coffee-muted)]" />}
                           <button
                             className="px-2 py-1 rounded-md text-xs font-medium bg-[var(--cream-warm)] hover:bg-[var(--caramel-light)] hover:text-white transition-all text-[var(--coffee-deep)]"
                             onClick={() => navigateToBreadcrumb(i)}
