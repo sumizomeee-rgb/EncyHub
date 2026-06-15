@@ -147,14 +147,28 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
     }, [])
 
     // --- 加载树 ---
-    const loadTree = useCallback(() => {
+    const resetTreeViewState = useCallback(() => {
+        childrenMapRef.current = {}
+        expandedRef.current = new Set()
+        setChildrenMap({})
+        setExpanded(new Set())
+        setLoadingChildren({})
+        setSelectedId(null)
+        setGoDetail(null)
+        setHighlightCompIndex(null)
+        setGoSearchResults(null)
+        setGoSearchInfo(null)
+    }, [])
+
+    const loadTree = useCallback((options = {}) => {
+        if (options?.reset) resetTreeViewState()
         setLoadingTree(true)
         request('scene_roots', {}, (data) => {
             setLoadingTree(false)
             if (data?.error) { setTree({ scenes: [], dontDestroy: [], error: data.error }); return }
             setTree(data || { scenes: [], dontDestroy: [] })
         })
-    }, [request])
+    }, [request, resetTreeViewState])
 
     // --- 加载子节点 ---
     const loadChildren = useCallback((instanceId) => {
@@ -509,7 +523,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--caramel)] disabled:opacity-30 disabled:pointer-events-none transition-colors mr-1" title="全场景高级搜索 (GO / Component / 字段 / 文本)">
                                 <Search size={13} />
                             </button>
-                            <button onClick={loadTree} disabled={!selectedClient || loadingTree}
+                            <button onClick={() => loadTree({ reset: true })} disabled={!selectedClient || loadingTree}
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新整树">
                                 <RotateCw size={13} className={loadingTree ? 'animate-spin' : ''} />
                             </button>

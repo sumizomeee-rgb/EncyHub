@@ -1794,12 +1794,25 @@ local function StartRuntimeGM()
                 end
             end
             if not target then return { error = "path target nil" } end
+            local function tryResolveGo(candidate)
+                if not candidate then return nil end
+                local ok, goObj = pcall(function() return candidate.gameObject end)
+                if ok and goObj then return goObj end
+                local ok2, ah = pcall(function() return candidate.activeInHierarchy end)
+                if ok2 and type(ah) == "boolean" then return candidate end
+                return nil
+            end
             pcall(function()
-                local ok, goObj = pcall(function() return target.gameObject end)
-                if ok and goObj then go = goObj
-                else
-                    local ok2, ah = pcall(function() return target.activeInHierarchy end)
-                    if ok2 and type(ah) == "boolean" then go = target end
+                go = tryResolveGo(target)
+                if (not go) and type(target) == "table" then
+                    local keys = { "GameObject", "Transform", "Obj", "gameObject", "transform" }
+                    for _, key in ipairs(keys) do
+                        local ok, candidate = pcall(function() return target[key] end)
+                        if ok and candidate then
+                            go = tryResolveGo(candidate)
+                            if go then break end
+                        end
+                    end
                 end
             end)
         end
@@ -5009,6 +5022,13 @@ local function StartRuntimeGM()
         if not json then return end
 
         local packet = json
+        if packet.type == "HIERARCHY"
+            and packet.action == "locate"
+            and packet.uiName
+            and packet.uiName ~= ""
+            and (packet.path == nil or packet.path == "") then
+            packet.path = "GameObject"
+        end
         local type = packet.type
         if type == "EXEC" then
             local cmd = packet.cmd

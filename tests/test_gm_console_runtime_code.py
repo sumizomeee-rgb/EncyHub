@@ -174,3 +174,23 @@ def test_hidden_monitor_tabs_do_not_open_websockets():
 
     assert "if (!active || !selectedClient) return" in timeline
     assert "[selectedClient?.id, active]" in timeline
+
+
+def test_hierarchy_manual_refresh_clears_cached_children_and_selection():
+    content = read_file(HIERARCHY_JSX)
+
+    assert "const resetTreeViewState = useCallback" in content
+    assert "childrenMapRef.current = {}" in content
+    assert "expandedRef.current = new Set()" in content
+    assert "setSelectedId(null)" in content
+    assert "setGoDetail(null)" in content
+    assert "onClick={() => loadTree({ reset: true })}" in content
+
+
+def test_lua_ui_root_locate_falls_back_to_common_root_go_fields():
+    content = read_file(RUNTIME_GM_LUA)
+
+    assert "local function tryResolveGo(candidate)" in content
+    assert 'local keys = { "GameObject", "Transform", "Obj", "gameObject", "transform" }' in content
+    assert "go = tryResolveGo(target)" in content
+    assert 'packet.path = "GameObject"' in content
