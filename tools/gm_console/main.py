@@ -34,6 +34,16 @@ proto_parser: Optional[ProtoParser] = None
 ws_connections: list[dict[str, Any]] = []
 pending_screenshot_sessions: dict[str, list[dict[str, Any]]] = {}
 SCREENSHOT_REQUEST_TTL = 30.0
+game_log_ws_connections: dict[str, list[WebSocket]] = {}
+game_log_cache: dict[str, dict[str, Any]] = {}
+game_log_stop_tasks: dict[str, asyncio.Task] = {}
+GAME_LOG_BOOTSTRAP_BYTES = 512 * 1024
+GAME_LOG_BOOTSTRAP_MAX_ENTRIES = 2000
+GAME_LOG_CACHE_MAX_ENTRIES = 5000
+GAME_LOG_CACHE_MAX_BYTES = 5 * 1024 * 1024
+GAME_LOG_POLL_INTERVAL_MS = 300
+GAME_LOG_READ_CHUNK_BYTES = 64 * 1024
+GAME_LOG_STOP_DELAY = 30.0
 
 
 def _prune_screenshot_sessions(client_id: str):
@@ -87,6 +97,112 @@ async def broadcast_event(event: dict, target_session_id: Optional[str] = None):
             if entry in ws_connections:
                 ws_connections.remove(entry)
     print(f"[GmConsole] 广播完成: type={event.get('type')}, 成功={sent}")
+
+
+def _estimate_game_log_entry_size(entry: dict) -> int:
+    text = entry.get("text", "") if isinstance(entry, dict) else ""
+    return len(str(text).encode("utf-8", errors="ignore")) + 128
+
+
+def _get_game_log_state(client_id: str) -> dict[str, Any]:
+    if client_id not in game_log_cache:
+        game_log_cache[client_id] = {
+            "entries": [],
+            "meta": {},
+            "status": {},
+            "bytes": 0,
+            "droppedCount": 0,
+        }
+    return game_log_cache[client_id]
+
+
+def _trim_game_log_state(state: dict[str, Any]):
+    entries = state.get("entries", [])
+    while entries and (
+        len(entries) > GAME_LOG_CACHE_MAX_ENTRIES
+        or state.get("bytes", 0) > GAME_LOG_CACHE_MAX_BYTES
+    ):
+        removed = entries.pop(0)
+        state["bytes"] = max(0, state.get("bytes", 0) - _estimate_game_log_entry_size(removed))
+        state["droppedCount"] = state.get("droppedCount", 0) + 1
+
+
+def _normalize_game_log_entry(entry: Any) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {"text": str(entry), "level": "info"}
+    text = str(entry.get("text", ""))
+    return {
+        "seq": entry.get("seq"),
+        "level": str(entry.get("level", "info") or "info"),
+        "time": str(entry.get("time", "") or ""),
+        "header": str(entry.get("header", "") or ""),
+        "text": text,
+        "fileOffset": entry.get("fileOffset"),
+    }
+
+
+def _cache_game_log_entries(client_id: str, raw_entries: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_entries, list):
+        return []
+    state = _get_game_log_state(client_id)
+    recent_keys = {
+        (str(entry.get("time", "")), str(entry.get("text", "")))
+        for entry in state.get("entries", [])[-300:]
+        if isinstance(entry, dict)
+    }
+    normalized = []
+    for entry in raw_entries:
+        normalized_entry = _normalize_game_log_entry(entry)
+        key = (normalized_entry.get("time", ""), normalized_entry.get("text", ""))
+        if key in recent_keys:
+            continue
+        recent_keys.add(key)
+        normalized.append(normalized_entry)
+    for entry in normalized:
+        state["entries"].append(entry)
+        state["bytes"] = state.get("bytes", 0) + _estimate_game_log_entry_size(entry)
+    _trim_game_log_state(state)
+    return normalized
+
+
+async def broadcast_game_log_event(client_id: str, event: dict[str, Any]):
+    conns = game_log_ws_connections.get(client_id, [])
+    if not conns:
+        return
+    payload = {**event, "client_id": client_id}
+    dead = []
+    for ws in conns:
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        if ws in conns:
+            conns.remove(ws)
+    if not conns:
+        game_log_ws_connections.pop(client_id, None)
+
+
+def _schedule_game_log_stop(client_id: str):
+    existing = game_log_stop_tasks.get(client_id)
+    if existing and not existing.done():
+        existing.cancel()
+
+    async def delayed_stop():
+        try:
+            await asyncio.sleep(GAME_LOG_STOP_DELAY)
+            if game_log_ws_connections.get(client_id):
+                return
+            if server_mgr:
+                await server_mgr.send_game_log_request(client_id, "stop", {})
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if game_log_stop_tasks.get(client_id) is task:
+                game_log_stop_tasks.pop(client_id, None)
+
+    task = asyncio.create_task(delayed_stop())
+    game_log_stop_tasks[client_id] = task
 
 
 @asynccontextmanager
@@ -256,6 +372,48 @@ async def lifespan(app: FastAPI):
         }))
 
     server_mgr.on_table_monitor_data = on_table_monitor_data
+
+    # --- Game Log Tail ---
+    def on_game_log_meta(client_id, pkt):
+        meta = {
+            key: value
+            for key, value in pkt.items()
+            if key not in {"type", "entries"}
+        }
+        state = _get_game_log_state(client_id)
+        state["meta"] = meta
+        asyncio.create_task(broadcast_game_log_event(client_id, {
+            "type": "meta",
+            "meta": meta,
+        }))
+
+    def on_game_log_status(client_id, pkt):
+        status = {
+            key: value
+            for key, value in pkt.items()
+            if key != "type"
+        }
+        state = _get_game_log_state(client_id)
+        state["status"] = status
+        asyncio.create_task(broadcast_game_log_event(client_id, {
+            "type": "status",
+            "status": status,
+        }))
+
+    def on_game_log_entries(client_id, pkt):
+        entries = _cache_game_log_entries(client_id, pkt.get("entries", []))
+        if not entries:
+            return
+        state = _get_game_log_state(client_id)
+        asyncio.create_task(broadcast_game_log_event(client_id, {
+            "type": "entries",
+            "entries": entries,
+            "droppedCount": state.get("droppedCount", 0),
+        }))
+
+    server_mgr.on_game_log_meta = on_game_log_meta
+    server_mgr.on_game_log_status = on_game_log_status
+    server_mgr.on_game_log_entries = on_game_log_entries
 
     # --- Screenshot ---
     def on_screenshot(client_id, pkt):
@@ -970,6 +1128,71 @@ async def websocket_subpkg_monitor(websocket: WebSocket):
 # ============================================================================
 # WebSocket
 # ============================================================================
+
+@app.websocket("/ws/game-log")
+async def websocket_game_log(websocket: WebSocket):
+    """指定客户端的游戏端日志流。"""
+    await websocket.accept()
+    client_id = websocket.query_params.get("client_id")
+    if not client_id:
+        await websocket.send_json({
+            "type": "status",
+            "status": {"state": "error", "error": "missing client_id"},
+        })
+        await websocket.close(code=1008)
+        return
+
+    conns = game_log_ws_connections.setdefault(client_id, [])
+    conns.append(websocket)
+    stop_task = game_log_stop_tasks.pop(client_id, None)
+    if stop_task and not stop_task.done():
+        stop_task.cancel()
+
+    state = _get_game_log_state(client_id)
+    await websocket.send_json({
+        "type": "init",
+        "client_id": client_id,
+        "entries": state.get("entries", []),
+        "meta": state.get("meta", {}),
+        "status": state.get("status", {}),
+        "droppedCount": state.get("droppedCount", 0),
+    })
+
+    if not server_mgr or client_id not in server_mgr.clients:
+        await websocket.send_json({
+            "type": "status",
+            "client_id": client_id,
+            "status": {"state": "error", "error": f"客户端 {client_id} 不存在或已断开"},
+        })
+    else:
+        ok, msg = await server_mgr.send_game_log_request(client_id, "start", {
+            "bootstrapBytes": GAME_LOG_BOOTSTRAP_BYTES,
+            "maxEntries": GAME_LOG_BOOTSTRAP_MAX_ENTRIES,
+            "pollIntervalMs": GAME_LOG_POLL_INTERVAL_MS,
+            "readChunkBytes": GAME_LOG_READ_CHUNK_BYTES,
+        })
+        if not ok:
+            await websocket.send_json({
+                "type": "status",
+                "client_id": client_id,
+                "status": {"state": "error", "error": msg},
+            })
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        conns = game_log_ws_connections.get(client_id, [])
+        if websocket in conns:
+            conns.remove(websocket)
+        if not conns:
+            game_log_ws_connections.pop(client_id, None)
+            _schedule_game_log_stop(client_id)
+
 
 @app.websocket("/ws/events")
 async def websocket_events(websocket: WebSocket):

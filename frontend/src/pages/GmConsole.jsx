@@ -5,7 +5,8 @@ import {
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Play, Globe, RefreshCw,
   PanelLeftClose, PanelLeftOpen, Package, Database, Zap, Settings,
-  Film, Video, Clock, Table2, Camera, Clipboard, Check, AlertCircle
+  Film, Video, Clock, Table2, Camera, Clipboard, Check, AlertCircle,
+  Search, Pause, FileText
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import { copyText } from '../utils/clipboard'
@@ -282,9 +283,20 @@ function GmConsole() {
   const [broadcastMode, setBroadcastMode] = useState(false)
   // gmTree / currentNodes 派生自 selectedClient.gm_tree + breadcrumbPath，无需独立 state
   const [logs, setLogs] = useState([])
+  const [logMode, setLogMode] = useState('web')
+  const [gameLogsByClient, setGameLogsByClient] = useState({})
+  const [gameLogMetaByClient, setGameLogMetaByClient] = useState({})
+  const [gameLogStatusByClient, setGameLogStatusByClient] = useState({})
+  const [gameLogDroppedByClient, setGameLogDroppedByClient] = useState({})
+  const [gameLogSearch, setGameLogSearch] = useState('')
+  const [gameLogLevelFilter, setGameLogLevelFilter] = useState('all')
+  const [gameLogFollow, setGameLogFollow] = useState(true)
+  const [gameLogDetail, setGameLogDetail] = useState(null)
   const [luaInput, setLuaInput] = useState('')
   const [loading, setLoading] = useState(true)
   const logsContainerRef = useRef(null)
+  const gameLogsContainerRef = useRef(null)
+  const gameLogWsRef = useRef(null)
   const wsRef = useRef(null)
   const clientStateRevRef = useRef(0)
   const browserSessionIdRef = useRef(createBrowserSessionId())
@@ -409,6 +421,22 @@ function GmConsole() {
 
   // 搜索过滤
   const [searchFilter, setSearchFilter] = useState('')
+
+  const activeGameLogClientId = !broadcastMode ? selectedClient?.id : null
+  const currentGameLogs = activeGameLogClientId ? (gameLogsByClient[activeGameLogClientId] || []) : []
+  const currentGameLogMeta = activeGameLogClientId ? (gameLogMetaByClient[activeGameLogClientId] || {}) : {}
+  const currentGameLogStatus = activeGameLogClientId ? (gameLogStatusByClient[activeGameLogClientId] || {}) : {}
+  const currentGameLogDropped = activeGameLogClientId ? (gameLogDroppedByClient[activeGameLogClientId] || 0) : 0
+
+  const filteredGameLogs = useMemo(() => {
+    const keyword = gameLogSearch.trim().toLowerCase()
+    return currentGameLogs.filter(entry => {
+      const level = (entry.level || 'info').toLowerCase()
+      if (gameLogLevelFilter !== 'all' && level !== gameLogLevelFilter) return false
+      if (!keyword) return true
+      return `${entry.time || ''}\n${entry.header || ''}\n${entry.text || ''}`.toLowerCase().includes(keyword)
+    })
+  }, [currentGameLogs, gameLogSearch, gameLogLevelFilter])
 
   const applyClientSnapshot = useCallback((nextClients, rev) => {
     if (typeof rev === 'number') {
@@ -585,9 +613,80 @@ function GmConsole() {
   }, [fetchDataHttp, fetchCustomGm, applyClientSnapshot])
 
   useEffect(() => {
+    if (logMode !== 'game' || !activeGameLogClientId) {
+      if (gameLogWsRef.current) {
+        gameLogWsRef.current.close()
+        gameLogWsRef.current = null
+      }
+      return
+    }
+
+    const clientId = activeGameLogClientId
+    const wsUrl = `ws://${window.location.host}/api/gm_console/ws/game-log?client_id=${encodeURIComponent(clientId)}`
+    const ws = new WebSocket(wsUrl)
+    gameLogWsRef.current = ws
+    let pingTimer = null
+
+    const appendEntries = (entries, droppedCount) => {
+      if (!Array.isArray(entries) || entries.length === 0) return
+      setGameLogsByClient(prev => {
+        const next = [...(prev[clientId] || []), ...entries].slice(-5000)
+        return { ...prev, [clientId]: next }
+      })
+      if (typeof droppedCount === 'number') {
+        setGameLogDroppedByClient(prev => ({ ...prev, [clientId]: droppedCount }))
+      }
+    }
+
+    ws.onopen = () => {
+      pingTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('ping')
+      }, 25000)
+    }
+
+    ws.onmessage = (e) => {
+      if (e.data === 'pong') return
+      try {
+        const event = JSON.parse(e.data)
+        if (event.type === 'init') {
+          setGameLogsByClient(prev => ({ ...prev, [clientId]: (event.entries || []).slice(-5000) }))
+          setGameLogMetaByClient(prev => ({ ...prev, [clientId]: event.meta || {} }))
+          setGameLogStatusByClient(prev => ({ ...prev, [clientId]: event.status || {} }))
+          setGameLogDroppedByClient(prev => ({ ...prev, [clientId]: event.droppedCount || 0 }))
+        } else if (event.type === 'entries') {
+          appendEntries(event.entries, event.droppedCount)
+        } else if (event.type === 'meta') {
+          setGameLogMetaByClient(prev => ({ ...prev, [clientId]: event.meta || {} }))
+        } else if (event.type === 'status') {
+          setGameLogStatusByClient(prev => ({ ...prev, [clientId]: event.status || {} }))
+        }
+      } catch (err) {
+        console.error('解析游戏日志 WS 失败:', err)
+      }
+    }
+
+    ws.onclose = () => {
+      if (pingTimer) clearInterval(pingTimer)
+      if (gameLogWsRef.current === ws) gameLogWsRef.current = null
+    }
+
+    return () => {
+      if (pingTimer) clearInterval(pingTimer)
+      ws.close()
+      if (gameLogWsRef.current === ws) gameLogWsRef.current = null
+    }
+  }, [logMode, activeGameLogClientId])
+
+  useEffect(() => {
     const el = logsContainerRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [logs])
+
+  useEffect(() => {
+    if (!gameLogFollow) return
+    const el = gameLogsContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [filteredGameLogs, gameLogFollow])
 
   // 选择客户端时更新 GM 树
   // auto=true 表示由系统自动选中（首次/掉线重连），会点亮发光边框
@@ -896,6 +995,8 @@ end`
       case 'broadcast': return 'text-[var(--amber)]'
       case 'gm': return 'text-[var(--sage)]'
       case 'error': return 'text-[var(--terracotta)]'
+      case 'warn': return 'text-[var(--amber)]'
+      case 'print': return 'text-[var(--sage)]'
       default: return 'text-[var(--coffee-light)]'
     }
   }
@@ -911,6 +1012,20 @@ end`
     gridTemplateColumns: `repeat(auto-fill, minmax(${btnMinWidth}px, 1fr))`,
     gap: '8px',
   }
+
+  const gameLogState = currentGameLogStatus.state || (activeGameLogClientId ? 'connecting' : 'idle')
+  const gameLogStatusLabel = currentGameLogStatus.error
+    ? currentGameLogStatus.error
+    : gameLogState === 'running'
+      ? '实时读取中'
+      : gameLogState === 'waiting'
+        ? '等待日志文件'
+        : gameLogState === 'stopped'
+          ? '已暂停读取'
+          : activeGameLogClientId
+            ? '连接中'
+            : '未选择客户端'
+  const gameLogPath = currentGameLogMeta.path || currentGameLogStatus.path || ''
 
   return (
     <div className="min-h-screen">
@@ -1615,34 +1730,152 @@ end`
 
               {/* Logs */}
               <div className="glass-card p-5 flex-1 animate-fade-in" style={{ animationDelay: '0.25s' }}>
-                <div className="flex items-center gap-2 mb-3">
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <div className="w-7 h-7 rounded-lg bg-[var(--cream-warm)] flex items-center justify-center">
                     <MessageSquare size={14} className="text-[var(--coffee-light)]" />
                   </div>
                   <h2 className="font-display text-base font-semibold text-[var(--coffee-deep)]">日志</h2>
-                  {logs.length > 0 && (
+                  <div className="ml-auto flex items-center rounded-lg bg-[var(--cream-warm)]/80 p-0.5 text-xs">
                     <button
-                      className="ml-auto text-xs text-[var(--coffee-muted)] hover:text-[var(--terracotta)] transition-colors"
+                      className={`px-2.5 py-1 rounded-md transition-colors ${logMode === 'web' ? 'bg-white text-[var(--coffee-deep)] shadow-sm' : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'}`}
+                      onClick={() => setLogMode('web')}
+                    >
+                      Web端日志
+                    </button>
+                    <button
+                      className={`px-2.5 py-1 rounded-md transition-colors ${logMode === 'game' ? 'bg-white text-[var(--coffee-deep)] shadow-sm' : 'text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'}`}
+                      onClick={() => setLogMode('game')}
+                    >
+                      游戏端日志
+                    </button>
+                  </div>
+                  {logMode === 'web' && logs.length > 0 && (
+                    <button
+                      className="text-xs text-[var(--coffee-muted)] hover:text-[var(--terracotta)] transition-colors"
                       onClick={() => setLogs([])}
                     >
                       清空
                     </button>
                   )}
-                </div>
-                <div ref={logsContainerRef} className="min-h-[256px] h-64 bg-[var(--coffee-deep)] rounded-xl p-3 overflow-auto font-mono text-xs leading-relaxed">
-                  {logs.length === 0 ? (
-                    <div className="text-[var(--coffee-muted)] text-center py-8">暂无日志</div>
-                  ) : (
-                    logs.map((log, i) => (
-                      <div
-                        key={i}
-                        className={`py-0.5 ${getLogColor(log.type)} hover:bg-white/5 px-1 -mx-1 rounded`}
-                      >
-                        {log.text}
-                      </div>
-                    ))
+                  {logMode === 'game' && (
+                    <button
+                      className="p-1.5 rounded-lg text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors"
+                      title={gameLogFollow ? '暂停自动跟随' : '继续自动跟随'}
+                      onClick={() => setGameLogFollow(v => !v)}
+                    >
+                      {gameLogFollow ? <Pause size={14} /> : <Play size={14} />}
+                    </button>
                   )}
                 </div>
+
+                {logMode === 'game' && (
+                  <div className="space-y-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1 min-w-[140px]">
+                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--coffee-muted)]" />
+                        <input
+                          className="w-full bg-white/70 border border-[var(--glass-border)] rounded-lg pl-8 pr-2 py-1.5 text-xs text-[var(--coffee-deep)] focus:outline-none focus:ring-2 focus:ring-[var(--caramel)]/30"
+                          placeholder="搜索游戏日志..."
+                          value={gameLogSearch}
+                          onChange={e => setGameLogSearch(e.target.value)}
+                        />
+                      </div>
+                      <select
+                        className="bg-white/70 border border-[var(--glass-border)] rounded-lg px-2 py-1.5 text-xs text-[var(--coffee-deep)] focus:outline-none focus:ring-2 focus:ring-[var(--caramel)]/30"
+                        value={gameLogLevelFilter}
+                        onChange={e => setGameLogLevelFilter(e.target.value)}
+                      >
+                        <option value="all">全部</option>
+                        <option value="info">Info</option>
+                        <option value="warn">Warn</option>
+                        <option value="error">Error</option>
+                      </select>
+                      {currentGameLogs.length > 0 && (
+                        <button
+                          className="p-1.5 rounded-lg text-[var(--coffee-muted)] hover:text-[var(--terracotta)] hover:bg-[var(--cream-warm)] transition-colors"
+                          title="清空当前客户端缓存"
+                          onClick={() => {
+                            if (!activeGameLogClientId) return
+                            setGameLogsByClient(prev => ({ ...prev, [activeGameLogClientId]: [] }))
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-[var(--coffee-muted)] min-h-[18px]">
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full ${
+                        gameLogState === 'running' ? 'bg-[var(--sage-soft)]/30 text-[var(--sage)]' :
+                        gameLogState === 'error' ? 'bg-[var(--terracotta)]/10 text-[var(--terracotta)]' :
+                        'bg-[var(--amber-soft)]/30 text-[var(--amber)]'
+                      }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${gameLogState === 'running' ? 'bg-[var(--sage)]' : gameLogState === 'error' ? 'bg-[var(--terracotta)]' : 'bg-[var(--amber)]'}`} />
+                        {gameLogStatusLabel}
+                      </span>
+                      {activeGameLogClientId && (
+                        <span className="truncate" title={gameLogPath || '等待客户端返回日志路径'}>
+                          {gameLogPath || '解析日志路径中'} · {filteredGameLogs.length}/{currentGameLogs.length}
+                          {currentGameLogDropped > 0 ? ` · 已裁剪 ${currentGameLogDropped}` : ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {logMode === 'web' ? (
+                  <div ref={logsContainerRef} className="min-h-[256px] h-64 bg-[var(--coffee-deep)] rounded-xl p-3 overflow-auto font-mono text-xs leading-relaxed">
+                    {logs.length === 0 ? (
+                      <div className="text-[var(--coffee-muted)] text-center py-8">暂无日志</div>
+                    ) : (
+                      logs.map((log, i) => (
+                        <div
+                          key={i}
+                          className={`py-0.5 ${getLogColor(log.type)} hover:bg-white/5 px-1 -mx-1 rounded`}
+                        >
+                          {log.text}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <div ref={gameLogsContainerRef} className="min-h-[256px] h-64 bg-[var(--coffee-deep)] rounded-xl p-3 overflow-auto font-mono text-xs leading-relaxed">
+                    {!activeGameLogClientId ? (
+                      <div className="text-[var(--coffee-muted)] text-center py-8">请选择一个客户端查看游戏端日志</div>
+                    ) : filteredGameLogs.length === 0 ? (
+                      <div className="text-[var(--coffee-muted)] text-center py-8">
+                        {currentGameLogs.length === 0 ? '等待游戏日志...' : '没有匹配的日志'}
+                      </div>
+                    ) : (
+                      filteredGameLogs.map((entry, i) => {
+                        const level = (entry.level || 'info').toLowerCase()
+                        return (
+                          <div
+                            key={`${entry.seq || i}-${entry.fileOffset || i}-${entry.text?.slice(0, 24) || ''}`}
+                            className={`grid grid-cols-[76px,1fr] gap-2 py-1 px-1 -mx-1 rounded cursor-default hover:bg-white/5 ${getLogColor(level)}`}
+                            onDoubleClick={() => setGameLogDetail({ entry, client: selectedClient, meta: currentGameLogMeta })}
+                            title="双击查看完整日志"
+                          >
+                            <div className="flex flex-col gap-0.5 text-[10px] text-[var(--coffee-muted)] overflow-hidden">
+                              <span className={`uppercase font-semibold ${getLogColor(level)}`}>{level}</span>
+                              <span className="truncate">{entry.time || `#${entry.seq || i + 1}`}</span>
+                            </div>
+                            <div
+                              className="whitespace-pre-wrap break-words"
+                              style={{
+                                display: '-webkit-box',
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: 'vertical',
+                                overflow: 'hidden',
+                              }}
+                            >
+                              {entry.text}
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* HaruRoot Config */}
@@ -1677,6 +1910,61 @@ end`
               alt="客户端截图"
               className="rounded-lg max-h-[70vh] object-contain"
               style={{ width: screenshot.width, maxWidth: '100%', height: 'auto' }} />
+          </div>
+        </div>
+      )}
+
+      {/* Game Log Detail Modal */}
+      {gameLogDetail && (
+        <div className="modal-overlay" onMouseDown={() => setGameLogDetail(null)}>
+          <div
+            className="glass-card p-5 w-[min(920px,92vw)] max-h-[86vh] flex flex-col"
+            onMouseDown={e => e.stopPropagation()}
+            style={{ animation: 'slideUp 0.3s ease' }}
+          >
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--coffee-deep)] to-[var(--coffee-light)] flex items-center justify-center">
+                  <FileText size={15} className="text-white" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-display text-sm font-semibold text-[var(--coffee-deep)]">游戏日志详情</h3>
+                  <p className="text-[10px] text-[var(--coffee-muted)] truncate">
+                    {gameLogDetail.client?.device || gameLogDetail.client?.id || '未知客户端'}
+                    {gameLogDetail.entry?.time ? ` · ${gameLogDetail.entry.time}` : ''}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
+                  title="复制完整日志"
+                  onClick={async () => {
+                    await copyText(gameLogDetail.entry?.text || '')
+                    toast.success('已复制日志')
+                  }}
+                >
+                  <Clipboard size={16} />
+                </button>
+                <button
+                  onClick={() => setGameLogDetail(null)}
+                  className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-[10px] text-[var(--coffee-muted)]">
+              <span className={`px-2 py-1 rounded-full bg-[var(--cream-warm)] uppercase font-semibold ${getLogColor((gameLogDetail.entry?.level || 'info').toLowerCase())}`}>
+                {gameLogDetail.entry?.level || 'info'}
+              </span>
+              {gameLogDetail.meta?.path && (
+                <span className="truncate max-w-full" title={gameLogDetail.meta.path}>{gameLogDetail.meta.path}</span>
+              )}
+            </div>
+            <pre className="flex-1 min-h-[320px] max-h-[62vh] overflow-auto bg-[var(--coffee-deep)] text-[var(--cream-soft)] rounded-xl p-4 text-xs leading-relaxed whitespace-pre-wrap break-words font-mono">
+              {gameLogDetail.entry?.text || ''}
+            </pre>
           </div>
         </div>
       )}

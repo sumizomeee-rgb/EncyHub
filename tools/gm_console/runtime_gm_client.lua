@@ -3590,6 +3590,7 @@ local function StartRuntimeGM()
     -- 前向声明：让 RuntimeGMClient.Update() 闭包能捕获到这个 upvalue
     local LuaAvMonitor = {}
     local LuaTableMonitor = {}
+    local LuaGameLogTail = {}
 
     function RuntimeGMClient.Update()
         if not RuntimeGMClient.IsRunning then return end
@@ -3716,6 +3717,12 @@ local function StartRuntimeGM()
         local tmOk, tmErr = pcall(LuaTableMonitor.Update)
         if not tmOk then
             origin_print("[RuntimeGM] LuaTableMonitor error: " .. tostring(tmErr))
+        end
+
+        -- 游戏端物理日志 tail：只有 Web 端订阅时才激活
+        local glOk, glErr = pcall(LuaGameLogTail.Update)
+        if not glOk then
+            origin_print("[RuntimeGM] LuaGameLogTail error: " .. tostring(glErr))
         end
     end
 
@@ -5010,6 +5017,396 @@ local function StartRuntimeGM()
 
     LuaTableMonitor.Init()
 
+    -- ========== LuaGameLogTail: 游戏物理日志 tail ==========
+    -- 只在 Web 端打开“游戏端日志”时启动；读取真实日志文件，不截获 print/write 调用。
+    LuaGameLogTail._isActive = false
+    LuaGameLogTail._path = nil
+    LuaGameLogTail._dir = nil
+    LuaGameLogTail._offset = 0
+    LuaGameLogTail._lastFileSize = 0
+    LuaGameLogTail._seq = 0
+    LuaGameLogTail._lastPoll = 0
+    LuaGameLogTail._pollInterval = 0.3
+    LuaGameLogTail._bootstrapBytes = 512 * 1024
+    LuaGameLogTail._maxEntries = 2000
+    LuaGameLogTail._readChunkBytes = 64 * 1024
+    LuaGameLogTail._partialLine = ""
+    LuaGameLogTail._currentLines = {}
+    LuaGameLogTail._accepting = false
+    LuaGameLogTail._lastMetaPath = nil
+
+    local function _glt_toNumber(v, fallback)
+        local n = tonumber(tostring(v))
+        if n == nil then return fallback or 0 end
+        return n
+    end
+
+    local function _glt_normPath(path)
+        if not path then return "" end
+        return tostring(path):gsub("\\", "/"):gsub("/+$", "")
+    end
+
+    local function _glt_parent(path)
+        path = _glt_normPath(path)
+        return path:match("^(.+)/[^/]+$") or ""
+    end
+
+    local function _glt_dirExists(path)
+        if not path or path == "" then return false end
+        local ok, exists = pcall(function()
+            return CS.System.IO.Directory.Exists(path)
+        end)
+        return ok and exists
+    end
+
+    local function _glt_fileExists(path)
+        if not path or path == "" then return false end
+        local ok, exists = pcall(function()
+            return CS.System.IO.File.Exists(path)
+        end)
+        return ok and exists
+    end
+
+    local function _glt_findSvnRoot(startPath)
+        local path = _glt_normPath(startPath)
+        for _ = 1, 12 do
+            if path == "" then return nil end
+            if _glt_dirExists(path .. "/.svn") then return path end
+            local parent = _glt_parent(path)
+            if parent == "" or parent == path then return nil end
+            path = parent
+        end
+        return nil
+    end
+
+    local function _glt_getPlatform()
+        local platform = "Unknown"
+        pcall(function() platform = CS.UnityEngine.Application.platform:ToString() end)
+        return tostring(platform)
+    end
+
+    local function _glt_resolveLogDir()
+        local platform = _glt_getPlatform()
+        local dataPath = ""
+        local persistentDataPath = ""
+        pcall(function() dataPath = _glt_normPath(CS.UnityEngine.Application.dataPath) end)
+        pcall(function() persistentDataPath = _glt_normPath(CS.UnityEngine.Application.persistentDataPath) end)
+
+        local candidates = {}
+        local function add(path)
+            path = _glt_normPath(path)
+            if path == "" then return end
+            for _, existing in ipairs(candidates) do
+                if existing == path then return end
+            end
+            candidates[#candidates + 1] = path
+        end
+
+        if platform == "Android" or platform == "IPhonePlayer" then
+            add(persistentDataPath .. "/log")
+            add(persistentDataPath .. "/Log")
+        elseif platform == "WindowsEditor" or platform == "OSXEditor" then
+            local root = dataPath:match("^(.*)/Dev/Client/Assets$")
+            if root then add(root .. "/Dev/Client/Log") end
+            local svnRoot = _glt_findSvnRoot(dataPath)
+            if svnRoot then add(svnRoot .. "/Dev/Client/Log") end
+            add(_glt_parent(dataPath) .. "/Log")
+        else
+            local exeDir = _glt_parent(dataPath)
+            add(exeDir .. "/Log")
+            local svnRoot = _glt_findSvnRoot(dataPath)
+            if svnRoot then add(svnRoot .. "/Product/Bin/Client/Win/Debug/Log") end
+            add(persistentDataPath .. "/log")
+            add(persistentDataPath .. "/Log")
+        end
+
+        for _, dir in ipairs(candidates) do
+            if _glt_dirExists(dir) then
+                return dir, platform
+            end
+        end
+        return nil, platform
+    end
+
+    local function _glt_getFileSize(path)
+        local ok, size = pcall(function()
+            return CS.System.IO.FileInfo(path).Length
+        end)
+        if not ok then return 0 end
+        return _glt_toNumber(size, 0)
+    end
+
+    local function _glt_getWriteTicks(path)
+        local ok, ticks = pcall(function()
+            return CS.System.IO.File.GetLastWriteTime(path).Ticks
+        end)
+        if not ok then return 0 end
+        return _glt_toNumber(ticks, 0)
+    end
+
+    local function _glt_findLatestLogFile(dir)
+        if not _glt_dirExists(dir) then return nil end
+        local ok, files = pcall(function()
+            return CS.System.IO.Directory.GetFiles(dir, "*.log")
+        end)
+        if not ok or not files or files.Length == 0 then return nil end
+
+        local latest = nil
+        local latestTicks = -1
+        for i = 0, files.Length - 1 do
+            local path = _glt_normPath(files[i])
+            local ticks = _glt_getWriteTicks(path)
+            if ticks > latestTicks then
+                latest = path
+                latestTicks = ticks
+            end
+        end
+        return latest
+    end
+
+    local function _glt_readRange(path, offset, maxBytes)
+        -- Android 的 xLua 对 FileStream + Byte[] 大段读取偶发不稳定；ReadAllText 在当前项目环境更稳。
+        -- 这里仍按 offset/maxBytes 只把需要展示的窗口喂给解析器，外层通过 FileInfo.Length 变化控制轮询频率。
+        local ok, textOrErr = pcall(function()
+            return tostring(CS.System.IO.File.ReadAllText(path))
+        end)
+        if not ok then error(textOrErr) end
+
+        local text = textOrErr or ""
+        local length = #text
+        local startOffset = math.max(0, math.floor(offset or 0))
+        local window = math.max(1, math.floor(maxBytes or LuaGameLogTail._readChunkBytes))
+        if startOffset > length then
+            startOffset = math.max(0, length - window)
+        end
+        if length <= startOffset then return "", 0, length, startOffset end
+        local endOffset = math.min(length, startOffset + window)
+        return text:sub(startOffset + 1, endOffset), endOffset - startOffset, length, startOffset
+    end
+
+    local function _glt_sendStatus(state, err)
+        RuntimeGMClient.Send({
+            type = "GAME_LOG_STATUS",
+            state = state,
+            error = err or "",
+            path = LuaGameLogTail._path or "",
+            offset = LuaGameLogTail._offset or 0
+        })
+    end
+
+    local function _glt_sendMeta()
+        local path = LuaGameLogTail._path
+        RuntimeGMClient.Send({
+            type = "GAME_LOG_META",
+            path = path or "",
+            dir = LuaGameLogTail._dir or "",
+            platform = _glt_getPlatform(),
+            fileSize = path and _glt_getFileSize(path) or 0,
+            offset = LuaGameLogTail._offset or 0
+        })
+    end
+
+    local function _glt_levelFromHeader(header)
+        local raw = tostring(header or ""):match("^<([^>]+)>") or "Log"
+        raw = raw:lower()
+        if raw:find("error") or raw:find("exception") or raw:find("assert") then return "error" end
+        if raw:find("warn") then return "warn" end
+        return "info"
+    end
+
+    local function _glt_timeFromHeader(header)
+        header = tostring(header or "")
+        return header:match("%[(%d%d%d%d/%d%d/%d%d%s+%d%d:%d%d:%d%d%.%d+)%]")
+            or header:match("%[(%d%d%d%d%-%d%d%-%d%d%s+%d%d:%d%d:%d%d[^%]]*)%]")
+            or ""
+    end
+
+    local function _glt_submitCurrent(entries)
+        local lines = LuaGameLogTail._currentLines
+        if not lines or #lines == 0 then return end
+
+        local first = 1
+        local last = #lines
+        while first <= last and tostring(lines[first]):match("^%s*$") do first = first + 1 end
+        while last >= first and tostring(lines[last]):match("^%s*$") do last = last - 1 end
+        if first > last then
+            LuaGameLogTail._currentLines = {}
+            return
+        end
+
+        local out = {}
+        local header = ""
+        for i = first, last do
+            local line = tostring(lines[i])
+            out[#out + 1] = line
+            if header == "" and not line:match("^%s*$") then header = line end
+        end
+
+        LuaGameLogTail._seq = LuaGameLogTail._seq + 1
+        entries[#entries + 1] = {
+            seq = LuaGameLogTail._seq,
+            level = _glt_levelFromHeader(header),
+            time = _glt_timeFromHeader(header),
+            header = header,
+            text = table.concat(out, "\n"),
+            fileOffset = LuaGameLogTail._offset or 0
+        }
+        LuaGameLogTail._currentLines = {}
+    end
+
+    local function _glt_feedText(text, entries, flushTail)
+        if not text or text == "" then return end
+        text = tostring(text):gsub("\r\n", "\n"):gsub("\r", "\n")
+        local data = (LuaGameLogTail._partialLine or "") .. text
+        local start = 1
+
+        while true do
+            local nl = data:find("\n", start, true)
+            if not nl then break end
+            local line = data:sub(start, nl - 1)
+            if line:match("^=+$") and #line >= 16 then
+                if LuaGameLogTail._accepting then
+                    _glt_submitCurrent(entries)
+                else
+                    LuaGameLogTail._accepting = true
+                    LuaGameLogTail._currentLines = {}
+                end
+            elseif LuaGameLogTail._accepting then
+                LuaGameLogTail._currentLines[#LuaGameLogTail._currentLines + 1] = line
+            end
+            start = nl + 1
+        end
+
+        LuaGameLogTail._partialLine = data:sub(start)
+        if flushTail and LuaGameLogTail._partialLine ~= "" and LuaGameLogTail._accepting then
+            LuaGameLogTail._currentLines[#LuaGameLogTail._currentLines + 1] = LuaGameLogTail._partialLine
+            LuaGameLogTail._partialLine = ""
+        end
+        if flushTail then
+            _glt_submitCurrent(entries)
+        end
+    end
+
+    local function _glt_sendEntries(entries)
+        if not entries or #entries == 0 then return end
+        if #entries > LuaGameLogTail._maxEntries then
+            local trimmed = {}
+            for i = #entries - LuaGameLogTail._maxEntries + 1, #entries do
+                trimmed[#trimmed + 1] = entries[i]
+            end
+            entries = trimmed
+        end
+        RuntimeGMClient.Send({ type = "GAME_LOG_ENTRIES", entries = entries }, 5.0)
+    end
+
+    function LuaGameLogTail._bootstrap()
+        local dir, platform = _glt_resolveLogDir()
+        if not dir then
+            _glt_sendStatus("error", "未找到日志目录: " .. tostring(platform))
+            return false
+        end
+
+        local path = _glt_findLatestLogFile(dir)
+        if not path then
+            LuaGameLogTail._dir = dir
+            _glt_sendMeta()
+            _glt_sendStatus("waiting", "日志目录存在，但没有 .log 文件")
+            return false
+        end
+
+        LuaGameLogTail._dir = dir
+        LuaGameLogTail._path = path
+        LuaGameLogTail._offset = math.max(0, _glt_getFileSize(path) - LuaGameLogTail._bootstrapBytes)
+        LuaGameLogTail._lastFileSize = _glt_getFileSize(path)
+        LuaGameLogTail._partialLine = ""
+        LuaGameLogTail._currentLines = {}
+        LuaGameLogTail._accepting = LuaGameLogTail._offset == 0
+        LuaGameLogTail._lastMetaPath = path
+
+        _glt_sendMeta()
+
+        local entries = {}
+        while _glt_fileExists(path) do
+            local text, read, length, actualOffset = _glt_readRange(path, LuaGameLogTail._offset, LuaGameLogTail._readChunkBytes)
+            if read <= 0 then break end
+            LuaGameLogTail._offset = actualOffset + read
+            _glt_feedText(text, entries, LuaGameLogTail._offset >= length)
+            if LuaGameLogTail._offset >= length then break end
+        end
+        _glt_sendEntries(entries)
+        _glt_sendStatus("running", "")
+        return true
+    end
+
+    function LuaGameLogTail.Start(packet)
+        LuaGameLogTail._bootstrapBytes = tonumber(packet.bootstrapBytes) or LuaGameLogTail._bootstrapBytes
+        LuaGameLogTail._maxEntries = tonumber(packet.maxEntries) or LuaGameLogTail._maxEntries
+        LuaGameLogTail._pollInterval = math.max(0.1, (tonumber(packet.pollIntervalMs) or 300) / 1000)
+        LuaGameLogTail._readChunkBytes = math.max(4096, tonumber(packet.readChunkBytes) or LuaGameLogTail._readChunkBytes)
+        LuaGameLogTail._isActive = true
+        LuaGameLogTail._lastPoll = 0
+        local ok, err = pcall(LuaGameLogTail._bootstrap)
+        if not ok then
+            LuaGameLogTail._isActive = false
+            _glt_sendStatus("error", tostring(err))
+        end
+    end
+
+    function LuaGameLogTail.Stop()
+        LuaGameLogTail._isActive = false
+        _glt_sendStatus("stopped", "")
+    end
+
+    function LuaGameLogTail.Update()
+        if not LuaGameLogTail._isActive then return end
+        local okNow, now = pcall(function() return CS.UnityEngine.Time.realtimeSinceStartup end)
+        if not okNow then return end
+        if now - LuaGameLogTail._lastPoll < LuaGameLogTail._pollInterval then return end
+        LuaGameLogTail._lastPoll = now
+
+        if not LuaGameLogTail._path or not _glt_fileExists(LuaGameLogTail._path) then
+            pcall(LuaGameLogTail._bootstrap)
+            return
+        end
+
+        local latest = _glt_findLatestLogFile(LuaGameLogTail._dir)
+        if latest and latest ~= LuaGameLogTail._path then
+            pcall(LuaGameLogTail._bootstrap)
+            return
+        end
+
+        local byteLength = _glt_getFileSize(LuaGameLogTail._path)
+        if LuaGameLogTail._lastFileSize > 0 and byteLength < LuaGameLogTail._lastFileSize then
+            pcall(LuaGameLogTail._bootstrap)
+            return
+        end
+        if byteLength == LuaGameLogTail._lastFileSize then return end
+
+        local entries = {}
+        local text, read, fileLength, actualOffset = _glt_readRange(
+            LuaGameLogTail._path,
+            LuaGameLogTail._offset,
+            LuaGameLogTail._readChunkBytes
+        )
+        if read > 0 then
+            LuaGameLogTail._offset = actualOffset + read
+            _glt_feedText(text, entries, LuaGameLogTail._offset >= fileLength)
+        end
+        LuaGameLogTail._lastFileSize = byteLength
+        _glt_sendEntries(entries)
+    end
+
+    function LuaGameLogTail.HandleCommand(packet)
+        local action = packet.action
+        if action == "start" then
+            LuaGameLogTail.Start(packet)
+        elseif action == "stop" then
+            LuaGameLogTail.Stop()
+        else
+            _glt_sendStatus("error", "unknown action: " .. tostring(action))
+        end
+    end
+
     function RuntimeGMClient.ProcessPacket(line)
         -- origin_print("[RuntimeGM] Received: " .. tostring(line))
         local json = nil
@@ -5082,6 +5479,11 @@ local function StartRuntimeGM()
             local ok, err = pcall(LuaTableMonitor.HandleCommand, packet)
             if not ok then
                 origin_print("[RuntimeGM] TABLE_MONITOR command error: " .. tostring(err))
+            end
+        elseif type == "GAME_LOG" then
+            local ok, err = pcall(LuaGameLogTail.HandleCommand, packet)
+            if not ok then
+                origin_print("[RuntimeGM] GAME_LOG command error: " .. tostring(err))
             end
         elseif type == "SCREENSHOT" then
             pcall(function()

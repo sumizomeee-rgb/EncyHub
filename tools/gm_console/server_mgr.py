@@ -88,6 +88,9 @@ class ServerMgr:
         self.on_proto_call_resp = None      # Callback for PROTO_CALL_RESP
         self.on_table_monitor_data = None   # Callback for TABLE_MONITOR_RESP
         self.on_screenshot = None           # Callback for SCREENSHOT_RESP
+        self.on_game_log_meta = None        # Callback for GAME_LOG_META
+        self.on_game_log_entries = None     # Callback for GAME_LOG_ENTRIES
+        self.on_game_log_status = None      # Callback for GAME_LOG_STATUS
         self._screenshot_parts: Dict[str, dict] = {}  # 分片截图重组缓冲
         self._pending_execs: Dict[int, dict] = {}
         self._temp_seq = 0                  # 临时 ID 序号（保证 accept 阶段唯一）
@@ -446,6 +449,20 @@ class ServerMgr:
             print(f"[ServerMgr] TABLE_MONITOR_RESP: action={action}, error={pkt.get('error', 'none')}")
             if self.on_table_monitor_data:
                 self.on_table_monitor_data(cid, pkt)
+        elif t == "GAME_LOG_META":
+            print(f"[ServerMgr] GAME_LOG_META: cid={cid}, path={pkt.get('path', '-')}")
+            if self.on_game_log_meta:
+                self.on_game_log_meta(cid, pkt)
+        elif t == "GAME_LOG_ENTRIES":
+            entries = pkt.get("entries", [])
+            count = len(entries) if isinstance(entries, list) else 0
+            print(f"[ServerMgr] GAME_LOG_ENTRIES: cid={cid}, entries={count}")
+            if self.on_game_log_entries:
+                self.on_game_log_entries(cid, pkt)
+        elif t == "GAME_LOG_STATUS":
+            print(f"[ServerMgr] GAME_LOG_STATUS: cid={cid}, state={pkt.get('state', '-')}, error={pkt.get('error', '-')}")
+            if self.on_game_log_status:
+                self.on_game_log_status(cid, pkt)
         elif t == "SCREENSHOT_RESP":
             part = pkt.get("part")
             totalParts = pkt.get("totalParts")
@@ -791,6 +808,24 @@ class ServerMgr:
             await c.writer.drain()
         except Exception as e:
             self._add_log("error", f"Send TABLE_MONITOR failed: {e}", client_id)
+
+    async def send_game_log_request(self, client_id: str, action: str, params: dict | None = None):
+        """发送游戏日志 tail 命令到客户端"""
+        c = self.clients.get(client_id)
+        if not c:
+            self._add_log("error", f"Send GAME_LOG failed: 客户端 {client_id} 不存在")
+            return False, f"客户端 {client_id} 不存在"
+        pkt = {"type": "GAME_LOG", "action": action}
+        if params:
+            pkt.update(params)
+        msg = json.dumps(pkt, ensure_ascii=False) + "\n"
+        try:
+            c.writer.write(msg.encode())
+            await c.writer.drain()
+            return True, "sent"
+        except Exception as e:
+            self._add_log("error", f"Send GAME_LOG failed: {e}", client_id)
+            return False, str(e)
 
     async def send_screenshot_request(self, client_id: str):
         """发送截图命令到客户端"""
