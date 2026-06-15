@@ -5027,7 +5027,7 @@ local function StartRuntimeGM()
     LuaGameLogTail._seq = 0
     LuaGameLogTail._lastPoll = 0
     LuaGameLogTail._pollInterval = 0.3
-    LuaGameLogTail._bootstrapBytes = 512 * 1024
+    LuaGameLogTail._bootstrapBytes = 0
     LuaGameLogTail._maxEntries = 2000
     LuaGameLogTail._readChunkBytes = 64 * 1024
     LuaGameLogTail._partialLine = ""
@@ -5320,7 +5320,7 @@ local function StartRuntimeGM()
         LuaGameLogTail._lastFileSize = _glt_getFileSize(path)
         LuaGameLogTail._partialLine = ""
         LuaGameLogTail._currentLines = {}
-        LuaGameLogTail._accepting = LuaGameLogTail._offset == 0
+        LuaGameLogTail._accepting = LuaGameLogTail._bootstrapBytes <= 0 or LuaGameLogTail._offset == 0
         LuaGameLogTail._lastMetaPath = path
 
         _glt_sendMeta()

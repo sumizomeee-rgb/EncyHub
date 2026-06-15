@@ -37,7 +37,7 @@ SCREENSHOT_REQUEST_TTL = 30.0
 game_log_ws_connections: dict[str, list[WebSocket]] = {}
 game_log_cache: dict[str, dict[str, Any]] = {}
 game_log_stop_tasks: dict[str, asyncio.Task] = {}
-GAME_LOG_BOOTSTRAP_BYTES = 512 * 1024
+GAME_LOG_BOOTSTRAP_BYTES = 0
 GAME_LOG_BOOTSTRAP_MAX_ENTRIES = 2000
 GAME_LOG_CACHE_MAX_ENTRIES = 5000
 GAME_LOG_CACHE_MAX_BYTES = 5 * 1024 * 1024
@@ -1152,7 +1152,7 @@ async def websocket_game_log(websocket: WebSocket):
     await websocket.send_json({
         "type": "init",
         "client_id": client_id,
-        "entries": state.get("entries", []),
+        "entries": [],
         "meta": state.get("meta", {}),
         "status": state.get("status", {}),
         "droppedCount": state.get("droppedCount", 0),
