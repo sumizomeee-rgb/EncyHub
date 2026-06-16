@@ -112,6 +112,7 @@ def _get_game_log_state(client_id: str) -> dict[str, Any]:
             "status": {},
             "bytes": 0,
             "droppedCount": 0,
+            "lastSeq": 0,
         }
     return game_log_cache[client_id]
 
@@ -145,19 +146,21 @@ def _cache_game_log_entries(client_id: str, raw_entries: Any) -> list[dict[str, 
     if not isinstance(raw_entries, list):
         return []
     state = _get_game_log_state(client_id)
-    recent_keys = {
-        (str(entry.get("time", "")), str(entry.get("text", "")))
-        for entry in state.get("entries", [])[-300:]
-        if isinstance(entry, dict)
-    }
+    # 按 Lua 端单调递增的 seq 去重：seq 在进程内唯一且永不重置，能正确处理
+    # 重连/重复推送，又不会把内容相同的多条真实日志（如多次 print(1)）误判为重复。
+    last_seq = state.get("lastSeq", 0)
+    max_seq = last_seq
     normalized = []
     for entry in raw_entries:
         normalized_entry = _normalize_game_log_entry(entry)
-        key = (normalized_entry.get("time", ""), normalized_entry.get("text", ""))
-        if key in recent_keys:
-            continue
-        recent_keys.add(key)
+        seq = normalized_entry.get("seq")
+        if isinstance(seq, int):
+            if seq <= last_seq:
+                continue
+            if seq > max_seq:
+                max_seq = seq
         normalized.append(normalized_entry)
+    state["lastSeq"] = max_seq
     for entry in normalized:
         state["entries"].append(entry)
         state["bytes"] = state.get("bytes", 0) + _estimate_game_log_entry_size(entry)
