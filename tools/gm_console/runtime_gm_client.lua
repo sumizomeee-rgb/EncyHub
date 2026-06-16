@@ -5383,14 +5383,16 @@ local function StartRuntimeGM()
         if byteLength == LuaGameLogTail._lastFileSize then return end
 
         local entries = {}
-        local text, read, fileLength, actualOffset = _glt_readRange(
-            LuaGameLogTail._path,
-            LuaGameLogTail._offset,
-            LuaGameLogTail._readChunkBytes
-        )
-        if read > 0 then
+        while _glt_fileExists(LuaGameLogTail._path) do
+            local text, read, fileLength, actualOffset = _glt_readRange(
+                LuaGameLogTail._path,
+                LuaGameLogTail._offset,
+                LuaGameLogTail._readChunkBytes
+            )
+            if read <= 0 then break end
             LuaGameLogTail._offset = actualOffset + read
             _glt_feedText(text, entries, LuaGameLogTail._offset >= fileLength)
+            if LuaGameLogTail._offset >= fileLength then break end
         end
         LuaGameLogTail._lastFileSize = byteLength
         _glt_sendEntries(entries)

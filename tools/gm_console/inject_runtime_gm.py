@@ -31,8 +31,8 @@ except ImportError:
 
 # 目标 Lua 文件的绝对路径列表 — 添加/注释行即可增减分支
 TARGET_LUA_FILES = [
-    r"F:\HaruTrunk\Product\Lua\Launch\XLaunchModule.lua",
-    r"E:\WorkProject\branches\HaruBranchV4.7_w_FullDev\Product\Lua\Launch\XLaunchModule.lua",
+    r"E:\WorkProject\branches\HaruBranchV4.8_w_FullDev\Product\Lua\Launch\XLaunchModule.lua",
+    # r"F:\HaruTrunk\Product\Lua\Launch\XLaunchModule.lua",
     # r"F:\HaruBranch_Bar\Product\Lua\Launch\XLaunchModule.lua",
 ]
 
