@@ -78,19 +78,10 @@ function PlatformIcon({ platform, size, className }) {
 function RuntimeGmBridgeIcon({ size = 16, className = '' }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4.5 8.25h3.25c.97 0 1.75.78 1.75 1.75v4c0 .97-.78 1.75-1.75 1.75H4.5A2.5 2.5 0 0 1 2 13.25v-2.5a2.5 2.5 0 0 1 2.5-2.5Z" />
-      <path d="M16.25 8.25h3.25a2.5 2.5 0 0 1 2.5 2.5v2.5a2.5 2.5 0 0 1-2.5 2.5h-3.25c-.97 0-1.75-.78-1.75-1.75v-4c0-.97.78-1.75 1.75-1.75Z" />
-      <path d="M9.6 12h4.8" />
-      <path d="M11.05 9.95 13.1 12l-2.05 2.05" />
-      <path d="M5.3 11.1h1.5" />
-      <path d="M5.3 12.9h1.5" />
-      <path d="M17.2 11.1h1.5" />
-      <path d="M17.2 12.9h1.5" />
-      <path d="M12 4.2v2.05" />
-      <path d="M10.6 5.6h2.8" />
-      <path d="M12 17.75v2.05" />
-      <path d="M10.6 18.4h2.8" />
+      fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
+      <path d="m10 9-3 3 3 3" />
+      <path d="m14 9 3 3-3 3" />
     </svg>
   )
 }

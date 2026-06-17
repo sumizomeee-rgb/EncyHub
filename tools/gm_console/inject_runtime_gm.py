@@ -9,7 +9,7 @@ inject_runtime_gm.py — 一键注入 RuntimeGMClient 到游戏 Lua 入口文件
   3. 运行: python inject_runtime_gm.py
 
 脚本会对列表里的每个文件依次执行:
-  1. svn revert（还原到干净状态）
+  1. 移除旧的 EncyHub RuntimeGM 注入块（不回滚入口文件本身）
   2. 读取 runtime_gm_client.lua 权威 Lua 源文件
   3. 替换代码中的 IP 和端口为你的配置（所有分支统一为 GM_PORT）
   4. 追加到目标文件末尾
@@ -31,9 +31,8 @@ except ImportError:
 
 # 目标 Lua 文件的绝对路径列表 — 添加/注释行即可增减分支
 TARGET_LUA_FILES = [
+    r"F:\HaruTrunk\Product\Lua\Launch\XLaunchModule.lua",
     r"E:\WorkProject\branches\HaruBranchV4.8_w_FullDev\Product\Lua\Launch\XLaunchModule.lua",
-    # r"F:\HaruTrunk\Product\Lua\Launch\XLaunchModule.lua",
-    # r"F:\HaruBranch_Bar\Product\Lua\Launch\XLaunchModule.lua",
 ]
 
 GM_PORT = 12581  # 固定握手端口：所有分支 / 所有设备统一连接此端口
@@ -65,18 +64,19 @@ def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
         return False, "文件不存在"
 
     try:
-        svn_revert(target)
         with open(target, "r", encoding="utf-8") as f:
             original = f.read()
 
         separator = "\n\n-- ========== [EncyHub] RuntimeGMClient Auto-Injected ==========\n\n"
+        base = original.split(separator, 1)[0].rstrip("\n")
         with open(target, "w", encoding="utf-8") as f:
-            f.write(original.rstrip("\n"))
+            f.write(base)
             f.write(separator)
             f.write(lua_code)
             f.write("\n")
 
-        return True, f"原 {original.count(chr(10))+1} 行 → +{lua_code.count(chr(10))+1} 行 @ port {port}"
+        stripped = "，已替换旧注入块" if separator in original else ""
+        return True, f"原 {original.count(chr(10))+1} 行 → 基础 {base.count(chr(10))+1} 行 +{lua_code.count(chr(10))+1} 行 @ port {port}{stripped}"
     except Exception as e:
         return False, f"IO 错误: {e}"
 

@@ -266,6 +266,9 @@ local function StartRuntimeGM()
                 persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
                 svn_author = RuntimeGMClient.SvnAuthor or ""
             })
+            if RuntimeGMClient.GMLoaded and RuntimeGMClient.SendGMList then
+                pcall(function() RuntimeGMClient.SendGMList() end)
+            end
             -- 发完 HELLO 后切回非阻塞
             tcp:settimeout(0)
             -- 始终重置 SVN 标记，让 Update() 在首帧尝试获取（可能立即补发 HELLO）
@@ -5030,10 +5033,14 @@ local function StartRuntimeGM()
     LuaGameLogTail._bootstrapBytes = 0
     LuaGameLogTail._maxEntries = 2000
     LuaGameLogTail._readChunkBytes = 64 * 1024
+    LuaGameLogTail._sendChunkBytes = 512 * 1024
+    LuaGameLogTail._sendChunkEntries = 100
     LuaGameLogTail._partialLine = ""
     LuaGameLogTail._currentLines = {}
     LuaGameLogTail._accepting = false
     LuaGameLogTail._lastMetaPath = nil
+    LuaGameLogTail._lastSendEntries = 0
+    LuaGameLogTail._lastSendChunks = 0
 
     local function _glt_toNumber(v, fallback)
         local n = tonumber(tostring(v))
@@ -5185,12 +5192,20 @@ local function StartRuntimeGM()
     end
 
     local function _glt_sendStatus(state, err)
+        local path = LuaGameLogTail._path
         RuntimeGMClient.Send({
             type = "GAME_LOG_STATUS",
             state = state,
             error = err or "",
-            path = LuaGameLogTail._path or "",
-            offset = LuaGameLogTail._offset or 0
+            path = path or "",
+            offset = LuaGameLogTail._offset or 0,
+            fileSize = path and _glt_getFileSize(path) or 0,
+            lastFileSize = LuaGameLogTail._lastFileSize or 0,
+            seq = LuaGameLogTail._seq or 0,
+            active = LuaGameLogTail._isActive and true or false,
+            partialBytes = #(LuaGameLogTail._partialLine or ""),
+            lastSendEntries = LuaGameLogTail._lastSendEntries or 0,
+            lastSendChunks = LuaGameLogTail._lastSendChunks or 0
         })
     end
 
@@ -5202,7 +5217,8 @@ local function StartRuntimeGM()
             dir = LuaGameLogTail._dir or "",
             platform = _glt_getPlatform(),
             fileSize = path and _glt_getFileSize(path) or 0,
-            offset = LuaGameLogTail._offset or 0
+            offset = LuaGameLogTail._offset or 0,
+            seq = LuaGameLogTail._seq or 0
         })
     end
 
@@ -5296,7 +5312,45 @@ local function StartRuntimeGM()
             end
             entries = trimmed
         end
-        RuntimeGMClient.Send({ type = "GAME_LOG_ENTRIES", entries = entries }, 5.0)
+
+        local chunk = {}
+        local chunkBytes = 0
+        local chunkCount = 0
+        local sentEntries = 0
+        local sentChunks = 0
+        local maxBytes = math.max(4096, tonumber(LuaGameLogTail._sendChunkBytes) or 524288)
+        local maxEntries = math.max(1, tonumber(LuaGameLogTail._sendChunkEntries) or 100)
+
+        local function estimateEntryBytes(entry)
+            if not entry then return 128 end
+            local text = tostring(entry.text or "")
+            local header = tostring(entry.header or "")
+            local time = tostring(entry.time or "")
+            return #text + #header + #time + 256
+        end
+
+        local function flushChunk()
+            if chunkCount <= 0 then return end
+            RuntimeGMClient.Send({ type = "GAME_LOG_ENTRIES", entries = chunk }, 5.0)
+            sentEntries = sentEntries + chunkCount
+            sentChunks = sentChunks + 1
+            chunk = {}
+            chunkBytes = 0
+            chunkCount = 0
+        end
+
+        for _, entry in ipairs(entries) do
+            local entryBytes = estimateEntryBytes(entry)
+            if chunkCount > 0 and (chunkBytes + entryBytes > maxBytes or chunkCount >= maxEntries) then
+                flushChunk()
+            end
+            chunk[#chunk + 1] = entry
+            chunkBytes = chunkBytes + entryBytes
+            chunkCount = chunkCount + 1
+        end
+        flushChunk()
+        LuaGameLogTail._lastSendEntries = sentEntries
+        LuaGameLogTail._lastSendChunks = sentChunks
     end
 
     function LuaGameLogTail._bootstrap()
@@ -5343,6 +5397,8 @@ local function StartRuntimeGM()
         LuaGameLogTail._maxEntries = tonumber(packet.maxEntries) or LuaGameLogTail._maxEntries
         LuaGameLogTail._pollInterval = math.max(0.1, (tonumber(packet.pollIntervalMs) or 300) / 1000)
         LuaGameLogTail._readChunkBytes = math.max(4096, tonumber(packet.readChunkBytes) or LuaGameLogTail._readChunkBytes)
+        LuaGameLogTail._sendChunkBytes = math.max(4096, tonumber(packet.sendChunkBytes) or LuaGameLogTail._sendChunkBytes)
+        LuaGameLogTail._sendChunkEntries = math.max(1, tonumber(packet.sendChunkEntries) or LuaGameLogTail._sendChunkEntries)
         LuaGameLogTail._isActive = true
         LuaGameLogTail._lastPoll = 0
         local ok, err = pcall(LuaGameLogTail._bootstrap)
@@ -5408,6 +5464,8 @@ local function StartRuntimeGM()
             _glt_sendStatus("error", "unknown action: " .. tostring(action))
         end
     end
+
+    RuntimeGMClient.LuaGameLogTail = LuaGameLogTail
 
     function RuntimeGMClient.ProcessPacket(line)
         -- origin_print("[RuntimeGM] Received: " .. tostring(line))

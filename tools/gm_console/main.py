@@ -43,6 +43,8 @@ GAME_LOG_CACHE_MAX_ENTRIES = 5000
 GAME_LOG_CACHE_MAX_BYTES = 5 * 1024 * 1024
 GAME_LOG_POLL_INTERVAL_MS = 300
 GAME_LOG_READ_CHUNK_BYTES = 64 * 1024
+GAME_LOG_SEND_CHUNK_BYTES = 512 * 1024
+GAME_LOG_SEND_CHUNK_ENTRIES = 100
 GAME_LOG_STOP_DELAY = 30.0
 
 
@@ -142,12 +144,27 @@ def _normalize_game_log_entry(entry: Any) -> dict[str, Any]:
     }
 
 
+def _game_log_entry_dedupe_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        entry.get("seq"),
+        entry.get("fileOffset"),
+        entry.get("time", ""),
+        entry.get("header", ""),
+        entry.get("text", ""),
+    )
+
+
 def _cache_game_log_entries(client_id: str, raw_entries: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_entries, list):
         return []
     state = _get_game_log_state(client_id)
-    # 按 Lua 端单调递增的 seq 去重：seq 在进程内唯一且永不重置，能正确处理
-    # 重连/重复推送，又不会把内容相同的多条真实日志（如多次 print(1)）误判为重复。
+    # 只跳过“同一条日志”的重复推送；不能只按 seq 过滤，因为 RuntimeGM 在 Lua
+    # 重载/同 PID 重连后可能从 1 重新计数，新的真实日志会被旧 lastSeq 误吞。
+    recent_keys = {
+        _game_log_entry_dedupe_key(entry)
+        for entry in state.get("entries", [])[-300:]
+        if isinstance(entry, dict)
+    }
     last_seq = state.get("lastSeq", 0)
     max_seq = last_seq
     normalized = []
@@ -155,10 +172,12 @@ def _cache_game_log_entries(client_id: str, raw_entries: Any) -> list[dict[str, 
         normalized_entry = _normalize_game_log_entry(entry)
         seq = normalized_entry.get("seq")
         if isinstance(seq, int):
-            if seq <= last_seq:
-                continue
             if seq > max_seq:
                 max_seq = seq
+        key = _game_log_entry_dedupe_key(normalized_entry)
+        if key in recent_keys:
+            continue
+        recent_keys.add(key)
         normalized.append(normalized_entry)
     state["lastSeq"] = max_seq
     for entry in normalized:
@@ -1173,6 +1192,8 @@ async def websocket_game_log(websocket: WebSocket):
             "maxEntries": GAME_LOG_BOOTSTRAP_MAX_ENTRIES,
             "pollIntervalMs": GAME_LOG_POLL_INTERVAL_MS,
             "readChunkBytes": GAME_LOG_READ_CHUNK_BYTES,
+            "sendChunkBytes": GAME_LOG_SEND_CHUNK_BYTES,
+            "sendChunkEntries": GAME_LOG_SEND_CHUNK_ENTRIES,
         })
         if not ok:
             await websocket.send_json({
