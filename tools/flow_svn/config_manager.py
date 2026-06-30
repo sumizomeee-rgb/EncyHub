@@ -50,7 +50,7 @@ class ConfigManager:
         """Create default configuration file"""
         default_config = {
             "settings": {
-                "svn_idle_timeout": 300,  # 5 minutes
+                "svn_idle_timeout": 1800,  # 30 minutes
                 "svn_max_timeout": 7200   # 2 hours
             },
             "tasks": [],
@@ -65,13 +65,16 @@ class ConfigManager:
                 config = json.load(f)
                 
             # Ensure settings exist (migration for old configs)
-            if "settings" not in config:
-                config["settings"] = {
-                    "svn_idle_timeout": 300,
-                    "svn_max_timeout": 7200
-                }
-                # We don't save immediately to avoid write churn, 
-                # but it will be saved on next update
+            settings = config.setdefault("settings", {})
+            settings.setdefault("svn_max_timeout", 7200)
+            try:
+                idle_timeout = int(settings.get("svn_idle_timeout", 0))
+            except (TypeError, ValueError):
+                idle_timeout = 0
+            if idle_timeout <= 300:
+                settings["svn_idle_timeout"] = 1800
+            # We don't save immediately to avoid write churn,
+            # but it will be saved on next update
             
             return config
         except json.JSONDecodeError as e:

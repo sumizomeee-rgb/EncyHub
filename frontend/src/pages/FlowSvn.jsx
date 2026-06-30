@@ -20,6 +20,20 @@ const ACTION_TYPES = [
   { value: 'restart', label: '重启', desc: '重启计算机' },
 ]
 
+const TASK_OPERATIONS = [
+  { value: 'update', label: '更新', command: 'svn update' },
+  { value: 'cleanup', label: '清理', command: 'svn cleanup' },
+]
+
+const DEFAULT_TASK_FORM = {
+  name: '',
+  svn_path: '',
+  schedule_time: '08:00',
+  operation: 'update',
+  template_id: '',
+  enabled: true,
+}
+
 function FlowSvn() {
   const navigate = useNavigate()
   const toast = useToast()
@@ -30,13 +44,7 @@ function FlowSvn() {
   // 任务弹窗
   const [showTaskModal, setShowTaskModal] = useState(false)
   const [editingTask, setEditingTask] = useState(null)
-  const [taskForm, setTaskForm] = useState({
-    name: '',
-    svn_path: '',
-    schedule_time: '08:00',
-    template_id: '',
-    enabled: true,
-  })
+  const [taskForm, setTaskForm] = useState(DEFAULT_TASK_FORM)
 
   // 模板弹窗
   const [showTemplateModal, setShowTemplateModal] = useState(false)
@@ -96,15 +104,20 @@ function FlowSvn() {
         : '/api/flow_svn/tasks'
       const method = editingTask ? 'PUT' : 'POST'
 
+      const payload = {
+        ...taskForm,
+        template_id: taskForm.operation === 'cleanup' ? '' : taskForm.template_id,
+      }
+
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(taskForm),
+        body: JSON.stringify(payload),
       })
       if (res.ok) {
         setShowTaskModal(false)
         setEditingTask(null)
-        setTaskForm({ name: '', svn_path: '', schedule_time: '08:00', template_id: '', enabled: true })
+        setTaskForm(DEFAULT_TASK_FORM)
         fetchData()
       } else {
         const data = await res.json()
@@ -153,12 +166,14 @@ function FlowSvn() {
 
   // 编辑任务
   const handleEditTask = (task) => {
+    const operation = task.operation || 'update'
     setEditingTask(task)
     setTaskForm({
       name: task.name,
       svn_path: task.svn_path,
       schedule_time: task.schedule_time,
-      template_id: task.template_id || '',
+      operation,
+      template_id: operation === 'cleanup' ? '' : (task.template_id || ''),
       enabled: task.enabled,
     })
     setShowTaskModal(true)
@@ -313,13 +328,13 @@ function FlowSvn() {
             <h1 className="font-display text-2xl font-semibold text-[var(--coffee-deep)]">
               FlowSVN
             </h1>
-            <p className="text-[var(--coffee-muted)] text-sm">SVN 定时更新 + 触发器自动化</p>
+            <p className="text-[var(--coffee-muted)] text-sm">SVN 定时更新 / 清理 + 触发器自动化</p>
           </div>
           <button
             className="btn-primary flex items-center gap-2"
             onClick={() => {
               setEditingTask(null)
-              setTaskForm({ name: '', svn_path: '', schedule_time: '08:00', template_id: '', enabled: true })
+              setTaskForm(DEFAULT_TASK_FORM)
               setShowTaskModal(true)
             }}
           >
@@ -357,7 +372,7 @@ function FlowSvn() {
                   </div>
                   <h3 className="font-display text-xl text-[var(--coffee-deep)] mb-2">暂无任务</h3>
                   <p className="text-[var(--coffee-muted)] max-w-md mx-auto">
-                    点击"新建任务"创建 SVN 定时更新任务
+                    点击"新建任务"创建 SVN 定时更新或清理任务
                   </p>
                 </div>
               ) : (
@@ -367,6 +382,7 @@ function FlowSvn() {
                       <tr>
                         <th className="w-14 text-center">启用</th>
                         <th>任务名称</th>
+                        <th>类型</th>
                         <th>SVN 路径</th>
                         <th>计划时间</th>
                         <th>触发模板</th>
@@ -380,6 +396,8 @@ function FlowSvn() {
                         const statusStyle = getStatusStyle(task.last_status)
                         const StatusIcon = statusStyle.icon
                         const template = templates.find(t => t.id === task.template_id)
+                        const operation = task.operation || 'update'
+                        const operationMeta = TASK_OPERATIONS.find(op => op.value === operation) || TASK_OPERATIONS[0]
                         return (
                           <tr key={task.id}>
                             <td className="text-center">
@@ -395,6 +413,15 @@ function FlowSvn() {
                               <span className="font-medium text-[var(--coffee-deep)]">{task.name}</span>
                             </td>
                             <td>
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
+                                operation === 'cleanup'
+                                  ? 'bg-[var(--sky-soft)]/25 text-[var(--sky)]'
+                                  : 'bg-[var(--cream-warm)] text-[var(--caramel-dark)]'
+                              }`}>
+                                {operationMeta.label}
+                              </span>
+                            </td>
+                            <td>
                               <code className="text-xs bg-[var(--cream-warm)] px-2 py-1 rounded font-mono text-[var(--coffee-light)]">
                                 {task.svn_path}
                               </code>
@@ -406,7 +433,9 @@ function FlowSvn() {
                               </div>
                             </td>
                             <td>
-                              {template ? (
+                              {operation === 'cleanup' ? (
+                                <span className="text-[var(--coffee-muted)] text-sm">不适用</span>
+                              ) : template ? (
                                 <span className="badge">{template.name}</span>
                               ) : (
                                 <span className="text-[var(--coffee-muted)] text-sm">无</span>
@@ -429,7 +458,7 @@ function FlowSvn() {
                               <div className="flex items-center justify-end gap-1">
                                 <button
                                   className="p-2 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--sage)] transition-colors"
-                                  title="立即执行"
+                                  title={operation === 'cleanup' ? '立即清理' : '立即更新'}
                                   onClick={() => handleRunTask(task)}
                                   disabled={runningTasks[task.id]}
                                 >
@@ -554,7 +583,7 @@ function FlowSvn() {
       {showTaskModal && (
         <div className="modal-overlay" onClick={() => setShowTaskModal(false)}>
           <div
-            className="glass-card p-6 w-[500px] animate-fade-in"
+            className="glass-card p-6 w-[560px] animate-fade-in"
             style={{ animation: 'slideUp 0.3s ease' }}
             onClick={e => e.stopPropagation()}
           >
@@ -594,6 +623,33 @@ function FlowSvn() {
                   placeholder="D:\Projects\MyGame\Art"
                 />
               </div>
+              <div>
+                <label className="block text-sm text-[var(--coffee-light)] mb-2">执行类型</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {TASK_OPERATIONS.map(operation => {
+                    const active = taskForm.operation === operation.value
+                    return (
+                      <button
+                        key={operation.value}
+                        type="button"
+                        className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                          active
+                            ? 'border-[var(--caramel)] bg-[var(--caramel)]/10 text-[var(--coffee-deep)]'
+                            : 'border-[var(--glass-border)] bg-white/40 text-[var(--coffee-light)] hover:bg-[var(--cream-warm)]'
+                        }`}
+                        onClick={() => setTaskForm(prev => ({
+                          ...prev,
+                          operation: operation.value,
+                          template_id: operation.value === 'cleanup' ? '' : prev.template_id,
+                        }))}
+                      >
+                        <span className="block text-sm font-medium">{operation.label}</span>
+                        <span className="block text-xs font-mono opacity-70 mt-0.5">{operation.command}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm text-[var(--coffee-light)] mb-2">计划时间</label>
@@ -607,12 +663,20 @@ function FlowSvn() {
                   <label className="block text-sm text-[var(--coffee-light)] mb-2">触发模板</label>
                   <select
                     value={taskForm.template_id}
+                    disabled={taskForm.operation === 'cleanup'}
                     onChange={e => setTaskForm(prev => ({ ...prev, template_id: e.target.value }))}
+                    className={taskForm.operation === 'cleanup' ? 'opacity-60 cursor-not-allowed' : ''}
                   >
-                    <option value="">无</option>
-                    {templates.map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
+                    {taskForm.operation === 'cleanup' ? (
+                      <option value="">不适用</option>
+                    ) : (
+                      <>
+                        <option value="">无</option>
+                        {templates.map(t => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </>
+                    )}
                   </select>
                 </div>
               </div>

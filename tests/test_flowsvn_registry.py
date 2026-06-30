@@ -91,6 +91,43 @@ class TestToolInfo:
 class TestFlowSvnConfigManager:
     """FlowSVN ConfigManager 测试"""
 
+    def test_old_task_config_defaults_to_update(self):
+        """旧配置没有 operation 字段时应默认当作 update 任务"""
+        from tools.flow_svn.models import Task
+
+        task = Task.from_dict({
+            "id": "old",
+            "name": "旧任务",
+            "svn_path": "C:\\test",
+            "template_id": "",
+            "schedule_time": "08:00",
+        })
+
+        assert task.operation == "update"
+        assert task.to_dict()["operation"] == "update"
+
+    def test_cleanup_task_roundtrip(self, tmp_path):
+        """cleanup 任务应能正确保存和读取"""
+        from tools.flow_svn.config_manager import ConfigManager
+        from tools.flow_svn.models import Task
+
+        config_path = str(tmp_path / "flowsvn_config.json")
+        mgr = ConfigManager(config_path)
+
+        task = Task(
+            id="clean1",
+            name="清理任务",
+            svn_path="C:\\test",
+            template_id="",
+            schedule_time="07:50",
+            operation="cleanup",
+        )
+        assert mgr.add_task(task)
+
+        loaded = mgr.get_task("clean1")
+        assert loaded is not None
+        assert loaded.operation == "cleanup"
+
     def test_task_crud(self, tmp_path):
         from tools.flow_svn.config_manager import ConfigManager
         from tools.flow_svn.models import Task
@@ -140,3 +177,85 @@ class TestFlowSvnConfigManager:
         mgr.add_task(Task(id="b", name="B", svn_path="/b", template_id="", schedule_time="09:00"))
         tasks = mgr.get_all_tasks()
         assert len(tasks) == 2
+
+
+class TestFlowSvnCleanup:
+    """FlowSVN cleanup 执行逻辑测试"""
+
+    def test_cleanup_rejects_non_svn_path_before_running_command(self, tmp_path):
+        from tools.flow_svn.svn_executor import SVNExecutor
+
+        lines = list(SVNExecutor().execute_cleanup(str(tmp_path)))
+
+        assert any("Starting SVN cleanup" in line for line in lines)
+        assert any("Not an SVN working copy" in line for line in lines)
+        assert not any("Executing: svn cleanup" in line for line in lines)
+
+    def test_task_runner_dispatches_cleanup(self, tmp_path):
+        from tools.flow_svn.config_manager import ConfigManager
+        from tools.flow_svn.models import Task
+        from tools.flow_svn.task_runner import run_task_by_id
+
+        class FakeExecutor:
+            def __init__(self):
+                self.calls = []
+
+            def execute_update(self, svn_path, idle_timeout=300, max_timeout=7200):
+                self.calls.append(("update", svn_path, idle_timeout, max_timeout))
+                yield "SVN update completed successfully"
+
+            def execute_cleanup(self, svn_path, idle_timeout=300, max_timeout=7200):
+                self.calls.append(("cleanup", svn_path, idle_timeout, max_timeout))
+                yield "SVN cleanup completed successfully"
+
+        config_path = str(tmp_path / "flowsvn_config.json")
+        mgr = ConfigManager(config_path)
+        task = Task(
+            id="clean2",
+            name="清理任务",
+            svn_path="C:\\test",
+            template_id="",
+            schedule_time="07:50",
+            operation="cleanup",
+        )
+        assert mgr.add_task(task)
+
+        executor = FakeExecutor()
+        result = run_task_by_id(mgr, "clean2", svn_executor=executor, respect_enabled=False)
+
+        assert result.success is True
+        assert executor.calls == [("cleanup", "C:\\test", 1800, 7200)]
+        assert mgr.get_task("clean2").last_status == "success"
+
+    def test_update_preflight_warns_but_allows_existing_conflicts(self, tmp_path):
+        from tools.flow_svn.svn_executor import SVNExecutor
+
+        executor = SVNExecutor()
+        executor._inspect_working_copy_state = lambda svn_root: {
+            "wc_locks": 0,
+            "work_queue": 0,
+            "conflicts": ["conflicted.txt"],
+            "error": None,
+        }
+
+        lines, can_continue = executor._build_preflight_diagnostics(tmp_path, "update")
+
+        assert can_continue is True
+        assert any("WARNING" in line for line in lines)
+        assert any("conflicted.txt" in line for line in lines)
+
+    def test_update_preflight_blocks_pending_work_queue(self, tmp_path):
+        from tools.flow_svn.svn_executor import SVNExecutor
+
+        executor = SVNExecutor()
+        executor._inspect_working_copy_state = lambda svn_root: {
+            "wc_locks": 0,
+            "work_queue": 1,
+            "conflicts": [],
+            "error": None,
+        }
+
+        lines, can_continue = executor._build_preflight_diagnostics(tmp_path, "update")
+
+        assert can_continue is False
+        assert any("Run svn cleanup" in line for line in lines)

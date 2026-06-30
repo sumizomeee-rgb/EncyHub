@@ -4,7 +4,8 @@ FlowSVN - FastAPI 入口
 import os
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional, List
+from pathlib import Path
+from typing import Literal, Optional, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,7 @@ from .config_manager import ConfigManager
 from .task_scheduler import TaskScheduler
 from .svn_executor import SVNExecutor
 from .models import Task, Template
+from .task_runner import run_task_by_id
 
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
@@ -25,6 +27,22 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), ".
 config_mgr: Optional[ConfigManager] = None
 task_scheduler: Optional[TaskScheduler] = None
 svn_executor: Optional[SVNExecutor] = None
+
+
+def is_svn_working_copy_path(path: str) -> bool:
+    """Check whether a path is inside an SVN working copy."""
+    path_obj = Path(path)
+    if not path_obj.exists() or not path_obj.is_dir():
+        return False
+
+    current_path = path_obj.resolve()
+    while current_path != current_path.parent:
+        svn_dir = current_path / ".svn"
+        if svn_dir.exists() and svn_dir.is_dir():
+            return True
+        current_path = current_path.parent
+
+    return False
 
 
 @asynccontextmanager
@@ -75,6 +93,7 @@ class TaskCreate(BaseModel):
     name: str
     svn_path: str
     schedule_time: str  # HH:MM format
+    operation: Literal["update", "cleanup"] = "update"
     template_id: Optional[str] = None
     enabled: bool = True
 
@@ -83,6 +102,7 @@ class TaskUpdate(BaseModel):
     name: Optional[str] = None
     svn_path: Optional[str] = None
     schedule_time: Optional[str] = None
+    operation: Optional[Literal["update", "cleanup"]] = None
     template_id: Optional[str] = None
     enabled: Optional[bool] = None
 
@@ -114,15 +134,20 @@ async def create_task(req: TaskCreate):
     # SVN 路径验证
     if not os.path.isdir(req.svn_path):
         raise HTTPException(400, f"路径不存在: {req.svn_path}")
-    if not os.path.isdir(os.path.join(req.svn_path, ".svn")):
+    if not is_svn_working_copy_path(req.svn_path):
         raise HTTPException(400, f"不是有效的 SVN 工作副本: {req.svn_path}")
+
+    template_id = req.template_id or ""
+    if req.operation == "cleanup":
+        template_id = ""
 
     task = Task(
         id=str(uuid.uuid4())[:8],
         name=req.name,
         svn_path=req.svn_path,
         schedule_time=req.schedule_time,
-        template_id=req.template_id,
+        operation=req.operation,
+        template_id=template_id,
         enabled=req.enabled,
     )
 
@@ -154,11 +179,13 @@ async def update_task(task_id: str, req: TaskUpdate):
     if not task:
         raise HTTPException(404, "任务不存在")
 
+    old_name = task.name
+
     # SVN 路径验证
     if req.svn_path is not None:
         if not os.path.isdir(req.svn_path):
             raise HTTPException(400, f"路径不存在: {req.svn_path}")
-        if not os.path.isdir(os.path.join(req.svn_path, ".svn")):
+        if not is_svn_working_copy_path(req.svn_path):
             raise HTTPException(400, f"不是有效的 SVN 工作副本: {req.svn_path}")
 
     # 更新字段
@@ -168,20 +195,24 @@ async def update_task(task_id: str, req: TaskUpdate):
         task.svn_path = req.svn_path
     if req.schedule_time is not None:
         task.schedule_time = req.schedule_time
+    if req.operation is not None:
+        task.operation = req.operation
     if req.template_id is not None:
-        task.template_id = req.template_id
+        task.template_id = req.template_id or ""
     if req.enabled is not None:
         task.enabled = req.enabled
+    if task.operation == "cleanup":
+        task.template_id = ""
 
     if not config_mgr.update_task(task):
         raise HTTPException(400, "任务更新失败")
 
     # 更新任务计划
     if task.enabled:
-        task_scheduler.delete_task(task_id, task.name)
+        task_scheduler.delete_task(task_id, old_name)
         task_scheduler.create_task(task.id, task.name, task.schedule_time)
     else:
-        task_scheduler.delete_task(task_id, task.name)
+        task_scheduler.delete_task(task_id, old_name)
 
     return {"message": "任务已更新", "task": task.to_dict()}
 
@@ -209,45 +240,13 @@ async def run_task(task_id: str):
     if not task:
         raise HTTPException(404, "任务不存在")
 
-    import time
-    start_time = time.time()
-
-    # 设置任务状态为 running
-    task.update_status("running", "任务开始执行")
-    config_mgr.update_task(task)
-
-    # 执行 SVN 更新
-    output_lines = []
-    success = False
-    try:
-        for line in svn_executor.execute_update(task.svn_path):
-            output_lines.append(line)
-        success = True
-    except Exception as e:
-        output_lines.append(f"ERROR: {str(e)}")
-
-    output = "\n".join(output_lines)
-    duration = time.time() - start_time
-
-    # 更新任务状态
-    if success:
-        task.update_status("success", output[:1000], duration)  # 限制日志长度
-    else:
-        task.update_status("failed", output[:1000], duration)
-
-    config_mgr.update_task(task)
-
-    if not success:
-        return {"message": "SVN 更新失败", "output": output, "success": False}
-
-    # 执行触发器（如果有模板）
-    if task.template_id:
-        template = config_mgr.get_template(task.template_id)
-        if template:
-            # TODO: 执行触发器动作
-            pass
-
-    return {"message": "任务执行完成", "output": output, "success": True}
+    result = run_task_by_id(
+        config_mgr=config_mgr,
+        task_id=task_id,
+        svn_executor=svn_executor,
+        respect_enabled=False,
+    )
+    return {"message": result.message, "output": result.output, "success": result.success}
 
 
 # ============================================================================

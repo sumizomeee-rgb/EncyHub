@@ -100,10 +100,12 @@ class Task:
     svn_path: str
     template_id: str
     schedule_time: str  # HH:mm format
+    operation: str = "update"  # update, cleanup
     enabled: bool = True  # Whether the task is enabled
     last_run: Optional[str] = None  # ISO8601 timestamp
     last_status: str = "pending"  # pending, success, failed, running
     last_log: str = ""
+    last_log_path: Optional[str] = None
     execution_history: List[Dict[str, Any]] = field(default_factory=list)  # History of all executions
     total_runs: int = 0  # Total number of executions
 
@@ -115,10 +117,12 @@ class Task:
             "svn_path": self.svn_path,
             "template_id": self.template_id,
             "schedule_time": self.schedule_time,
+            "operation": self.operation,
             "enabled": self.enabled,
             "last_run": self.last_run,
             "last_status": self.last_status,
             "last_log": self.last_log,
+            "last_log_path": self.last_log_path,
             "execution_history": self.execution_history,
             "total_runs": self.total_runs
         }
@@ -132,31 +136,36 @@ class Task:
             svn_path=data["svn_path"],
             template_id=data["template_id"],
             schedule_time=data["schedule_time"],
+            operation=data.get("operation", "update"),
             enabled=data.get("enabled", True),
             last_run=data.get("last_run"),
             last_status=data.get("last_status", "pending"),
             last_log=data.get("last_log", ""),
+            last_log_path=data.get("last_log_path"),
             execution_history=data.get("execution_history", []),
             total_runs=data.get("total_runs", 0)
         )
 
     @staticmethod
-    def create_new(name: str, svn_path: str, template_id: str, schedule_time: str) -> 'Task':
+    def create_new(name: str, svn_path: str, template_id: str, schedule_time: str, operation: str = "update") -> 'Task':
         """Create a new task with generated UUID"""
         return Task(
             id=str(uuid.uuid4()),
             name=name,
             svn_path=svn_path,
             template_id=template_id,
-            schedule_time=schedule_time
+            schedule_time=schedule_time,
+            operation=operation
         )
     
-    def update_status(self, status: str, log: str = "", duration_seconds: float = 0):
+    def update_status(self, status: str, log: str = "", duration_seconds: float = 0, log_path: str = None):
         """Update task execution status and add to history"""
         now = datetime.now().isoformat()
         self.last_run = now
         self.last_status = status
         self.last_log = log
+        if log_path is not None:
+            self.last_log_path = log_path
         
         # Add to execution history (keep last 20 records)
         history_entry = {
@@ -165,6 +174,8 @@ class Task:
             "duration": duration_seconds,
             "message": log[:200] if log else ""  # Store preview only
         }
+        if log_path is not None:
+            history_entry["log_path"] = log_path
         self.execution_history.insert(0, history_entry)
         if len(self.execution_history) > 20:
             self.execution_history = self.execution_history[:20]
