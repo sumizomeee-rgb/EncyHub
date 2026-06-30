@@ -62,6 +62,17 @@ def test_game_log_cache_skips_exact_duplicate_entry():
     assert main._cache_game_log_entries(cid, [raw]) == []
 
 
+def test_game_log_cache_skips_same_file_entry_after_rebootstrap_with_new_seq():
+    from tools.gm_console import main
+
+    cid = "127.0.0.1-100"
+    first = {"seq": 7, "fileOffset": 700, "time": "2026/06/17 16:00:00.0000", "text": "same file line"}
+    replay = {"seq": 8, "fileOffset": 700, "time": "2026/06/17 16:00:00.0000", "text": "same file line"}
+
+    assert len(main._cache_game_log_entries(cid, [first])) == 1
+    assert main._cache_game_log_entries(cid, [replay]) == []
+
+
 def test_runtime_lua_sends_game_log_entries_in_chunks():
     runtime_lua = os.path.join(BASE_DIR, "tools", "gm_console", "runtime_gm_client.lua")
     with open(runtime_lua, "r", encoding="utf-8") as f:
@@ -72,6 +83,12 @@ def test_runtime_lua_sends_game_log_entries_in_chunks():
     assert "sendChunkBytes" in content
     assert "sendChunkEntries" in content
     assert "RuntimeGMClient.LuaGameLogTail = LuaGameLogTail" in content
+
+
+def test_game_log_starts_without_history_bootstrap():
+    from tools.gm_console import main
+
+    assert main.GAME_LOG_BOOTSTRAP_BYTES == 0
 
 
 def test_runtime_lua_resends_gm_list_after_tcp_reconnect():

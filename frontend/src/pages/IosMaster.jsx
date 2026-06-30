@@ -62,11 +62,11 @@ function IosMaster() {
   const pullDownloadUrlRef = useRef(null)
 
   // App 沙盒模式
-  const [selectedBundleId, setSelectedBundleId] = useState('')
-  const [appPushLocalPath, setAppPushLocalPath] = useState('')
-  const [appPushRemotePath, setAppPushRemotePath] = useState('/Documents/')
-  const [appPullRemotePath, setAppPullRemotePath] = useState('')
-  const [appPullLocalPath, setAppPullLocalPath] = useState('')
+  const [selectedBundleId, setSelectedBundleId] = useState(() => localStorage.getItem('ios_selectedBundleId') || '')
+  const [appPushLocalPath, setAppPushLocalPath] = useState(() => localStorage.getItem('ios_appPushLocalPath') || '')
+  const [appPushRemotePath, setAppPushRemotePath] = useState(() => localStorage.getItem('ios_appPushRemotePath') || '/Documents/')
+  const [appPullRemotePath, setAppPullRemotePath] = useState(() => localStorage.getItem('ios_appPullRemotePath') || '')
+  const [appPullLocalPath, setAppPullLocalPath] = useState(() => localStorage.getItem('ios_appPullLocalPath') || '')
 
   // 截图
   const [screenshotUrl, setScreenshotUrl] = useState(null)
@@ -213,18 +213,22 @@ function IosMaster() {
   }
 
   // ── Apps ──
-  const fetchApps = async () => {
+  const fetchApps = async (appTypeOverride = null) => {
     if (!selectedDevice) return
     setAppsLoading(true)
     try {
-      const appType = showSystemApps ? 'Any' : 'User'
+      const appType = appTypeOverride || (showSystemApps ? 'Any' : 'User')
       const res = await fetch(`/api/ios_master/devices/${selectedDevice.udid}/apps?app_type=${appType}`)
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        const data = await res.json()
         setApps(data.apps || [])
+      } else {
+        setApps([])
+        toast.error(data.detail || '获取应用列表失败')
       }
     } catch (err) {
-      toast.error('获取应用列表失败')
+      setApps([])
+      toast.error('获取应用列表失败: ' + err.message)
     } finally {
       setAppsLoading(false)
     }
@@ -376,6 +380,9 @@ function IosMaster() {
         body: JSON.stringify({ bundle_id: selectedBundleId, local_path: appPushLocalPath, remote_path: appPushRemotePath }),
       })
       const data = await res.json()
+      localStorage.setItem('ios_selectedBundleId', selectedBundleId)
+      localStorage.setItem('ios_appPushLocalPath', appPushLocalPath)
+      localStorage.setItem('ios_appPushRemotePath', appPushRemotePath)
       if (res.ok) toast.success(data.message)
       else toast.error(data.detail || '推送失败')
     } catch (err) { toast.error('推送失败: ' + err.message) }
@@ -392,6 +399,9 @@ function IosMaster() {
         body: JSON.stringify({ bundle_id: selectedBundleId, path: appPullRemotePath, local_path: appPullLocalPath || '' }),
       })
       if (res.ok) {
+        localStorage.setItem('ios_selectedBundleId', selectedBundleId)
+        localStorage.setItem('ios_appPullRemotePath', appPullRemotePath)
+        if (appPullLocalPath) localStorage.setItem('ios_appPullLocalPath', appPullLocalPath)
         const contentType = res.headers.get('content-type')
         if (contentType?.includes('application/json')) {
           const data = await res.json()
@@ -485,6 +495,7 @@ function IosMaster() {
     (a.name?.toLowerCase().includes(appSearch.toLowerCase()) ||
      a.bundle_id?.toLowerCase().includes(appSearch.toLowerCase()))
   )
+  const selectableApps = apps.filter(a => !a.error && !a.is_system)
 
   const mediaPresets = ['/Downloads/', '/DCIM/', '/Books/', '/Recordings/', '/iTunes_Control/']
 
@@ -858,14 +869,28 @@ function IosMaster() {
                           /* App Sandbox Mode */
                           <div className="space-y-3">
                             <div>
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">选择应用</label>
-                              <select className="w-full text-sm font-mono" value={selectedBundleId} onChange={e => setSelectedBundleId(e.target.value)}>
-                                <option value="">-- 选择 App --</option>
-                                {apps.filter(a => !a.error && !a.is_system).map(a => (
-                                  <option key={a.bundle_id} value={a.bundle_id}>{a.name} ({a.bundle_id})</option>
-                                ))}
-                              </select>
-                              <p className="text-xs text-[var(--coffee-muted)] mt-1">仅开启了文件共享的 App 可被访问</p>
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">Bundle ID</label>
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  list="ios-app-bundles"
+                                  className="font-mono text-sm flex-1"
+                                  value={selectedBundleId}
+                                  onChange={e => setSelectedBundleId(e.target.value.trim())}
+                                  placeholder="com.kurogame.haru.internal.debug"
+                                />
+                                <datalist id="ios-app-bundles">
+                                  {selectableApps.map(a => (
+                                    <option key={a.bundle_id} value={a.bundle_id}>{a.name}</option>
+                                  ))}
+                                </datalist>
+                                <button className="btn-secondary p-2 shrink-0" onClick={() => fetchApps()} disabled={appsLoading} title="刷新应用列表">
+                                  <RefreshCw size={14} className={appsLoading ? 'animate-spin' : ''} />
+                                </button>
+                              </div>
+                              <p className="text-xs text-[var(--coffee-muted)] mt-1">
+                                {appsLoading ? '正在读取 App 列表...' : selectableApps.length > 0 ? `已读取 ${selectableApps.length} 个用户 App` : '可直接输入 Bundle ID'}
+                              </p>
                             </div>
                             {selectedBundleId && (
                               <>
@@ -877,7 +902,7 @@ function IosMaster() {
                                   </div>
                                   <div className="space-y-2">
                                     <input type="text" value={appPushLocalPath} onChange={e => setAppPushLocalPath(e.target.value)} placeholder="本地路径" className="font-mono text-sm" />
-                                    <input type="text" value={appPushRemotePath} onChange={e => setAppPushRemotePath(e.target.value)} placeholder="/Documents/" className="font-mono text-sm" />
+                                    <input type="text" value={appPushRemotePath} onChange={e => setAppPushRemotePath(e.target.value)} placeholder="files/ 或 /Documents/files/" className="font-mono text-sm" />
                                     <button className="btn-primary flex items-center gap-2 text-sm" onClick={handleAppPush} disabled={!appPushLocalPath.trim() || operating}><Upload size={14} />推送</button>
                                   </div>
                                 </div>
@@ -888,7 +913,7 @@ function IosMaster() {
                                     <span className="text-sm font-medium">从 App 沙盒拉取</span>
                                   </div>
                                   <div className="space-y-2">
-                                    <input type="text" value={appPullRemotePath} onChange={e => setAppPullRemotePath(e.target.value)} placeholder="/Documents/log" className="font-mono text-sm" />
+                                    <input type="text" value={appPullRemotePath} onChange={e => setAppPullRemotePath(e.target.value)} placeholder="files/log 或 /Documents/files/log" className="font-mono text-sm" />
                                     <input type="text" value={appPullLocalPath} onChange={e => setAppPullLocalPath(e.target.value)} placeholder="本地保存路径 (留空默认)" className="font-mono text-sm" />
                                     <button className="btn-primary flex items-center gap-2 text-sm" onClick={handleAppPull} disabled={!appPullRemotePath.trim() || operating}><Download size={14} />拉取</button>
                                   </div>
@@ -917,7 +942,7 @@ function IosMaster() {
                             <input type="text" value={appSearch} onChange={e => setAppSearch(e.target.value)} placeholder="搜索 App..." className="pl-9 text-sm" />
                           </div>
                           <label className="flex items-center gap-1.5 text-xs text-[var(--coffee-muted)] cursor-pointer">
-                            <input type="checkbox" checked={showSystemApps} onChange={e => { setShowSystemApps(e.target.checked); setTimeout(fetchApps, 0) }} />
+                            <input type="checkbox" checked={showSystemApps} onChange={e => { const checked = e.target.checked; setShowSystemApps(checked); fetchApps(checked ? 'Any' : 'User') }} />
                             系统应用
                           </label>
                           <button className="btn-secondary p-2" onClick={fetchApps} disabled={appsLoading}><RefreshCw size={14} /></button>

@@ -27,6 +27,63 @@ class iOSDeviceManager:
         self._syslog_tasks: dict[str, asyncio.Task] = {}
         self._syslog_stop_events: dict[str, asyncio.Event] = {}
 
+    @staticmethod
+    def _normalize_remote_path(path: str, default: str = "/", relative_base: str = "/") -> str:
+        path = (path or default).strip().replace("\\", "/")
+        if not path:
+            path = default
+        if not path.startswith("/"):
+            base = (relative_base or "/").rstrip("/")
+            path = f"{base}/{path}" if base else f"/{path}"
+        return path
+
+    @staticmethod
+    async def _ensure_remote_dir(afc, remote_dir: str) -> None:
+        remote_dir = iOSDeviceManager._normalize_remote_path(remote_dir)
+        if remote_dir == "/":
+            return
+        try:
+            await afc.makedirs(remote_dir)
+        except Exception:
+            try:
+                if await afc.isdir(remote_dir):
+                    return
+            except Exception:
+                pass
+            raise
+
+    async def _push_local_path(
+        self, afc, local_path: str, remote_path: str, relative_base: str = "/"
+    ) -> tuple[bool, str, int]:
+        import os
+
+        remote_path = self._normalize_remote_path(remote_path, relative_base=relative_base)
+        if os.path.isfile(local_path):
+            if remote_path.endswith("/"):
+                await self._ensure_remote_dir(afc, remote_path)
+                dst = f"{remote_path.rstrip('/')}/{os.path.basename(local_path)}"
+            else:
+                parent = os.path.dirname(remote_path.replace("/", os.sep)).replace(os.sep, "/") or "/"
+                await self._ensure_remote_dir(afc, parent)
+                dst = remote_path
+            await afc.push(local_path, dst)
+            return True, os.path.basename(local_path), 1
+
+        if os.path.isdir(local_path):
+            count = 0
+            for root, dirs, files in os.walk(local_path):
+                rel = os.path.relpath(root, local_path)
+                target_dir = f"{remote_path.rstrip('/')}/{rel}" if rel != "." else remote_path
+                await self._ensure_remote_dir(afc, target_dir)
+                for fname in files:
+                    src = os.path.join(root, fname)
+                    dst = f"{target_dir.rstrip('/')}/{fname}"
+                    await afc.push(src, dst)
+                    count += 1
+            return True, "", count
+
+        return False, f"路径不存在: {local_path}", 0
+
     # ── Device Discovery ──
 
     async def get_devices(self) -> List[iOSDevice]:
@@ -103,14 +160,11 @@ class iOSDeviceManager:
     # ── App Management ──
 
     async def list_apps(self, udid: str, app_type: str = "User") -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(self._list_apps_sync, udid, app_type)
-
-    def _list_apps_sync(self, udid: str, app_type: str) -> List[Dict[str, Any]]:
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.installation_proxy import InstallationProxyService
-            with InstallationProxyService(lockdown=lockdown) as proxy:
-                apps = proxy.get_apps(app_type)
+            async with InstallationProxyService(lockdown=lockdown) as proxy:
+                apps = await proxy.get_apps(app_type, calculate_sizes=True)
 
             result = []
             for bundle_id, info in apps.items():
@@ -131,27 +185,21 @@ class iOSDeviceManager:
             return [{'error': str(e) or f'操作失败 ({type(e).__name__})'}]
 
     async def uninstall_app(self, udid: str, bundle_id: str) -> tuple[bool, str]:
-        return await asyncio.to_thread(self._uninstall_app_sync, udid, bundle_id)
-
-    def _uninstall_app_sync(self, udid: str, bundle_id: str) -> tuple[bool, str]:
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.installation_proxy import InstallationProxyService
-            with InstallationProxyService(lockdown=lockdown) as proxy:
-                proxy.uninstall(bundle_id)
+            async with InstallationProxyService(lockdown=lockdown) as proxy:
+                await proxy.uninstall(bundle_id)
             return True, f"已卸载 {bundle_id}"
         except Exception as e:
             return False, str(e)
 
     async def install_ipa(self, udid: str, ipa_path: str) -> tuple[bool, str]:
-        return await asyncio.to_thread(self._install_ipa_sync, udid, ipa_path)
-
-    def _install_ipa_sync(self, udid: str, ipa_path: str) -> tuple[bool, str]:
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.installation_proxy import InstallationProxyService
-            with InstallationProxyService(lockdown=lockdown) as proxy:
-                proxy.install_from_local(ipa_path)
+            async with InstallationProxyService(lockdown=lockdown) as proxy:
+                await proxy.install_from_local(ipa_path)
             return True, "安装成功"
         except Exception as e:
             return False, str(e)
@@ -159,21 +207,19 @@ class iOSDeviceManager:
     # ── File Transfer (AFC - Media) ──
 
     async def afc_ls(self, udid: str, path: str = "/") -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(self._afc_ls_sync, udid, path)
-
-    def _afc_ls_sync(self, udid: str, path: str) -> List[Dict[str, Any]]:
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            path = self._normalize_remote_path(path)
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.afc import AfcService
-            with AfcService(lockdown=lockdown) as afc:
-                entries = afc.listdir(path)
+            async with AfcService(lockdown=lockdown) as afc:
+                entries = await afc.listdir(path)
                 result = []
                 for name in entries:
                     if name in ('.', '..'):
                         continue
                     full_path = f"{path.rstrip('/')}/{name}"
                     try:
-                        stat = afc.stat(full_path)
+                        stat = await afc.stat(full_path)
                         result.append({
                             'name': name,
                             'path': full_path,
@@ -192,48 +238,28 @@ class iOSDeviceManager:
             return [{'error': str(e) or f'操作失败 ({type(e).__name__})'}]
 
     async def afc_push(self, udid: str, local_path: str, remote_path: str) -> tuple[bool, str]:
-        return await asyncio.to_thread(self._afc_push_sync, udid, local_path, remote_path)
-
-    def _afc_push_sync(self, udid: str, local_path: str, remote_path: str) -> tuple[bool, str]:
-        import os
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.afc import AfcService
-            with AfcService(lockdown=lockdown) as afc:
-                if os.path.isfile(local_path):
-                    afc.push(local_path, remote_path)
-                    return True, f"已推送: {os.path.basename(local_path)}"
-                elif os.path.isdir(local_path):
-                    count = 0
-                    for root, dirs, files in os.walk(local_path):
-                        rel = os.path.relpath(root, local_path)
-                        target_dir = f"{remote_path.rstrip('/')}/{rel}" if rel != '.' else remote_path
-                        try:
-                            afc.makedirs(target_dir)
-                        except Exception:
-                            pass
-                        for fname in files:
-                            src = os.path.join(root, fname)
-                            dst = f"{target_dir.rstrip('/')}/{fname}"
-                            afc.push(src, dst)
-                            count += 1
-                    return True, f"已推送 {count} 个文件"
-                else:
-                    return False, f"路径不存在: {local_path}"
+            async with AfcService(lockdown=lockdown) as afc:
+                success, name_or_error, count = await self._push_local_path(afc, local_path, remote_path)
+                if not success:
+                    return False, name_or_error
+                if count == 1 and name_or_error:
+                    return True, f"已推送: {name_or_error}"
+                return True, f"已推送 {count} 个文件"
         except Exception as e:
             return False, str(e)
 
     async def afc_pull(self, udid: str, remote_path: str, local_path: str) -> tuple[bool, str]:
-        return await asyncio.to_thread(self._afc_pull_sync, udid, remote_path, local_path)
-
-    def _afc_pull_sync(self, udid: str, remote_path: str, local_path: str) -> tuple[bool, str]:
         import os
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            remote_path = self._normalize_remote_path(remote_path)
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.afc import AfcService
-            with AfcService(lockdown=lockdown) as afc:
+            async with AfcService(lockdown=lockdown) as afc:
                 os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
-                afc.pull(remote_path, local_path)
+                await afc.pull(remote_path, local_path)
                 return True, f"已拉取到: {local_path}"
         except Exception as e:
             return False, str(e)
@@ -241,21 +267,20 @@ class iOSDeviceManager:
     # ── File Transfer (App Sandbox via HouseArrest) ──
 
     async def app_afc_ls(self, udid: str, bundle_id: str, path: str = "/") -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(self._app_afc_ls_sync, udid, bundle_id, path)
-
-    def _app_afc_ls_sync(self, udid: str, bundle_id: str, path: str) -> List[Dict[str, Any]]:
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            path = self._normalize_remote_path(path, relative_base="/Documents")
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.house_arrest import HouseArrestService
-            with HouseArrestService(lockdown=lockdown, bundle_id=bundle_id) as afc:
-                entries = afc.listdir(path)
+            afc = await HouseArrestService.create(lockdown, bundle_id)
+            async with afc:
+                entries = await afc.listdir(path)
                 result = []
                 for name in entries:
                     if name in ('.', '..'):
                         continue
                     full_path = f"{path.rstrip('/')}/{name}"
                     try:
-                        stat = afc.stat(full_path)
+                        stat = await afc.stat(full_path)
                         result.append({
                             'name': name,
                             'path': full_path,
@@ -274,48 +299,32 @@ class iOSDeviceManager:
             return [{'error': str(e) or f'操作失败 ({type(e).__name__})'}]
 
     async def app_afc_push(self, udid: str, bundle_id: str, local_path: str, remote_path: str) -> tuple[bool, str]:
-        return await asyncio.to_thread(self._app_afc_push_sync, udid, bundle_id, local_path, remote_path)
-
-    def _app_afc_push_sync(self, udid: str, bundle_id: str, local_path: str, remote_path: str) -> tuple[bool, str]:
-        import os
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.house_arrest import HouseArrestService
-            with HouseArrestService(lockdown=lockdown, bundle_id=bundle_id) as afc:
-                if os.path.isfile(local_path):
-                    afc.push(local_path, remote_path)
-                    return True, f"已推送到 {bundle_id}: {os.path.basename(local_path)}"
-                elif os.path.isdir(local_path):
-                    count = 0
-                    for root, dirs, files in os.walk(local_path):
-                        rel = os.path.relpath(root, local_path)
-                        target_dir = f"{remote_path.rstrip('/')}/{rel}" if rel != '.' else remote_path
-                        try:
-                            afc.makedirs(target_dir)
-                        except Exception:
-                            pass
-                        for fname in files:
-                            src = os.path.join(root, fname)
-                            dst = f"{target_dir.rstrip('/')}/{fname}"
-                            afc.push(src, dst)
-                            count += 1
-                    return True, f"已推送 {count} 个文件到 {bundle_id}"
-                else:
-                    return False, f"路径不存在: {local_path}"
+            afc = await HouseArrestService.create(lockdown, bundle_id)
+            async with afc:
+                success, name_or_error, count = await self._push_local_path(
+                    afc, local_path, remote_path, relative_base="/Documents"
+                )
+                if not success:
+                    return False, name_or_error
+                if count == 1 and name_or_error:
+                    return True, f"已推送到 {bundle_id}: {name_or_error}"
+                return True, f"已推送 {count} 个文件到 {bundle_id}"
         except Exception as e:
             return False, str(e)
 
     async def app_afc_pull(self, udid: str, bundle_id: str, remote_path: str, local_path: str) -> tuple[bool, str]:
-        return await asyncio.to_thread(self._app_afc_pull_sync, udid, bundle_id, remote_path, local_path)
-
-    def _app_afc_pull_sync(self, udid: str, bundle_id: str, remote_path: str, local_path: str) -> tuple[bool, str]:
         import os
         try:
-            lockdown = self._create_lockdown_sync(udid)
+            remote_path = self._normalize_remote_path(remote_path, relative_base="/Documents")
+            lockdown = await self._create_lockdown_async(udid)
             from pymobiledevice3.services.house_arrest import HouseArrestService
-            with HouseArrestService(lockdown=lockdown, bundle_id=bundle_id) as afc:
+            afc = await HouseArrestService.create(lockdown, bundle_id)
+            async with afc:
                 os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
-                afc.pull(remote_path, local_path)
+                await afc.pull(remote_path, local_path)
                 return True, f"已从 {bundle_id} 拉取到: {local_path}"
         except Exception as e:
             return False, str(e)

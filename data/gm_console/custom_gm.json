@@ -8,7 +8,7 @@
     "cmd": "CS.Debugger.XDebuggerCheat.SendCheat(\"allchar\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"allstage\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"lv 90\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"resetallcharacternewflag\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 7 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 8 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 45 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 39 99999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 23 9999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 1 9999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 2 9999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 62723 9999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 62723 999999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 30013 99999\")\nCS.Debugger.XDebuggerCheat.SendCheat(\"item 12 99999\")"
   },
   {
-    "name": "Emmy2",
+    "name": "Emmy",
     "cmd": "--连接EmmyLua\nlocal function connectEmmyLua()\n    local function func()\n        local emmyDir = \"F:/HaruTrunk/Dev/Client/Tools/EmmyLua\"\n\n        package.cpath = package.cpath\n                .. \";\" .. emmyDir .. \"/?.dll\"\n                .. \";\" .. emmyDir .. \"/emmy_core.dll\"\n\n        local dbg = require(\"emmy_core\")\n        dbg.tcpConnect(\"localhost\", 12580)\n\n        print(\"hyx EmmyLua连接成功: \" .. emmyDir)\n    end\n\n    local function handle(error)\n        print(\"hyx EmmyLua连接失败: \" .. tostring(error))\n    end\n\n    xpcall(func, handle)\nend\n\nconnectEmmyLua()\n--连接EmmyLua\n"
   },
   {

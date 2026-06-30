@@ -146,7 +146,7 @@ def _normalize_game_log_entry(entry: Any) -> dict[str, Any]:
 
 def _game_log_entry_dedupe_key(entry: dict[str, Any]) -> tuple[Any, ...]:
     return (
-        entry.get("seq"),
+        "file",
         entry.get("fileOffset"),
         entry.get("time", ""),
         entry.get("header", ""),
