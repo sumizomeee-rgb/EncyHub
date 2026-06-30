@@ -1,14 +1,14 @@
 """
-inject_runtime_gm.py — 一键注入 RuntimeGMClient 到游戏 Lua 入口文件
+inject_runtime_gm.py — 一键注入 RuntimeGMClient 到游戏 Launch 空壳 Lua 文件
 
 使用方法:
-  1. 在下方 TARGET_LUA_FILES 列表中维护要注入的 Lua 入口文件路径（支持多分支）
-     - 临时跳过某个分支：把对应行注释掉即可
+  1. 在下方 TARGET_LUA_FILES 列表中维护要注入的 Launch 空壳 Lua 文件路径
      - 所有分支统一连同一个固定握手端口 GM_PORT（多设备靠 IP+pid 会话标识区分，可同时挂载）
   2. 自动探测本机 LAN IPv4，并写入 RuntimeGM 连接地址
   3. 运行: python inject_runtime_gm.py
 
 脚本会对列表里的每个文件依次执行:
+  0. 目标文件不存在但父目录存在时，先创建专用注入空壳
   1. 移除旧的 EncyHub RuntimeGM 注入块（不回滚入口文件本身）
   2. 读取 runtime_gm_client.lua 权威 Lua 源文件
   3. 替换代码中的 IP 和端口为你的配置（所有分支统一为 GM_PORT）
@@ -29,13 +29,18 @@ except ImportError:
 # ★★★ 修改这里 ★★★
 # ============================================================
 
-# 目标 Lua 文件的绝对路径列表 — 添加/注释行即可增减分支
+# 目标 Lua 文件的绝对路径列表。
+# 注意：这里指向专用注入空壳，不再直接改真实业务启动脚本 XLaunchModule.lua。
 TARGET_LUA_FILES = [
-    r"F:\HaruTrunk\Product\Lua\Launch\XLaunchModule.lua",
-    r"E:\WorkProject\branches\HaruBranchV4.8_w_FullDev\Product\Lua\Launch\XLaunchModule.lua",
+    r"F:\HaruTrunk\Product\Lua\Launch\XLaunchRuntimeGmInject.lua",
 ]
 
 GM_PORT = 12581  # 固定握手端口：所有分支 / 所有设备统一连接此端口
+
+INJECT_SHELL_TEMPLATE = """-- EncyHub RuntimeGM 注入占位文件。
+-- XLaunchModule 会通过 pcall(require, "XLaunchRuntimeGmInject") 触发本文件。
+-- inject_runtime_gm.py 会把 RuntimeGMClient 代码追加到下方的自动注入块里。
+"""
 
 def svn_revert(filepath: str):
     print(f"[SVN] revert {filepath}")
@@ -60,8 +65,17 @@ def svn_revert(filepath: str):
 
 def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
     """对单个目标文件执行注入。返回 (成功?, 描述)。失败时只记录、不抛异常。"""
+    created_shell = False
     if not os.path.isfile(target):
-        return False, "文件不存在"
+        parent = os.path.dirname(target)
+        if not os.path.isdir(parent):
+            return False, "目录不存在"
+        try:
+            with open(target, "w", encoding="utf-8", newline="\n") as f:
+                f.write(INJECT_SHELL_TEMPLATE)
+            created_shell = True
+        except Exception as e:
+            return False, f"创建空壳失败: {e}"
 
     try:
         with open(target, "r", encoding="utf-8") as f:
@@ -75,8 +89,9 @@ def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
             f.write(lua_code)
             f.write("\n")
 
+        created = "，已创建空壳文件" if created_shell else ""
         stripped = "，已替换旧注入块" if separator in original else ""
-        return True, f"原 {original.count(chr(10))+1} 行 → 基础 {base.count(chr(10))+1} 行 +{lua_code.count(chr(10))+1} 行 @ port {port}{stripped}"
+        return True, f"原 {original.count(chr(10))+1} 行 → 基础 {base.count(chr(10))+1} 行 +{lua_code.count(chr(10))+1} 行 @ port {port}{created}{stripped}"
     except Exception as e:
         return False, f"IO 错误: {e}"
 
