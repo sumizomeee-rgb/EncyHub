@@ -193,18 +193,42 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
     }, [filterText])
 
     // --- 加载子节点 ---
-    const loadChildren = useCallback((instanceId) => {
+    const requestChildren = useCallback((instanceId, options = {}) => new Promise(resolve => {
         setLoadingChildren(prev => ({ ...prev, [instanceId]: true }))
         request('children', { instanceId }, (data) => {
             setLoadingChildren(prev => { const n = { ...prev }; delete n[instanceId]; return n })
-            if (data?.error) return
+            if (data?.error) {
+                if (options.dropOnError) {
+                    setChildrenMap(prev => {
+                        if (!Object.prototype.hasOwnProperty.call(prev, instanceId)) return prev
+                        const next = { ...prev }
+                        delete next[instanceId]
+                        childrenMapRef.current = next
+                        return next
+                    })
+                    setExpanded(prev => {
+                        if (!prev.has(instanceId)) return prev
+                        const next = new Set(prev)
+                        next.delete(instanceId)
+                        expandedRef.current = next
+                        return next
+                    })
+                }
+                resolve(data)
+                return
+            }
             setChildrenMap(prev => {
                 const next = { ...prev, [instanceId]: data.children || [] }
                 childrenMapRef.current = next
                 return next
             })
+            resolve(data)
         })
-    }, [request])
+    }), [request])
+
+    const loadChildren = useCallback((instanceId) => {
+        requestChildren(instanceId)
+    }, [requestChildren])
 
     // --- 加载 GO 详情 ---
     const loadDetail = useCallback((instanceId) => {
@@ -216,6 +240,31 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
             setGoDetail(data)
         })
     }, [request])
+
+    const refreshLoadedChildrenSequentially = useCallback(async (expandedIds) => {
+        for (const id of expandedIds) {
+            if (!childrenMapRef.current[id]) continue
+            await requestChildren(id, { dropOnError: true })
+            await waitForNextPaint()
+        }
+    }, [requestChildren])
+
+    const refreshTreePreservingView = useCallback(() => {
+        const expandedIds = [...expandedRef.current]
+        const selectedBeforeRefresh = selectedId
+        setLoadingTree(true)
+        request('scene_roots', {}, async (data) => {
+            if (data?.error) {
+                setTree({ scenes: [], dontDestroy: [], error: data.error })
+                setLoadingTree(false)
+                return
+            }
+            setTree(data || { scenes: [], dontDestroy: [] })
+            await refreshLoadedChildrenSequentially(expandedIds)
+            if (selectedBeforeRefresh) loadDetail(selectedBeforeRefresh)
+            setLoadingTree(false)
+        })
+    }, [request, refreshLoadedChildrenSequentially, selectedId, loadDetail])
 
     // --- 加载集合元素（懒加载，传给 PropRow 使用） ---
     const loadCollectionItems = useCallback((compIndex, propName, offset, limit, cb) => {
@@ -545,7 +594,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--caramel)] disabled:opacity-30 disabled:pointer-events-none transition-colors mr-1" title="全场景高级搜索 (GO / Component / 字段 / 文本)">
                                 <Search size={13} />
                             </button>
-                            <button onClick={() => loadTree({ reset: true })} disabled={!selectedClient || loadingTree}
+                            <button onClick={() => refreshTreePreservingView()} disabled={!selectedClient || loadingTree}
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新整树">
                                 <RotateCw size={13} className={loadingTree ? 'animate-spin' : ''} />
                             </button>

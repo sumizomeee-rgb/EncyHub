@@ -176,15 +176,14 @@ def test_hidden_monitor_tabs_do_not_open_websockets():
     assert "[selectedClient?.id, active]" in timeline
 
 
-def test_hierarchy_manual_refresh_clears_cached_children_and_selection():
+def test_hierarchy_manual_refresh_preserves_expanded_tree_state():
     content = read_file(HIERARCHY_JSX)
 
-    assert "const resetTreeViewState = useCallback" in content
-    assert "childrenMapRef.current = {}" in content
-    assert "expandedRef.current = new Set()" in content
-    assert "setSelectedId(null)" in content
-    assert "setGoDetail(null)" in content
-    assert "onClick={() => loadTree({ reset: true })}" in content
+    assert "const refreshTreePreservingView = useCallback" in content
+    assert "const expandedIds = [...expandedRef.current]" in content
+    assert "await refreshLoadedChildrenSequentially(expandedIds)" in content
+    assert "onClick={() => refreshTreePreservingView()}" in content
+    assert "onClick={() => loadTree({ reset: true })}" not in content
 
 
 def test_hierarchy_go_search_requires_enter_to_submit():
