@@ -116,6 +116,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
 
     // --- GO 搜索（普通搜索只负责按 GO 名/路径定位，Component/字段/类型交给高级搜索） ---
     const [filterText, setFilterText] = useState('')
+    const [goSearchQuery, setGoSearchQuery] = useState('')
     const [goSearchResults, setGoSearchResults] = useState(null)
     const [goSearchInfo, setGoSearchInfo] = useState(null)
     const [goSearching, setGoSearching] = useState(false)
@@ -156,6 +157,9 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         setSelectedId(null)
         setGoDetail(null)
         setHighlightCompIndex(null)
+        setFilterText('')
+        setGoSearchQuery('')
+        setGoSearching(false)
         setGoSearchResults(null)
         setGoSearchInfo(null)
     }, [])
@@ -169,6 +173,24 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
             setTree(data || { scenes: [], dontDestroy: [] })
         })
     }, [request, resetTreeViewState])
+
+    const clearGoSearch = useCallback(() => {
+        setFilterText('')
+        setGoSearchQuery('')
+        setGoSearchResults(null)
+        setGoSearchInfo(null)
+        setGoSearching(false)
+    }, [])
+
+    const submitGoSearch = useCallback(() => {
+        const q = filterText.trim()
+        setGoSearchQuery(q)
+        if (!q) {
+            setGoSearchResults(null)
+            setGoSearchInfo(null)
+            setGoSearching(false)
+        }
+    }, [filterText])
 
     // --- 加载子节点 ---
     const loadChildren = useCallback((instanceId) => {
@@ -318,7 +340,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
 
     // --- 普通搜索：全场景 GO 名/路径搜索，语义贴近 Unity Hierarchy ---
     useEffect(() => {
-        const q = filterText.trim()
+        const q = goSearchQuery.trim()
         const seq = goSearchSeqRef.current + 1
         goSearchSeqRef.current = seq
 
@@ -376,7 +398,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         }, 250)
 
         return () => clearTimeout(timer)
-    }, [filterText, selectedClient?.id, wsConnected, request])
+    }, [goSearchQuery, selectedClient?.id, wsConnected, request])
 
     // --- Locate 流程：展开父链 + 选中目标 ---
     const [locating, setLocating] = useState(false)
@@ -482,7 +504,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         childrenMapRef.current = {}
         expandedRef.current = new Set()
         setTree(null); setChildrenMap({}); setExpanded(new Set())
-        setSelectedId(null); setGoDetail(null); setGoSearchResults(null); setGoSearchInfo(null); setFilterText('')
+        setSelectedId(null); setGoDetail(null); setGoSearchResults(null); setGoSearchInfo(null); setFilterText(''); setGoSearchQuery('')
     }, [selectedClient?.id])
 
     useEffect(() => {
@@ -536,12 +558,16 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                     </div>
                     <div className="mt-2 flex items-center gap-1">
                         <input type="text" value={filterText} onChange={e => setFilterText(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Escape') setFilterText('') }}
+                            onKeyDown={e => {
+                                if (e.nativeEvent?.isComposing) return
+                                if (e.key === 'Escape') clearGoSearch()
+                                if (e.key === 'Enter') submitGoSearch()
+                            }}
                             placeholder="搜索 GO 名或路径..."
                             className="flex-1 px-2 py-1.5 text-xs rounded-md border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
                         />
                         {filterText && (
-                            <button onClick={() => setFilterText('')}
+                            <button onClick={clearGoSearch}
                                 className="p-1 rounded text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-black/5"
                                 title="清空 GO 搜索">
                                 <X size={12} />
@@ -555,14 +581,14 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                     {loadingTree && <div className="flex items-center justify-center gap-1.5 py-4 text-[var(--coffee-muted)]"><Loader2 size={14} className="animate-spin" /><span>加载场景...</span></div>}
                     {!loadingTree && tree?.error && <div className="px-2 py-1.5 mb-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs">{tree.error}</div>}
 
-                    {filterText.trim() && (
+                    {goSearchQuery.trim() && (
                         <GoSearchResults
-                            query={filterText.trim()}
+                            query={goSearchQuery.trim()}
                             results={goSearchResults}
                             info={goSearchInfo}
                             loading={goSearching}
                             onLocate={(hit) => {
-                                setFilterText('')
+                                clearGoSearch()
                                 locateAndSelect({ instanceId: hit.goInstanceId, ancestorChain: hit.ancestorChain }, () => {}, { resetExpanded: true })
                             }}
                             onSetActive={(hit, active) => setGoActiveById(hit.goInstanceId, active)}
@@ -570,7 +596,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                         />
                     )}
 
-                    {!filterText.trim() && tree && sceneSections.map(section => (
+                    {!goSearchQuery.trim() && tree && sceneSections.map(section => (
                         <SceneSection key={section.key} section={section}
                             selectedId={selectedId}
                             expanded={expanded}

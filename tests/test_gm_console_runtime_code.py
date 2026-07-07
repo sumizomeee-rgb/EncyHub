@@ -187,6 +187,17 @@ def test_hierarchy_manual_refresh_clears_cached_children_and_selection():
     assert "onClick={() => loadTree({ reset: true })}" in content
 
 
+def test_hierarchy_go_search_requires_enter_to_submit():
+    content = read_file(HIERARCHY_JSX)
+
+    assert "const [goSearchQuery, setGoSearchQuery] = useState('')" in content
+    assert "const submitGoSearch = useCallback" in content
+    assert "const q = goSearchQuery.trim()" in content
+    assert "if (e.key === 'Enter') submitGoSearch()" in content
+    assert "[goSearchQuery, selectedClient?.id, wsConnected, request]" in content
+    assert "[filterText, selectedClient?.id, wsConnected, request]" not in content
+
+
 def test_lua_ui_root_locate_falls_back_to_common_root_go_fields():
     content = read_file(RUNTIME_GM_LUA)
 
