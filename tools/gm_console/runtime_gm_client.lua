@@ -4046,6 +4046,12 @@ local function StartRuntimeGM()
     LuaAvMonitor._pendingEvents   = {}    -- 视频事件队列（每帧采集，随 snapshot 一起发送）
     LuaAvMonitor._videoLogEnabled = false
     LuaAvMonitor._videoLogCallback = nil
+    LuaAvMonitor._pendingAudioEvents = {} -- 高频采集到的音频状态变化，随快照批量发送
+    LuaAvMonitor._audioKnown       = nil  -- instance Id -> AudioInfo 快照
+    LuaAvMonitor._audioKnownOrder  = nil
+    LuaAvMonitor._audioEventSeq    = 0
+    LuaAvMonitor._lastAudioPollTime = -9999
+    LuaAvMonitor._audioPollInterval = 0.0 -- Update 每帧采集；短 UI 音效通常不足 1 秒
     LuaAvMonitor._isActive        = false -- 前端订阅时为 true，超时或 stop 命令后归 false
     LuaAvMonitor._lastActivateTime = -9999
     LuaAvMonitor._activeTimeout   = 30.0  -- 30s 内没有 start/snapshot 心跳则自动停止
@@ -4054,6 +4060,43 @@ local function StartRuntimeGM()
         local pkt = { type = "AV_MONITOR_RESP", action = action }
         if err then pkt.error = err else pkt.data = data end
         RuntimeGMClient.Send(pkt)
+    end
+
+    -- 控制命令必须把客户端侧异常回传给 Web。旧实现逐个 pcall 后丢弃错误，
+    -- 即使 API 已改名，页面仍会表现成“点击成功但游戏没有反应”。
+    local function _av_runCommand(action, callback)
+        local ok, result = pcall(callback)
+        if not ok then
+            _av_sendResp(action, nil, tostring(result))
+            return false
+        end
+        if result == false then
+            _av_sendResp(action, nil, action .. " returned false")
+            return false
+        end
+        if result == nil then
+            result = { ok = true }
+        elseif type(result) ~= "table" then
+            result = { ok = true, result = result }
+        elseif result.ok == nil then
+            result.ok = true
+        end
+        _av_sendResp(action, result)
+        return true
+    end
+
+    -- 对齐 XAudioManager.InitCriGameObject 中持有的独立 CriAtomSource。
+    -- AnalyzerSource 与 MusicSource 指向同一个组件，不重复暴露第二个控制项。
+    local function _av_getAudioSource(sourceName)
+        local manager = CS.XAudioManager
+        if     sourceName == "default"         then return manager.DefaultSource
+        elseif sourceName == "ambient"         then return manager.AmbientSource
+        elseif sourceName == "music"           then return manager.MusicSource
+        elseif sourceName == "voice"           then return manager.VoiceSource
+        elseif sourceName == "lipsShape"       then return manager.LipsShapeSource
+        elseif sourceName == "gameplaySpecial" then return manager.GamePlaySpecialSource
+        end
+        return nil
     end
 
     local function _av_getTime()
@@ -4071,20 +4114,131 @@ local function StartRuntimeGM()
         return s
     end
 
+    local function _av_audioEntry(info, fallbackId)
+        if not info then return nil end
+        local entry = {
+            id       = info.Id or fallbackId,
+            cueId    = info.CueId,
+            name     = info.CueName or tostring(info.CueId),
+            playType = "Unknown",
+            acbPath  = info.AcbFile,
+            awbPath  = info.AwbFile,
+            status   = "Unknown",
+            volume   = 1.0,
+        }
+        if info.Pausing then entry.status = "Paused"
+        elseif info.Playing then entry.status = "Playing" end
+        pcall(function()
+            if info.CueTemplate then
+                local rawPlayType = tonumber(info.CueTemplate.PlayType)
+                local playTypeNames = { [1] = "Music", [2] = "SFX", [4] = "Voice" }
+                entry.playType = playTypeNames[rawPlayType] or tostring(info.CueTemplate.PlayType)
+            end
+        end)
+        pcall(function()
+            entry.volume = info.Source and info.Source.volume or 1.0
+        end)
+        pcall(function() entry.duration  = info.Duration end)
+        pcall(function() entry.time      = info.Time end)
+        pcall(function() entry.startTime = info.StartTime end)
+        pcall(function() entry.endTime   = info.EndTime end)
+        pcall(function() entry.lastFor   = info.LastFor end)
+        pcall(function()
+            if info.Source and info.Source.gameObject then
+                entry.sourceName = info.Source.gameObject.name
+            end
+        end)
+        return entry
+    end
+
+    local function _av_audioEventEnabled(action)
+        local enabled = false
+        pcall(function()
+            if not CS.XAudioManager.IsLogCollect then return end
+            if action == "Play" then
+                enabled = CS.XAudioManager.IsAudioPlayLogInConsole and true or false
+            else
+                enabled = CS.XAudioManager.IsAudioStopLogInConsole and true or false
+            end
+        end)
+        return enabled
+    end
+
+    local function _av_queueAudioEvent(action, entry)
+        if not entry or not _av_audioEventEnabled(action) then return end
+        LuaAvMonitor._audioEventSeq = LuaAvMonitor._audioEventSeq + 1
+        local events = LuaAvMonitor._pendingAudioEvents
+        events[#events + 1] = {
+            seq        = LuaAvMonitor._audioEventSeq,
+            time       = _av_fmtClock(),
+            action     = action,
+            instanceId = entry.id,
+            cueId      = entry.cueId,
+            name       = entry.name,
+            playType   = entry.playType,
+            sourceName = entry.sourceName,
+        }
+        -- 页面最多保留 500 条；断网时也限制客户端队列，避免无限增长。
+        if #events > 500 then table.remove(events, 1) end
+    end
+
+    -- 不能依赖低频 snapshot 比较：常见 UI 音效不足 1 秒，2 秒采样必然漏掉。
+    -- 这里在 AV Monitor 激活期间按 AudioInfo.Id（播放实例唯一 Id）追踪状态变化。
+    local function _av_captureAudioTransitions(now)
+        if now - LuaAvMonitor._lastAudioPollTime < LuaAvMonitor._audioPollInterval then return end
+        LuaAvMonitor._lastAudioPollTime = now
+
+        local ok, list = pcall(function() return CS.XAudioManager.GetAudioInfoList() end)
+        if not ok or not list then return end
+
+        local previous = LuaAvMonitor._audioKnown
+        local current = {}
+        local currentOrder = {}
+        for i = 0, list.Count - 1 do
+            local info = list[i]
+            if info then
+                -- 每帧只跨 Lua/C# 边界读取实例 Id；完整详情只在新实例出现时构造。
+                local instanceId = info.Id
+                local key = tostring(instanceId or i)
+                -- 极旧客户端若没有实例 Id，仍避免同 Cue 并发时互相覆盖。
+                if current[key] then key = key .. ":" .. tostring(i) end
+                local entry = previous and previous[key] or nil
+                if not entry then entry = _av_audioEntry(info, i) end
+                current[key] = entry
+                currentOrder[#currentOrder + 1] = key
+            end
+        end
+
+        if previous then
+            for _, key in ipairs(currentOrder) do
+                if not previous[key] then _av_queueAudioEvent("Play", current[key]) end
+            end
+            for _, key in ipairs(LuaAvMonitor._audioKnownOrder or {}) do
+                if not current[key] then _av_queueAudioEvent("Stop", previous[key]) end
+            end
+        end
+        LuaAvMonitor._audioKnown = current
+        LuaAvMonitor._audioKnownOrder = currentOrder
+    end
+
     -- 收集音频快照
     local function _av_collectAudio()
         local audio = {}
         pcall(function()
-            -- BGM 信息
+            -- BGM 信息。AudioInfo.Id 是播放实例 Id，真实 Cue 必须读取 CueId/CueName。
             local bgm = {}
             pcall(function()
-                local info = CS.XAudioManager.CurrentMusicAudioInfo1
+                local info = nil
+                local luaAudioManager = rawget(_G, "XLuaAudioManager")
+                if luaAudioManager and type(luaAudioManager.GetCurrentMusicAudioInfo) == "function" then
+                    local ok, current = pcall(luaAudioManager.GetCurrentMusicAudioInfo)
+                    if ok then info = current end
+                end
+                if not info then info = CS.XAudioManager.CurrentMusicAudioInfo1 end
                 if info then
-                    bgm.name     = info.Name or tostring(info.Id)
-                    bgm.cueId    = info.Id
-                    bgm.acbPath  = info.AcbPath or info.acbPath
-                    bgm.awbPath  = info.AwbPath or info.awbPath
-                    bgm.playType = info.PlayType and tostring(info.PlayType) or nil
+                    bgm = _av_audioEntry(info, nil) or {}
+                    bgm.instanceId = bgm.id
+                    bgm.id = nil
                 end
             end)
             audio.bgm = bgm
@@ -4102,10 +4256,13 @@ local function StartRuntimeGM()
                 vols.second.voice   = CS.XAudioManager.SecondVoiceVolume
             end)
             pcall(function()
-                local ms = CS.XAudioManager.MusicSource
-                local ds = CS.XAudioManager.DefaultSource
-                if ms then vols.source.music   = ms.volume end
-                if ds then vols.source.default = ds.volume end
+                local sourceNames = {
+                    "music", "default", "ambient", "voice", "lipsShape", "gameplaySpecial",
+                }
+                for _, sourceName in ipairs(sourceNames) do
+                    local source = _av_getAudioSource(sourceName)
+                    if source then vols.source[sourceName] = source.volume end
+                end
             end)
             audio.volumes = vols
 
@@ -4119,7 +4276,7 @@ local function StartRuntimeGM()
                 local pt = CS.XAudioManager.PlayType
                 local names = { music = pt.Music, sfx = pt.SFX, voice = pt.Voice }
                 for k, v in pairs(names) do
-                    local ok, res = pcall(function() return CS.XAudioManager.CheckIsAisacMute(v) end)
+                    local ok, res = pcall(function() return CS.XAudioManager.GetIsMuteAisacByPlayType(v) end)
                     if ok then aisacMute[k] = res end
                 end
             end)
@@ -4133,32 +4290,7 @@ local function StartRuntimeGM()
                     for i = 0, list.Count - 1 do
                         local info = list[i]
                         if info then
-                            local status = "Unknown"
-                            if info.Playing then status = "Playing"
-                            elseif info.Pausing then status = "Paused" end
-                            local vol = 1.0
-                            pcall(function() vol = info.Source and info.Source.volume or 1.0 end)
-                            local entry = {
-                                id       = i,
-                                cueId    = info.CueId,
-                                name     = info.CueName or tostring(info.CueId),
-                                playType = info.CueTemplate and tostring(info.CueTemplate.PlayType) or "Unknown",
-                                acbPath  = info.AcbFile,
-                                awbPath  = info.AwbFile,
-                                status   = status,
-                                volume   = vol,
-                            }
-                            pcall(function() entry.duration  = info.Duration end)
-                            pcall(function() entry.time      = info.Time end)
-                            pcall(function() entry.startTime = info.StartTime end)
-                            pcall(function() entry.endTime   = info.EndTime end)
-                            pcall(function() entry.lastFor   = info.LastFor end)
-                            pcall(function()
-                                if info.Source and info.Source.gameObject then
-                                    entry.sourceName = info.Source.gameObject.name
-                                end
-                            end)
-                            activeList[#activeList + 1] = entry
+                            activeList[#activeList + 1] = _av_audioEntry(info, i)
                         end
                     end
                 end
@@ -4193,6 +4325,10 @@ local function StartRuntimeGM()
             end)
             audio.criStats = criStats
         end)
+        -- eventStream 告诉新版前端不要再用低频列表差分推断日志。
+        audio.eventStream = true
+        audio.events = LuaAvMonitor._pendingAudioEvents
+        LuaAvMonitor._pendingAudioEvents = {}
         return audio
     end
 
@@ -4268,8 +4404,11 @@ local function StartRuntimeGM()
         -- 超时自动停止（前端断连后不会永远推）
         if now - LuaAvMonitor._lastActivateTime > LuaAvMonitor._activeTimeout then
             LuaAvMonitor._isActive = false
+            LuaAvMonitor._audioKnown = nil
+            LuaAvMonitor._audioKnownOrder = nil
             return
         end
+        _av_captureAudioTransitions(now)
         -- 有活跃视频时使用更短的推送间隔
         local interval = LuaAvMonitor._pushInterval
         if LuaAvMonitor._hasActiveVideo then
@@ -4303,9 +4442,16 @@ local function StartRuntimeGM()
         if action == "start" then
             LuaAvMonitor._isActive = true
             LuaAvMonitor._lastPushTime = -9999  -- 立即推送一次
+            LuaAvMonitor._lastAudioPollTime = -9999
+            LuaAvMonitor._audioKnown = nil
+            LuaAvMonitor._audioKnownOrder = nil
+            LuaAvMonitor._pendingAudioEvents = {}
 
         elseif action == "stop" then
             LuaAvMonitor._isActive = false
+            LuaAvMonitor._audioKnown = nil
+            LuaAvMonitor._audioKnownOrder = nil
+            LuaAvMonitor._pendingAudioEvents = {}
 
         elseif action == "snapshot" then
             -- 激活 + 强制立即推送
@@ -4314,49 +4460,86 @@ local function StartRuntimeGM()
 
         elseif action == "set_volume" then
             local cat = packet.category
-            local val = tonumber(packet.value) or 0
-            if     cat == "music" then pcall(function() CS.XAudioManager.SetMusicVolume(val) end)
-            elseif cat == "sfx"   then pcall(function() CS.XAudioManager.SetSFXVolume(val)   end)
-            elseif cat == "cv"    then pcall(function() CS.XAudioManager.SetCvVolume(val)     end)
-            end
+            local val = tonumber(packet.value)
+            _av_runCommand(action, function()
+                if not val or val < 0 or val > 1 then error("volume must be between 0 and 1") end
+                if     cat == "music" then CS.XAudioManager.ChangeMusicVolume(val)
+                elseif cat == "sfx"   then CS.XAudioManager.ChangeSFXVolume(val)
+                elseif cat == "cv" or cat == "voice" then CS.XAudioManager.ChangeVoiceVolume(val)
+                else error("unknown audio category: " .. tostring(cat)) end
+                return { category = cat, value = val }
+            end)
 
         elseif action == "set_second_volume" then
             local cat = packet.category
-            local val = tonumber(packet.value) or 0
-            if     cat == "music" then pcall(function() CS.XAudioManager.SecondMusicVolume = val end)
-            elseif cat == "sfx"   then pcall(function() CS.XAudioManager.SecondSFXVolume   = val end)
-            elseif cat == "voice" then pcall(function() CS.XAudioManager.SecondVoiceVolume = val end)
-            end
+            local val = tonumber(packet.value)
+            _av_runCommand(action, function()
+                if not val or val < 0 or val > 1 then error("second volume must be between 0 and 1") end
+                if     cat == "music" then CS.XAudioManager.ChangeMusicVolumeSecond(val)
+                elseif cat == "sfx"   then CS.XAudioManager.ChangeSFXVolumeSecond(val)
+                elseif cat == "voice" or cat == "cv" then CS.XAudioManager.ChangeVoiceVolumeSecond(val)
+                else error("unknown second-volume category: " .. tostring(cat)) end
+                return { category = cat, value = val }
+            end)
+
+        elseif action == "set_source_volume" then
+            local sourceName = packet.source
+            local val = tonumber(packet.value)
+            _av_runCommand(action, function()
+                if not val or val < 0 or val > 1 then error("source volume must be between 0 and 1") end
+                local source = _av_getAudioSource(sourceName)
+                if not source then error("unknown or unavailable CriAtomSource: " .. tostring(sourceName)) end
+                source.volume = val
+                return { source = sourceName, value = val }
+            end)
 
         elseif action == "set_master_mute" then
-            if packet.enabled then
-                pcall(function() CS.XAudioManager.ApplyDspBusSnapshot("mute", 0) end)
-            else
-                pcall(function() CS.XAudioManager.ApplyDspBusSnapshot("default", 0) end)
-            end
+            local enabled = packet.enabled and true or false
+            _av_runCommand(action, function()
+                CS.XAudioManager.Mute(enabled)
+                return { enabled = enabled }
+            end)
 
         elseif action == "set_aisac_mute" then
-            pcall(function()
-                local pt = CS.XAudioManager.PlayType[packet.playType]
-                CS.XAudioManager.MuteAisacByPlayType(pt, packet.enabled)
+            local playType = tostring(packet.playType or ""):lower()
+            local enabled = packet.enabled and true or false
+            _av_runCommand(action, function()
+                local pt = CS.XAudioManager.PlayType
+                local playTypes = {
+                    music = pt.Music,
+                    sfx = pt.SFX,
+                    voice = pt.Voice,
+                    cv = pt.Voice,
+                }
+                local value = playTypes[playType]
+                if value == nil then error("unknown play type: " .. tostring(packet.playType)) end
+                CS.XAudioManager.MuteAisacByPlayType(value, enabled)
+                return { playType = playType, enabled = enabled }
             end)
 
         elseif action == "query_cue" then
             local cueId = tonumber(packet.cueId)
             if not cueId then _av_sendResp("query_cue", nil, "invalid cueId"); return end
-            local result, ok2, e2
+            local result
             local ok, err = pcall(function()
-                local info = CS.XAudioManager.FindByCueId(cueId)
-                if info then
+                local cue = CS.XAudioManager.GetCueTemplate(cueId)
+                if cue then
+                    local rawPlayType = tonumber(cue.PlayType)
+                    local playTypeNames = { [1] = "Music", [2] = "SFX", [4] = "Voice" }
+                    local sheet = CS.XAudioManager.GetCueSheetTemplate(cue.CueSheetId)
                     result = {
-                        id       = info.Id,
-                        name     = info.Name,
-                        playType = info.PlayType and tostring(info.PlayType) or nil,
-                        acbPath  = info.AcbPath or info.acbPath,
-                        awbPath  = info.AwbPath or info.awbPath,
-                        volume   = info.Volume,
-                        status   = info.Status and tostring(info.Status) or nil,
+                        cueId         = cueId,
+                        cueName       = cue.CueName,
+                        playType      = playTypeNames[rawPlayType] or tostring(cue.PlayType),
+                        playTypeValue = rawPlayType,
+                        durationMs    = cue.Duration,
+                        cueSheetId    = cue.CueSheetId,
                     }
+                    if sheet then
+                        result.acbPath = sheet.CueSheetName
+                        result.awbPath = sheet.HasAwb and sheet.CueAwb or ""
+                        result.hasAwb = sheet.HasAwb and true or false
+                    end
                 end
             end)
             if not ok then _av_sendResp("query_cue", nil, tostring(err))
@@ -4366,36 +4549,56 @@ local function StartRuntimeGM()
 
         elseif action == "set_debug_flag" then
             local flag, en = packet.flag, packet.enabled
-            if     flag == "logCollect"   then pcall(function() CS.XAudioManager.IsLogCollect                = en end)
-            elseif flag == "playLog"      then pcall(function() CS.XAudioManager.IsAudioPlayLogInConsole     = en end)
-            elseif flag == "stopLog"      then pcall(function() CS.XAudioManager.IsAudioStopLogInConsole     = en end)
-            elseif flag == "componentLog" then pcall(function() CS.XAudioManager.IsComponentLogInConsole     = en end)
-            elseif flag == "selectorLog"  then pcall(function() CS.XAudioManager.IsSelectorLogInConsole      = en end)
-            elseif flag == "aisacLog"     then pcall(function() CS.XAudioManager.IsAisacLogInConsole         = en end)
+            local applied = _av_runCommand(action, function()
+                if     flag == "logCollect"   then CS.XAudioManager.IsLogCollect                = en
+                elseif flag == "playLog"      then CS.XAudioManager.IsAudioPlayLogInConsole     = en
+                elseif flag == "stopLog"      then CS.XAudioManager.IsAudioStopLogInConsole     = en
+                elseif flag == "componentLog" then CS.XAudioManager.IsComponentLogInConsole     = en
+                elseif flag == "selectorLog"  then CS.XAudioManager.IsSelectorLogInConsole      = en
+                elseif flag == "aisacLog"     then CS.XAudioManager.IsAisacLogInConsole         = en
+                else error("unknown debug flag: " .. tostring(flag)) end
+                return { flag = flag, enabled = en and true or false }
+            end)
+            if applied then
+                -- 切换采集开关后以当前列表为新基线，避免补出开关前的伪 Play/Stop。
+                LuaAvMonitor._audioKnown = nil
+                LuaAvMonitor._audioKnownOrder = nil
+                LuaAvMonitor._lastAudioPollTime = -9999
             end
 
         elseif action == "play_bgm" then
-            pcall(function()
-                if packet.cueId then
-                    CS.XLuaAudioManager.PlayAudioByType(tonumber(packet.cueId), CS.XAudioManager.PlayType.Music)
+            _av_runCommand(action, function()
+                local cueId = tonumber(packet.cueId)
+                if not cueId then error("play_bgm requires cueId") end
+                local audioManager = rawget(_G, "XLuaAudioManager")
+                if not audioManager or type(audioManager.PlayAudioByType) ~= "function" then
+                    error("XLuaAudioManager.PlayAudioByType is unavailable")
                 end
+                local musicType = audioManager.SoundType and audioManager.SoundType.Music
+                if musicType == nil then error("XLuaAudioManager.SoundType.Music is unavailable") end
+                audioManager.PlayAudioByType(musicType, cueId)
+                return { cueId = cueId }
             end)
 
         elseif action == "play_cue" then
-            pcall(function()
+            _av_runCommand(action, function()
                 local cid = tonumber(packet.cueId)
-                if cid then
-                    local tpl = CS.XAudioManager.GetCueTemplate(cid)
-                    local typeId = tpl.PlayType
-                    CS.XLuaAudioManager.PlayAudioByType(typeId, cid)
+                if not cid then error("play_cue requires cueId") end
+                local tpl = CS.XAudioManager.GetCueTemplate(cid)
+                if not tpl then error("CueId " .. cid .. " not found") end
+                local audioManager = rawget(_G, "XLuaAudioManager")
+                if not audioManager or type(audioManager.PlayAudioByType) ~= "function" then
+                    error("XLuaAudioManager.PlayAudioByType is unavailable")
                 end
+                audioManager.PlayAudioByType(tpl.PlayType, cid)
+                return { cueId = cid, playType = tonumber(tpl.PlayType) }
             end)
 
         elseif action == "stop_bgm" then
-            pcall(function() CS.XAudioManager.StopByPlayType(CS.XAudioManager.PlayType.Music) end)
+            _av_runCommand(action, function() CS.XAudioManager.StopMusic() end)
 
         elseif action == "reload_sound" then
-            pcall(function() CS.XAudioManager.ReloadSound() end)
+            _av_runCommand(action, function() return CS.XAudioManager.InitConfig() end)
 
         elseif action == "toggle_video_log" then
             pcall(function()

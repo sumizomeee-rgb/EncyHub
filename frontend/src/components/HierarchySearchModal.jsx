@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Search, X, Loader2, Crosshair, AlertTriangle, CornerDownRight } from 'lucide-react'
 import CopyButton from './CopyButton'
+import { sortHierarchySearchHits } from '../utils/hierarchySearchSort'
 
 const COL_WIDTHS_KEY = 'hierarchy_search_col_widths'
 const DEFAULT_COL_WIDTHS = { path: 420, comp: 180, hit: 340 }
@@ -61,7 +62,7 @@ export default function HierarchySearchModal({ open, onClose, scenes, onSearch, 
         }, (data) => {
             setLoading(false)
             if (!data || data.error) { setError(data?.error || '搜索失败'); return }
-            setResult({ ...data, appliedBudget: budget })
+            setResult({ ...data, hits: sortHierarchySearchHits(data.hits), appliedBudget: budget })
         })
     }, [query, scope, includeInactive, searchGoName, searchMembers, scanBudget, onSearch])
 

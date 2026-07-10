@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { RotateCw, ChevronRight, ChevronDown, Loader2, Search, Clipboard, Crosshair, X, Eye, EyeOff } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import { sortHierarchySearchHits } from '../utils/hierarchySearchSort'
 import PropRow from '../components/PropRow'
 import HierarchySearchModal from '../components/HierarchySearchModal'
 
@@ -413,10 +414,10 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
 
         const normalizeResults = (data) => {
             const rows = data?.results || data?.hits || []
-            return rows.filter(r => {
+            return sortHierarchySearchHits(rows.filter(r => {
                 if (r.goInstanceId == null || r.goInstanceId === -1) return false
                 return !r.memberKind || r.memberKind === 'go'
-            })
+            }))
         }
 
         const applyResult = (data) => {

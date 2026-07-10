@@ -190,15 +190,23 @@ function InfoRow({ label, value }) {
 // ============================================================
 function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedAudio,
   cueQuery, setCueQuery, cueResult, cueLoading, criExpanded, setCriExpanded,
-  handleCopy, setCatVol, setSecVol, toggleMasterMute, toggleAisacMute,
-  toggleDebugFlag, queryCue, sendCmd }) {
+  handleCopy, setCatVol, setSecVol, setSourceVol, toggleMasterMute, toggleAisacMute,
+  toggleDebugFlag, queryCue, sendCmd, commandError }) {
 
   const bgm = audioSnap?.bgm
   const vols = audioSnap?.volumes
   const debugFlags = audioSnap?.debugFlags || {}
 
-  const catLabels = [['music', 'Music'], ['sfx', 'SFX'], ['cv', 'CV']]
+  const catLabels = [['music', 'Music', 'music'], ['sfx', 'SFX', 'sfx'], ['cv', 'CV', 'voice']]
   const secLabels = [['music', '2nd Music'], ['sfx', '2nd SFX'], ['voice', '2nd Voice']]
+  const sourceLabels = [
+    ['music', 'Music/Analyzer'],
+    ['default', 'Default'],
+    ['ambient', 'Ambient'],
+    ['voice', 'Voice'],
+    ['lipsShape', 'Lips Shape'],
+    ['gameplaySpecial', 'Gameplay'],
+  ]
   const debugFlagLabels = [
     ['logCollect', 'Log Collect'],
     ['playLog', 'Play Log'],
@@ -216,6 +224,11 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
 
   return (
     <div className="space-y-3">
+      {commandError && (
+        <div role="alert" className="rounded-lg border border-[var(--terracotta)]/40 bg-[var(--terracotta)]/10 px-3 py-2 text-xs text-[var(--terracotta)] break-all">
+          控制命令失败：{commandError}
+        </div>
+      )}
       {/* 1. BGM Card (with quick actions) */}
       <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
         <div className="flex items-center gap-1.5 mb-2 font-semibold text-[var(--coffee-deep)]">
@@ -228,6 +241,7 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium text-[var(--coffee-deep)] truncate max-w-[200px]">{bgm.name || '--'}</span>
               <span className="text-[var(--coffee-muted)]">CueId: <span className="font-mono text-[var(--coffee-deep)]">{bgm.cueId ?? '--'}</span></span>
+              <span className="text-[var(--coffee-muted)]">InstanceId: <span className="font-mono text-[var(--coffee-deep)]">{bgm.instanceId ?? '--'}</span></span>
               {bgm.playType && <span className="text-[10px] px-1 rounded bg-[var(--caramel)]/15 text-[var(--caramel)]">{bgm.playType}</span>}
             </div>
             {bgm.acbPath && (
@@ -254,8 +268,8 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
         )}
         {/* BGM actions — integrated into card */}
         <div className="flex gap-1.5 mt-2 pt-2 border-t border-[var(--glass-border)]">
-          <button onClick={() => sendCmd('play_bgm')}
-            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--sage)]/15 text-[var(--coffee-deep)] hover:bg-[var(--sage)]/25 transition-colors">
+          <button onClick={() => sendCmd('play_bgm', { cueId: bgm?.cueId })} disabled={bgm?.cueId == null}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--sage)]/15 text-[var(--coffee-deep)] hover:bg-[var(--sage)]/25 transition-colors disabled:opacity-40 disabled:pointer-events-none">
             <Play size={10} />播放
           </button>
           <button onClick={() => sendCmd('stop_bgm')}
@@ -284,11 +298,11 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
         <div className="text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide mb-1.5">
           分类音量 (Category) <span className="normal-case font-normal">· Aisac Mute ⇒</span>
         </div>
-        {catLabels.map(([key, label]) => (
+        {catLabels.map(([key, label, aisacKey]) => (
           <VolumeRow key={key} label={label}
             value={vols?.category?.[key]}
-            aisacMuted={audioSnap?.aisacMute?.[key]}
-            onAisacToggle={() => toggleAisacMute(key)}
+            aisacMuted={audioSnap?.aisacMute?.[aisacKey]}
+            onAisacToggle={() => toggleAisacMute(aisacKey)}
             onChange={v => setCatVol(key, v)}
           />
         ))}
@@ -303,11 +317,15 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
           />
         ))}
 
-        <div className="text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide mt-3 mb-1.5 flex items-center gap-1">
-          <Lock size={9} />Source 音量 (只读)
+        <div className="text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide mt-3 mb-1.5">
+          Source 音量 (CriAtomSource)
         </div>
-        <VolumeRow label="Music Src" value={vols?.source?.music} readOnly />
-        <VolumeRow label="Default Src" value={vols?.source?.default} readOnly />
+        {sourceLabels.map(([key, label]) => (
+          <VolumeRow key={key} label={label}
+            value={vols?.source?.[key]}
+            onChange={v => setSourceVol(key, v)}
+          />
+        ))}
       </section>
 
       {/* 3. Active Audio List */}
@@ -321,7 +339,7 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
         ) : (
           <div className="space-y-0.5">
             {audioSnap.activeList.map((item, i) => (
-              <div key={i} className="rounded border border-[var(--glass-border)] bg-white/30 overflow-hidden">
+              <div key={item.id ?? i} className="rounded border border-[var(--glass-border)] bg-white/30 overflow-hidden">
                 <button className="w-full flex items-center gap-2 px-2 py-1.5 text-left"
                   onClick={() => setExpandedAudio(expandedAudio === i ? null : i)}>
                   {expandedAudio === i ? <ChevronDown size={10} className="flex-shrink-0" /> : <ChevronRight size={10} className="flex-shrink-0" />}
@@ -337,6 +355,10 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
                 {expandedAudio === i && (
                   <div className="px-3 pb-2 pt-1 border-t border-[var(--glass-border)] text-[var(--coffee-muted)]">
                     <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                      <div className="flex gap-2">
+                        <span className="w-14 flex-shrink-0">InstanceId</span>
+                        <span className="font-mono text-[var(--coffee-deep)]">{item.id ?? '--'}</span>
+                      </div>
                       <div className="flex gap-2">
                         <span className="w-14 flex-shrink-0">CueId</span>
                         <span className="font-mono text-[var(--coffee-deep)]">{item.cueId ?? '--'}</span>
@@ -422,11 +444,11 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
         </div>
         <div className="max-h-40 overflow-y-auto">
           {!audioLog?.length ? (
-            <div className="px-3 py-3 text-[var(--coffee-muted)] text-center">活跃列表变化时自动记录</div>
+            <div className="px-3 py-3 text-[var(--coffee-muted)] text-center">开启 Log Collect 及 Play Log / Stop Log 后实时记录</div>
           ) : (
             <div className="divide-y divide-[var(--glass-border)]">
               {audioLog.map((entry, i) => (
-                <div key={i} className="flex items-center gap-2 px-3 py-1 hover:bg-[var(--cream-warm)]/30">
+                <div key={entry.seq ?? `${entry.instanceId ?? entry.cueId}:${entry.action}:${entry.time}:${i}`} className="flex items-center gap-2 px-3 py-1 hover:bg-[var(--cream-warm)]/30">
                   <span className="font-mono text-[10px] text-[var(--coffee-muted)] flex-shrink-0">{entry.time}</span>
                   <span className={`text-[10px] font-semibold flex-shrink-0 ${entry.action === 'Play' ? 'text-[var(--sage)]' : 'text-[var(--terracotta)]'}`}>
                     {entry.action === 'Play' ? '▶' : '■'}
@@ -907,6 +929,7 @@ function AvMonitor({ clients, selectedClient, active }) {
   const [cueResult, setCueResult] = useState(null)
   const [cueLoading, setCueLoading] = useState(false)
   const [criExpanded, setCriExpanded] = useState(false)
+  const [audioCommandError, setAudioCommandError] = useState(null)
 
   // Video state
   const [videoSnap, setVideoSnap] = useState(null)
@@ -914,7 +937,7 @@ function AvMonitor({ clients, selectedClient, active }) {
   const [eventLog, setEventLog] = useState([])
   const [eventFilter, setEventFilter] = useState('all')
 
-  // Audio play log (derived from activeList diffs)
+  // Audio play log (game-side instance event stream; old clients fall back to activeList diffs)
   const [audioLog, setAudioLog] = useState([])
   const prevActiveRef = useRef(null)
 
@@ -928,6 +951,13 @@ function AvMonitor({ clients, selectedClient, active }) {
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => { autoRefreshRef.current = autoRefresh }, [autoRefresh])
   useEffect(() => { refreshIntervalRef.current = refreshInterval }, [refreshInterval])
+  useEffect(() => {
+    setAudioSnap(null)
+    setAudioLog([])
+    setAudioCommandError(null)
+    prevActiveRef.current = null
+    lastUpdateRef.current = 0
+  }, [selectedClient?.id])
 
   // --- WebSocket ---
   useEffect(() => {
@@ -941,7 +971,15 @@ function AvMonitor({ clients, selectedClient, active }) {
       let pingTimer = null
       ws.onopen = () => {
         setWsConnected(true)
-        pingTimer = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping') }, 25000)
+        pingTimer = setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          ws.send('ping')
+          // 游戏侧 AV 订阅 30 秒无命令会超时；snapshot 同时作为心跳且不会重置事件基线。
+          fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'snapshot' })
+          }).catch(() => {})
+        }, 20000)
         // 通知游戏侧开始推送
         fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -964,34 +1002,46 @@ function AvMonitor({ clients, selectedClient, active }) {
                 setEventLog(prev => [...prev, ...data.video.events].slice(-200))
               }
             }
+            // 音频事件由游戏侧高频采集。必须在快照节流之前消费，否则视频活跃时
+            // 0.5 秒快照中的事件会被 2 秒音频刷新间隔直接丢弃。
+            if (data.audio?.eventStream && data.audio.events?.length) {
+              const newestFirst = [...data.audio.events].reverse()
+              setAudioLog(prev => [...newestFirst, ...prev].slice(0, 500))
+            }
             // Audio updates follow user-configured refresh interval
             if (now - lastUpdateRef.current < refreshIntervalRef.current * 1000) return
             lastUpdateRef.current = now
             if (data.audio) {
-              // Diff activeList for audio play log
+              // 旧客户端兼容：没有事件流时才退回低频 activeList 差分。
               const curList = data.audio.activeList || []
               const prevList = prevActiveRef.current
-              if (prevList) {
-                const prevIds = new Set(prevList.map(a => `${a.cueId}:${a.name}`))
-                const curIds = new Set(curList.map(a => `${a.cueId}:${a.name}`))
+              if (!data.audio.eventStream && prevList) {
+                const identity = a => String(a.id ?? `${a.cueId}:${a.name}`)
+                const prevIds = new Set(prevList.map(identity))
+                const curIds = new Set(curList.map(identity))
                 const now = new Date().toLocaleTimeString('en-GB', { hour12: false })
                 const newEntries = []
                 for (const a of curList) {
-                  if (!prevIds.has(`${a.cueId}:${a.name}`)) {
+                  if (!prevIds.has(identity(a))) {
                     newEntries.push({ time: now, action: 'Play', name: a.name, cueId: a.cueId, playType: a.playType })
                   }
                 }
                 for (const a of prevList) {
-                  if (!curIds.has(`${a.cueId}:${a.name}`)) {
+                  if (!curIds.has(identity(a))) {
                     newEntries.push({ time: now, action: 'Stop', name: a.name, cueId: a.cueId, playType: a.playType })
                   }
                 }
-                if (newEntries.length) setAudioLog(prev => [...newEntries, ...prev].slice(0, 100))
+                if (newEntries.length) setAudioLog(prev => [...newEntries, ...prev].slice(0, 500))
               }
               prevActiveRef.current = curList
               setAudioSnap(data.audio)
             }
           } else {
+            if (msg.data?.error && msg.type !== 'query_cue') {
+              setAudioCommandError(`${msg.type}: ${msg.data.error}`)
+            } else if (msg.data?.ok) {
+              setAudioCommandError(null)
+            }
             const cb = listenersRef.current[msg.type]
             if (cb) { cb(msg.data); delete listenersRef.current[msg.type] }
           }
@@ -1024,10 +1074,16 @@ function AvMonitor({ clients, selectedClient, active }) {
   const sendCmd = useCallback((action, params = {}, onResponse) => {
     if (!selectedClient) return
     if (onResponse) listenersRef.current[action] = onResponse
-    fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
+    return fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, ...params })
-    }).catch(e => console.error('[AvMonitor] sendCmd error:', e))
+    }).then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      return response
+    }).catch(e => {
+      setAudioCommandError(`${action}: ${e.message}`)
+      console.error('[AvMonitor] sendCmd error:', e)
+    })
   }, [selectedClient?.id])
 
   const manualRefresh = useCallback(() => {
@@ -1053,6 +1109,13 @@ function AvMonitor({ clients, selectedClient, active }) {
     sendCmd('set_second_volume', { category: cat, value: val })
     setAudioSnap(prev => prev ? {
       ...prev, volumes: { ...prev.volumes, second: { ...prev.volumes?.second, [cat]: val } }
+    } : prev)
+  }, [sendCmd])
+
+  const setSourceVol = useCallback((source, val) => {
+    sendCmd('set_source_volume', { source, value: val })
+    setAudioSnap(prev => prev ? {
+      ...prev, volumes: { ...prev.volumes, source: { ...prev.volumes?.source, [source]: val } }
     } : prev)
   }, [sendCmd])
 
@@ -1164,11 +1227,13 @@ function AvMonitor({ clients, selectedClient, active }) {
             handleCopy={handleCopy}
             setCatVol={setCatVol}
             setSecVol={setSecVol}
+            setSourceVol={setSourceVol}
             toggleMasterMute={toggleMasterMute}
             toggleAisacMute={toggleAisacMute}
             toggleDebugFlag={toggleDebugFlag}
             queryCue={queryCue}
             sendCmd={sendCmd}
+            commandError={audioCommandError}
           />
         ) : (
           <VideoTab
