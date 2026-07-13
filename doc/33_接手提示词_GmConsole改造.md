@@ -28,10 +28,10 @@
 - pid=0 时退化为 `{ip}-dev:{device}`
 
 ### SVN 用户名检测
-- **原理**：读取 `%APPDATA%/Subversion/auth/svn.simple/` 下的认证缓存文件（明文用户名）
-- **时机**：`Update()` 首帧（HELLO 已先发送完毕），通过追加 HELLO 包补送
-- **选名策略**：最多出现次数优先，同点取较长用户名（排除 bot 短名如 `kuro`）
-- **不依赖** `io.popen`/`Process.Start`——这些在 Unity Editor 的 XLua 环境下会阻塞/崩溃
+- **原理**：复用游戏项目 `XExternalTool.RunToolInNewThread`，后台执行 bundled `svn.exe info --xml` 获取当前 URL、分支和 revision；再用 URL origin 精确匹配 `%APPDATA%/Subversion/auth/svn.simple/` 的 realm 与用户名
+- **时机**：连接后的 `Update()` 启动后台查询（首个 HELLO 已发送），查询完成后通过追加 HELLO 补送 `svn_author`、`svn_url`、`svn_branch`、`svn_revision`、`svn_detection`
+- **选名策略**：当前仓库 realm 精确匹配优先；失败时才回退“出现次数最多、同点取较长用户名”的旧策略
+- **线程策略**：不从 Lua 直接启动进程；使用 `XExternalTool` 已有后台线程执行器，避免 `svn.exe` 冷启动阻塞 Unity 主线程
 - **仅在 SVN 工作副本**（上层目录有 `.svn`）+ Windows 环境有效；Android/iOS 无声跳过
 
 ### 截图功能
@@ -75,19 +75,19 @@ curl -X POST "http://localhost:9524/api/gm_console/clients/{client_id}/exec-wait
 ## 已知注意事项
 
 1. **Unity Editor 连接**：Editor 必须在 **Play Mode** 下 `Update()` 才会每帧执行，Edit Mode 下不会连接。
-2. **SVN 用户名**：仅 Windows 有效；Android/iOS 无声跳过。多人共用机器时可能取到错误用户名（bot 短名优先问题已用「同点取长名」策略缓解）。
+2. **SVN 用户名**：仅 Windows 有效；Android/iOS 无声跳过。正常情况下按当前仓库 realm 精确匹配；只有 CLI/realm 匹配失败进入 `auth_fallback` 时，才可能在多人共用机器上选错账号。
 3. **`init_runtime_gm.py` 中的 `TARGET_LUA_FILES`**：维护分支列表的地方，增删分支改这里。
 4. **端口 12581**：固定握手端口，服务器启动时自动监听。不要改。
 5. **旧 `temp:` 残留**：客户端异常断开后可能残留临时 ID 条目，GM Console 重启即清除。
 6. **`data/registry.json` 等 data 文件**：运行时的 pid/port 记录，**不要提交到 git**。
-7. **XLua 环境差异**：C# `Process.Start` static 方法在 XLua 下报 `Non-static method requires a target`，用 Lua 原生 `io.popen` 替代（但截图/UI 功能不需要它）。
+7. **XLua 环境差异**：不要在 Lua 中直接调用 `Process.Start`/`io.popen`；SVN 查询统一走 `XExternalTool.RunToolInNewThread`。
 
 ## Lua 代码结构速览（README_RuntimeGM_Client.md）
 
 ```
 StartRuntimeGM()                    -- 主入口，创建 RuntimeGMClient 表
 ├── getDeviceInfo()                -- 平台/设备/pid 信息
-├── tryGetSvnAuthor()              -- SVN 用户名检测（延迟到 Update 执行）
+├── beginSvnQuery()/tryGetSvnInfo()-- 后台查询当前工作副本并按 realm 匹配用户名
 ├── HookPrint / jsonEncode / jsonDecode
 ├── RuntimeGMClient.Connect()      -- TCP 连接 + HELLO 握手
 ├── RuntimeGMClient.Update()       -- 每帧：重连/心跳/接收/超时检测/SVN延迟

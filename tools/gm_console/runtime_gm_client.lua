@@ -49,9 +49,13 @@ local function StartRuntimeGM()
 
     RuntimeGMClient.DeviceInfo = getDeviceInfo()
 
-    -- 获取当前 SVN 认证用户名（延迟到 Connect() 成功後に実行、初期化を軽量化）
-    -- 原理：%APPDATA%/Subversion/auth/svn.simple/ 下の認証キャッシュから最多出現ユーザー名を採用
+    -- SVN 信息会在连接成功后延迟查询，避免拖慢 RuntimeGM 初始化。
+    -- 优先复用项目 XExternalTool + bundled svn.exe 获取当前工作副本，再按仓库 realm 精确匹配认证账号。
     RuntimeGMClient.SvnAuthor = ""
+    RuntimeGMClient.SvnUrl = ""
+    RuntimeGMClient.SvnBranch = ""
+    RuntimeGMClient.SvnRevision = ""
+    RuntimeGMClient.SvnDetection = ""
 
     -- 保存原始 print
     local origin_print = print
@@ -186,50 +190,213 @@ local function StartRuntimeGM()
         })
     end
 
-    -- 获取 SVN 用户名（定义在 Connect 内，遅延実行で初期化を妨げない）
-    local function tryGetSvnAuthor()
-        local author = ""
+    local function trimString(value)
+        return tostring(value or ""):match("^%s*(.-)%s*$") or ""
+    end
+
+    local function normalizeSvnOrigin(value)
+        local text = trimString(value):lower()
+        local origin = text:match("^([%a][%w%+%.%-]*://[^/]+)")
+        if not origin then return "" end
+        if origin:match("^https://") then
+            origin = origin:gsub(":443$", "")
+        elseif origin:match("^http://") then
+            origin = origin:gsub(":80$", "")
+        end
+        return origin
+    end
+
+    local function pickMostLikelyUser(counts)
+        local bestUser, bestCount = "", 0
+        for user, count in pairs(counts or {}) do
+            if count > bestCount or (count == bestCount and #user > #bestUser) then
+                bestUser = user
+                bestCount = count
+            end
+        end
+        return bestUser
+    end
+
+    -- 查询当前工作副本信息，并将认证缓存限定到当前仓库 realm。
+    -- XExternalTool 不可用（非 Windows/非调试包）时，无声回退旧的认证缓存统计方式。
+    local function decodeXmlText(value)
+        return trimString(value)
+            :gsub("&lt;", "<")
+            :gsub("&gt;", ">")
+            :gsub("&quot;", '"')
+            :gsub("&apos;", "'")
+            :gsub("&amp;", "&")
+    end
+
+    local function tryGetSvnInfo(svnInfoXml)
+        local info = { author = "", url = "", branch = "", revision = "", detection = "" }
         pcall(function()
-            local appdata = os.getenv("APPDATA") or ""
-            if appdata == "" then return end
-            local authDir = appdata .. "/Subversion/auth/svn.simple"
-            local ok, exists = pcall(function()
-                return CS.System.IO.Directory.Exists(authDir)
-            end)
-            if not ok or not exists then return end
+            local dataPath = trimString(CS.UnityEngine.Application.dataPath)
+            if dataPath == "" then return end
+
             local function hasSvnAbove(rawPath)
                 local path = rawPath:gsub("\\", "/")
                 for _ = 1, 12 do
-                    if not path or path == "" then return false end
-                    local ok2, ex2 = pcall(function()
+                    if path == "" then return false end
+                    local ok2, exists = pcall(function()
                         return CS.System.IO.Directory.Exists(path .. "/.svn")
                     end)
-                    if ok2 and ex2 then return true end
+                    if ok2 and exists then return true end
                     local parent = path:match("^(.+)/[^/]+$")
                     if not parent or parent == path then return false end
                     path = parent
                 end
                 return false
             end
-            if not hasSvnAbove(CS.UnityEngine.Application.dataPath) then return end
+            if not hasSvnAbove(dataPath) then return end
+
+            svnInfoXml = trimString(svnInfoXml)
+            if svnInfoXml ~= "" then
+                info.url = decodeXmlText(svnInfoXml:match("<url>(.-)</url>"))
+                info.revision = trimString(svnInfoXml:match('<entry.-revision="(%d+)"'))
+            end
+
+            if info.url ~= "" then
+                local okTool, svnTool = pcall(function() return CS.XExternalTool end)
+                if okTool and svnTool then
+                    local okBranch, branch = pcall(function()
+                        return svnTool.GetCurrentSvnBranch(info.url)
+                    end)
+                    if okBranch then info.branch = trimString(branch) end
+                end
+                if info.branch == "" then
+                    local normalizedUrl = info.url:gsub("\\", "/"):gsub("/+$", "")
+                    info.branch = normalizedUrl:match("/branches/([^/]+)") or ""
+                    if info.branch == "" and
+                        (normalizedUrl:find("/trunk/", 1, true) or normalizedUrl:sub(-6) == "/trunk") then
+                        info.branch = "trunk"
+                    end
+                end
+            end
+
+            local appdata = os.getenv("APPDATA") or ""
+            if appdata == "" then return end
+            local authDir = appdata .. "/Subversion/auth/svn.simple"
+            local okAuthDir, authDirExists = pcall(function()
+                return CS.System.IO.Directory.Exists(authDir)
+            end)
+            if not okAuthDir or not authDirExists then return end
+
+            local urlOrigin = normalizeSvnOrigin(info.url)
+            local allCounts, realmCounts = {}, {}
             local files = CS.System.IO.Directory.GetFiles(authDir)
-            local counts = {}
-            local bestUser, bestCount = "", 0
             for i = 0, files.Length - 1 do
                 local txt = CS.System.IO.File.ReadAllText(files[i])
                 txt = txt:gsub("\r\n", "\n"):gsub("\r", "\n")
                 local _, user = txt:match("username\nV (%d+)\n([^\n]+)")
-                if user and #user > 0 then
-                    counts[user] = (counts[user] or 0) + 1
-                    if counts[user] > bestCount or (counts[user] == bestCount and #user > #bestUser) then
-                        bestUser = user
-                        bestCount = counts[user]
+                local _, realm = txt:match("svn:realmstring\nV (%d+)\n([^\n]+)")
+                user = trimString(user)
+                realm = trimString(realm)
+                if user ~= "" then
+                    allCounts[user] = (allCounts[user] or 0) + 1
+                    local realmUrl = realm:match("<([^>]+)>") or realm
+                    local realmOrigin = normalizeSvnOrigin(realmUrl)
+                    if urlOrigin ~= "" and realmOrigin == urlOrigin then
+                        realmCounts[user] = (realmCounts[user] or 0) + 1
                     end
                 end
             end
-            author = bestUser
+
+            info.author = pickMostLikelyUser(realmCounts)
+            if info.author ~= "" then
+                info.detection = "cli_realm"
+            else
+                info.author = pickMostLikelyUser(allCounts)
+                if info.author ~= "" then
+                    info.detection = info.url ~= "" and "cli_auth_fallback" or "auth_fallback"
+                elseif info.url ~= "" then
+                    info.detection = "cli"
+                end
+            end
         end)
-        return author
+        return info
+    end
+
+    local function applySvnInfo(info)
+        info = info or {}
+        if trimString(info.author) ~= "" then RuntimeGMClient.SvnAuthor = trimString(info.author) end
+        if trimString(info.url) ~= "" then RuntimeGMClient.SvnUrl = trimString(info.url) end
+        if trimString(info.branch) ~= "" then RuntimeGMClient.SvnBranch = trimString(info.branch) end
+        if trimString(info.revision) ~= "" then RuntimeGMClient.SvnRevision = trimString(info.revision) end
+        if trimString(info.detection) ~= "" then RuntimeGMClient.SvnDetection = trimString(info.detection) end
+    end
+
+    local function setSvnRetryAfter(seconds)
+        RuntimeGMClient._svnRetryAfter = (function()
+            local now = 0
+            pcall(function() now = CS.UnityEngine.Time.realtimeSinceStartup end)
+            return now + (seconds or 10)
+        end)()
+    end
+
+    local function finishSvnQuery(serial, info)
+        if serial ~= RuntimeGMClient._svnQuerySerial then return end
+        RuntimeGMClient._svnQueryPending = false
+        applySvnInfo(info)
+        if RuntimeGMClient.Socket and (RuntimeGMClient.SvnAuthor ~= "" or RuntimeGMClient.SvnUrl ~= "") then
+            RuntimeGMClient.SendHello()
+        end
+        if RuntimeGMClient.SvnAuthor == "" and (RuntimeGMClient._svnRetryCount or 0) < 1 then
+            setSvnRetryAfter(10)
+        else
+            RuntimeGMClient._svnRetryAfter = nil
+        end
+    end
+
+    local function beginSvnQuery()
+        if RuntimeGMClient._svnQueryPending then return end
+        RuntimeGMClient._svnQueryPending = true
+        RuntimeGMClient._svnQuerySerial = (RuntimeGMClient._svnQuerySerial or 0) + 1
+        local serial = RuntimeGMClient._svnQuerySerial
+        local dataPath = trimString(CS.UnityEngine.Application.dataPath)
+
+        -- 复用 XExternalTool 的后台线程执行器，避免 svn.exe 冷启动阻塞 Unity 主线程。
+        local okStarted = pcall(function()
+            local svnTool = CS.XExternalTool
+            local svnPath = trimString(svnTool.SvnPath)
+            if svnPath == "" then error("XExternalTool.SvnPath is empty") end
+            svnTool.RunToolInNewThread(
+                svnPath,
+                'info --xml "' .. dataPath .. '"',
+                false,
+                function(output)
+                    finishSvnQuery(serial, tryGetSvnInfo(trimString(output)))
+                end
+            )
+        end)
+
+        if okStarted then
+            -- 同时充当后台线程无回调时的看门狗；正常完成后会被 finishSvnQuery 清除或重置。
+            if (RuntimeGMClient._svnRetryCount or 0) < 1 then
+                setSvnRetryAfter(10)
+            else
+                RuntimeGMClient._svnRetryAfter = nil
+            end
+        else
+            -- 非 Windows、裁剪包或 XExternalTool 不可用时，保留旧认证缓存能力。
+            finishSvnQuery(serial, tryGetSvnInfo(""))
+        end
+    end
+
+    function RuntimeGMClient.SendHello()
+        RuntimeGMClient.Send({
+            type = "HELLO",
+            pid = RuntimeGMClient.DeviceInfo.pid,
+            device = RuntimeGMClient.DeviceInfo.device,
+            platform = RuntimeGMClient.DeviceInfo.platform,
+            packageName = RuntimeGMClient.DeviceInfo.packageName,
+            persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
+            svn_author = RuntimeGMClient.SvnAuthor or "",
+            svn_url = RuntimeGMClient.SvnUrl or "",
+            svn_branch = RuntimeGMClient.SvnBranch or "",
+            svn_revision = RuntimeGMClient.SvnRevision or "",
+            svn_detection = RuntimeGMClient.SvnDetection or ""
+        })
     end
 
     function RuntimeGMClient.Connect()
@@ -257,15 +424,7 @@ local function StartRuntimeGM()
             pcall(function() RuntimeGMClient.LastRecvTime = CS.UnityEngine.Time.realtimeSinceStartup end)
             -- HELLO: 用短暂阻塞超时确保能发出去
             tcp:settimeout(0.5)
-            RuntimeGMClient.Send({
-                type = "HELLO",
-                pid = RuntimeGMClient.DeviceInfo.pid,
-                device = RuntimeGMClient.DeviceInfo.device,
-                platform = RuntimeGMClient.DeviceInfo.platform,
-                packageName = RuntimeGMClient.DeviceInfo.packageName,
-                persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
-                svn_author = RuntimeGMClient.SvnAuthor or ""
-            })
+            RuntimeGMClient.SendHello()
             if RuntimeGMClient.GMLoaded and RuntimeGMClient.SendGMList then
                 pcall(function() RuntimeGMClient.SendGMList() end)
             end
@@ -274,6 +433,8 @@ local function StartRuntimeGM()
             -- 始终重置 SVN 标记，让 Update() 在首帧尝试获取（可能立即补发 HELLO）
             RuntimeGMClient._svnFetched = false
             RuntimeGMClient._svnRetryAfter = nil
+            RuntimeGMClient._svnRetryCount = 0
+            RuntimeGMClient._svnQueryPending = false
         else
             -- 这里会打印具体的错误原因，比如 "connection refused" 或 "timeout"
             origin_print("[RuntimeGM] 连接失败，错误原因: " .. tostring(err))
@@ -3606,45 +3767,19 @@ local function StartRuntimeGM()
             end
             return
         end
-        -- 接続確立後に SVN ユーザー名を遅延取得（connect 時のブロック防止）
+        -- 连接建立后再查询 SVN，避免阻塞 RuntimeGM 初始化和首个 HELLO。
         if not RuntimeGMClient._svnFetched then
             RuntimeGMClient._svnFetched = true
-            RuntimeGMClient.SvnAuthor = tryGetSvnAuthor()
-            if RuntimeGMClient.SvnAuthor ~= "" then
-                RuntimeGMClient.Send({
-                    type = "HELLO",
-                    pid = RuntimeGMClient.DeviceInfo.pid,
-                    device = RuntimeGMClient.DeviceInfo.device,
-                    platform = RuntimeGMClient.DeviceInfo.platform,
-                    packageName = RuntimeGMClient.DeviceInfo.packageName,
-                    persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
-                    svn_author = RuntimeGMClient.SvnAuthor
-                })
-            else
-                -- 首次获取为空，标记 3 秒后重试一次
-                RuntimeGMClient._svnRetryAfter = (function()
-                    local t = 0; pcall(function() t = CS.UnityEngine.Time.realtimeSinceStartup end); return t + 10
-                end)()
-            end
+            beginSvnQuery()
         elseif RuntimeGMClient._svnRetryAfter then
-            -- 延迟重试：连接稳定后仅再尝试 1 次
+            -- 延迟重试，同时作为后台 SVN 查询的超时看门狗。
             local now = 0
             pcall(function() now = CS.UnityEngine.Time.realtimeSinceStartup end)
             if now >= RuntimeGMClient._svnRetryAfter then
-                RuntimeGMClient._svnRetryAfter = nil -- 一次性，不再重试
-                local author = tryGetSvnAuthor()
-                if author ~= "" then
-                    RuntimeGMClient.SvnAuthor = author
-                    RuntimeGMClient.Send({
-                        type = "HELLO",
-                        pid = RuntimeGMClient.DeviceInfo.pid,
-                        device = RuntimeGMClient.DeviceInfo.device,
-                        platform = RuntimeGMClient.DeviceInfo.platform,
-                        packageName = RuntimeGMClient.DeviceInfo.packageName,
-                        persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
-                        svn_author = RuntimeGMClient.SvnAuthor
-                    })
-                end
+                RuntimeGMClient._svnRetryAfter = nil
+                RuntimeGMClient._svnQueryPending = false
+                RuntimeGMClient._svnRetryCount = (RuntimeGMClient._svnRetryCount or 0) + 1
+                beginSvnQuery()
             end
         end
         if not RuntimeGMClient.GMLoaded then

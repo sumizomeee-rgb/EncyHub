@@ -1396,7 +1396,7 @@ end`
                         }`}
                         onClick={() => handleSelectClient(client)}
                       >
-                        <span title={`${client.device || 'Unknown'}\n${client.ip || ''} · #${client.pid || '?'} · ${client.platform || ''}${client.svnAuthor ? '\n' + client.svnAuthor : ''}`}>
+                        <span title={`${client.device || 'Unknown'}\n${client.ip || ''} · #${client.pid || '?'} · ${client.platform || ''}${client.svnAuthor ? `\nSVN 用户：${client.svnAuthor}` : ''}${client.svnBranch ? `\nSVN 分支：${client.svnBranch}${client.svnRevision ? ` @ r${client.svnRevision}` : ''}` : ''}${client.svnUrl ? `\n${client.svnUrl}` : ''}`}>
                           <PlatformIcon platform={client.platform} size={14}
                             className="text-[var(--caramel)] shrink-0" />
                         </span>
@@ -1415,6 +1415,17 @@ end`
                             {(client.ip || client.pid > 0) && client.svnAuthor ? ' · ' : ''}
                             {client.svnAuthor && (
                               <span className="inline-block max-w-[80px] overflow-hidden text-ellipsis whitespace-nowrap align-bottom" title={client.svnAuthor}>{client.svnAuthor}</span>
+                            )}
+                            {client.svnBranch && (
+                              <>
+                                {(client.ip || client.pid > 0 || client.svnAuthor) ? ' · ' : ''}
+                                <span
+                                  className="inline-block max-w-[110px] overflow-hidden text-ellipsis whitespace-nowrap align-bottom font-mono text-[var(--coffee-light)]"
+                                  title={`${client.svnBranch}${client.svnRevision ? ` @ r${client.svnRevision}` : ''}${client.svnUrl ? `\n${client.svnUrl}` : ''}`}
+                                >
+                                  {client.svnBranch}{client.svnRevision ? `@r${client.svnRevision}` : ''}
+                                </span>
+                              </>
                             )}
                           </div>
                         </div>

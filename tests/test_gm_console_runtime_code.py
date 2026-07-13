@@ -37,6 +37,22 @@ def test_runtime_gm_lua_is_the_authoritative_source():
     assert 'gmClient.Start(gmClient.Host, gmClient.Port)' in content
 
 
+def test_runtime_gm_queries_svn_by_working_copy_and_reports_structured_fields():
+    content = read_file(RUNTIME_GM_LUA)
+
+    assert "CS.XExternalTool" in content
+    assert "RunToolInNewThread" in content
+    assert "info --xml" in content
+    assert "GetCurrentSvnBranch(info.url)" in content
+    assert 'svnInfoXml:match(\'<entry.-revision="(%d+)"\')' in content
+    assert 'txt:match("svn:realmstring\\nV (%d+)\\n([^\\n]+)")' in content
+    assert "realmOrigin == urlOrigin" in content
+    assert 'svn_author = RuntimeGMClient.SvnAuthor or ""' in content
+    assert 'svn_url = RuntimeGMClient.SvnUrl or ""' in content
+    assert 'svn_branch = RuntimeGMClient.SvnBranch or ""' in content
+    assert 'svn_revision = RuntimeGMClient.SvnRevision or ""' in content
+
+
 def test_build_runtime_gm_code_patches_host_and_port():
     from tools.gm_console.runtime_gm_code import build_runtime_gm_code
 

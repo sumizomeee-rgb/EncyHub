@@ -27,6 +27,10 @@ class Client:
     package_name: str = ""
     persistent_data_path: str = ""
     svn_author: str = ""
+    svn_url: str = ""
+    svn_branch: str = ""
+    svn_revision: str = ""
+    svn_detection: str = ""
     gm_tree: List[Any] = field(default_factory=list)
     ui_states: Dict[str, Any] = field(default_factory=dict)
 
@@ -42,6 +46,10 @@ class Client:
             "persistentDataPath": self.persistent_data_path,
             "gm_tree": self.gm_tree,
             "svnAuthor": self.svn_author,
+            "svnUrl": self.svn_url,
+            "svnBranch": self.svn_branch,
+            "svnRevision": self.svn_revision,
+            "svnDetection": self.svn_detection,
         }
 
 
@@ -354,6 +362,10 @@ class ServerMgr:
             c.package_name = pkt.get("packageName", "") or pkt.get("package_name", "") or ""
             c.persistent_data_path = pkt.get("persistentDataPath", "") or pkt.get("persistent_data_path", "") or ""
             c.svn_author = pkt.get("svn_author", "") or ""
+            c.svn_url = pkt.get("svn_url", "") or ""
+            c.svn_branch = pkt.get("svn_branch", "") or ""
+            c.svn_revision = str(pkt.get("svn_revision", "") or "")
+            c.svn_detection = pkt.get("svn_detection", "") or ""
             # 计算确定 ID 并 rekey（pid 缺失时按 device 兜底，见 spec §3.4）
             # 用 "-" 分隔避免 "#" 在 HTTP 路径/代理中被误认为 fragment
             if c.pid > 0:
@@ -366,7 +378,8 @@ class ServerMgr:
                 self._rekey_client(c, new_id)
             print(
                 f"[ServerMgr] HELLO: id={c.id}, device={c.device}, platform={c.platform}, "
-                f"package={c.package_name or '-'}, author={c.svn_author or '-'}"
+                f"package={c.package_name or '-'}, author={c.svn_author or '-'}, "
+                f"branch={c.svn_branch or '-'}, revision={c.svn_revision or '-'}"
             )
             if self.on_update:
                 self._mark_clients_changed()
