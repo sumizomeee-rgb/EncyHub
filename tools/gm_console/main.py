@@ -5,6 +5,7 @@ import os
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from pathlib import PureWindowsPath
 from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
@@ -14,6 +15,7 @@ import uvicorn
 
 from .server_mgr import ServerMgr
 from .custom_gm import CustomGmManager
+from .inject_runtime_gm import get_primary_target_relative_path
 from .proto_parser import ProtoParser, validate_haruroot, generate_lua_code, parse_log_file
 from .runtime_gm_code import build_runtime_gm_code, detect_local_lan_ip
 
@@ -77,6 +79,19 @@ def _pop_screenshot_session(client_id: str) -> Optional[str]:
     if not queue:
         pending_screenshot_sessions.pop(client_id, None)
     return item.get("session_id")
+
+
+def _build_runtime_gm_download_info() -> Optional[dict[str, Any]]:
+    """发布注入脚本第一条目标的相对路径，实际 HaruRoot 由下载者选择。"""
+    try:
+        relative_path = get_primary_target_relative_path()
+    except ValueError:
+        return None
+
+    return {
+        "fileName": PureWindowsPath(relative_path).name,
+        "relativePath": relative_path,
+    }
 
 
 async def broadcast_event(event: dict, target_session_id: Optional[str] = None):
@@ -1008,11 +1023,13 @@ async def get_proto_config():
     """获取 HaruRoot 配置"""
     config = proto_parser.load_config()
     haruroot = config.get("haruroot", "")
+    valid = validate_haruroot(haruroot)[0] if haruroot else False
     return {
         "haruroot": haruroot,
-        "valid": validate_haruroot(haruroot)[0] if haruroot else False,
+        "valid": valid,
         "protocolCount": proto_parser.protocol_count,
         "parseTime": proto_parser.parse_time,
+        "runtimeGmDownload": _build_runtime_gm_download_info() if valid else None,
     }
 
 

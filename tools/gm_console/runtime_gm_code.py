@@ -124,12 +124,16 @@ def patch_runtime_gm_code(lua_code: str, host: str, port: int | str) -> str:
     if count:
         return patched
 
-    return re.sub(
+    patched, count = re.subn(
         r'(gmClient\.Start\()"[^"]*",\s*\d+\)',
         lambda m: f'{m.group(1)}"{normalized_host}", {normalized_port})',
         lua_code,
         count=1,
     )
+    if count:
+        return patched
+
+    raise ValueError("RuntimeGM 源码中未找到 gmClient.Start 启动调用")
 
 
 def build_runtime_gm_code(host: str, port: int | str = 12581) -> str:

@@ -19,6 +19,7 @@ inject_runtime_gm.py — 一键注入 RuntimeGMClient 到游戏 Launch 空壳 Lu
 import os
 import subprocess
 import sys
+from pathlib import PureWindowsPath
 
 try:
     from .runtime_gm_code import RUNTIME_GM_LUA_PATH, build_runtime_gm_code, detect_local_lan_ip, read_runtime_gm_source
@@ -41,6 +42,21 @@ INJECT_SHELL_TEMPLATE = """-- EncyHub RuntimeGM 注入占位文件。
 -- XLaunchModule 会通过 pcall(require, "XLaunchRuntimeGmInject") 触发本文件。
 -- inject_runtime_gm.py 会把 RuntimeGMClient 代码追加到下方的自动注入块里。
 """
+
+
+def get_primary_target_relative_path(targets=None) -> str:
+    """从第一条注入路径提取 HaruRoot 下的 Product/Lua 相对路径。"""
+    target_list = TARGET_LUA_FILES if targets is None else targets
+    if not target_list or not target_list[0]:
+        raise ValueError("TARGET_LUA_FILES 第一条路径为空")
+
+    parts = PureWindowsPath(target_list[0]).parts
+    for index in range(len(parts) - 1):
+        if parts[index].casefold() == "product" and parts[index + 1].casefold() == "lua":
+            return str(PureWindowsPath(*parts[index:]))
+
+    raise ValueError("TARGET_LUA_FILES 第一条路径不包含 Product/Lua")
+
 
 def svn_revert(filepath: str):
     print(f"[SVN] revert {filepath}")

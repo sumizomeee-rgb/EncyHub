@@ -2183,6 +2183,7 @@ end`
       <RuntimeGmCodeModal
         open={runtimeGmModalOpen}
         handshakePort={handshakePort}
+        haruRootInfo={haruRootInfo}
         onClose={() => setRuntimeGmModalOpen(false)}
       />
     </div>
@@ -2195,13 +2196,15 @@ export default GmConsole
 // ============================================================================
 // RuntimeGM 代码复制弹窗
 // ============================================================================
-function RuntimeGmCodeModal({ open, handshakePort, onClose }) {
+function RuntimeGmCodeModal({ open, handshakePort, haruRootInfo, onClose }) {
+  const toast = useToast()
   const port = handshakePort || 12581
   const [host, setHost] = useState('')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [copyStatus, setCopyStatus] = useState('idle')
+  const [downloaded, setDownloaded] = useState(false)
   const copyTimerRef = useRef(null)
   const cachedCodeRef = useRef('')
   const cachedHostRef = useRef('')
@@ -2241,6 +2244,7 @@ function RuntimeGmCodeModal({ open, handshakePort, onClose }) {
   useEffect(() => {
     if (!open) return
     setCopyStatus('idle')
+    setDownloaded(false)
     loadRuntimeGmCode(false)
   }, [open, loadRuntimeGmCode])
 
@@ -2272,6 +2276,44 @@ function RuntimeGmCodeModal({ open, handshakePort, onClose }) {
 
   const CopyIcon = copyStatus === 'copied' ? Check : (copyStatus === 'error' ? AlertCircle : Clipboard)
   const copyLabel = copyStatus === 'copied' ? '已复制' : (copyStatus === 'error' ? '复制失败' : '复制')
+  const downloadInfo = haruRootInfo?.valid ? haruRootInfo.runtimeGmDownload : null
+  const clientTargetHint = downloadInfo?.relativePath
+    ? `<目标客户端 HaruRoot>\\${downloadInfo.relativePath}`
+    : ''
+
+  const handleDownload = () => {
+    if (!code || !downloadInfo?.fileName || !downloadInfo?.relativePath) return
+    try {
+      const blob = new Blob([code], { type: 'text/x-lua;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = downloadInfo.fileName
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setDownloaded(true)
+      toast.success(`已下载 ${downloadInfo.fileName}，请在你想连接当前 GM Console 的客户端 HaruRoot 下覆盖：${downloadInfo.relativePath}`, {
+        title: 'RuntimeGM 替换文件已生成',
+        duration: 8000,
+      })
+    } catch (err) {
+      console.error('[RuntimeGM] download failed:', err)
+      toast.error(err?.message || '下载 RuntimeGM 替换文件失败')
+    }
+  }
+
+  const handleCopyRelativePath = async () => {
+    if (!downloadInfo?.relativePath) return
+    try {
+      await copyText(downloadInfo.relativePath)
+      toast.success('客户端相对路径已复制')
+    } catch (err) {
+      console.error('[RuntimeGM] copy relative path failed:', err)
+      toast.error('复制客户端相对路径失败')
+    }
+  }
 
   return (
     <div
@@ -2280,7 +2322,7 @@ function RuntimeGmCodeModal({ open, handshakePort, onClose }) {
       onMouseDown={onClose}
     >
       <div
-        className="relative w-[min(1180px,94vw)] max-h-[calc(100vh-40px)] overflow-hidden rounded-lg border border-[var(--glass-border)] bg-[rgba(255,252,247,0.97)] shadow-2xl"
+        className="relative flex w-[min(1180px,94vw)] max-h-[calc(100vh-40px)] flex-col overflow-hidden rounded-lg border border-[var(--glass-border)] bg-[rgba(255,252,247,0.97)] shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-[var(--glass-border)]">
@@ -2303,7 +2345,7 @@ function RuntimeGmCodeModal({ open, handshakePort, onClose }) {
           </button>
         </div>
 
-        <div className="p-5 space-y-3">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2">
             <div className="min-w-0">
               <span className="block mb-1 text-[10px] font-medium text-[var(--coffee-muted)]">Host</span>
@@ -2342,6 +2384,70 @@ function RuntimeGmCodeModal({ open, handshakePort, onClose }) {
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs">
               <AlertCircle size={14} />
               <span className="truncate">{error}</span>
+            </div>
+          )}
+
+          {downloadInfo && (
+            <div className="overflow-hidden rounded-xl border border-[var(--sage)]/30 bg-[linear-gradient(135deg,rgba(133,154,137,0.12),rgba(255,252,247,0.86))]">
+              <div className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--sage)] text-white shadow-sm">
+                    <Download size={17} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-[var(--coffee-deep)]">完整客户端替换文件</span>
+                      <code className="rounded bg-white/70 px-1.5 py-0.5 text-[10px] text-[var(--coffee-muted)]">{downloadInfo.fileName}</code>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-[var(--coffee-muted)]">内容已写入上方 Host 与 Port，请放入你真正想连接当前 GM Console 的客户端工程。</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  disabled={!code}
+                  className={`flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                    downloaded
+                      ? 'bg-[var(--sage)]/15 text-[var(--sage)]'
+                      : 'bg-[var(--sage)] text-white hover:bg-[var(--coffee-deep)]'
+                  }`}
+                  title={`下载 ${downloadInfo.fileName}`}
+                >
+                  {downloaded ? <Check size={15} /> : <Download size={15} />}
+                  <span>{downloaded ? '已下载，请去替换' : '下载替换文件'}</span>
+                </button>
+              </div>
+              <div className="border-t border-[var(--sage)]/20 bg-white/35 px-3.5 py-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 text-[10px] font-semibold text-[var(--coffee-muted)]">目标客户端位置</span>
+                  <code className="min-w-0 flex-1 truncate text-[11px] text-[var(--coffee-deep)]" title={clientTargetHint}>{clientTargetHint}</code>
+                  <button
+                    type="button"
+                    onClick={handleCopyRelativePath}
+                    className="shrink-0 rounded-md p-1.5 text-[var(--coffee-muted)] transition-colors hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)]"
+                    title="复制客户端相对路径"
+                  >
+                    <Clipboard size={13} />
+                  </button>
+                </div>
+                <p className="mt-1 text-[10px] text-[var(--coffee-muted)]">
+                  这里的 <span className="font-semibold text-[var(--coffee-deep)]">目标客户端 HaruRoot</span> 是你想接入当前 GM Console 的那份客户端工程根目录，不要求与右下角配置一致。
+                </p>
+              </div>
+            </div>
+          )}
+
+          {!haruRootInfo?.valid && (
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-[var(--glass-border)] bg-white/35 px-3 py-2 text-[11px] text-[var(--coffee-muted)]">
+              <Download size={13} />
+              <span>右下角配置有效的 HaruRoot 后，可在这里下载完整客户端替换文件。</span>
+            </div>
+          )}
+
+          {haruRootInfo?.valid && !downloadInfo && (
+            <div className="flex items-center gap-2 rounded-lg bg-[var(--warning-soft)] px-3 py-2 text-[11px] text-[var(--coffee-deep)]">
+              <AlertCircle size={13} className="shrink-0 text-[var(--amber)]" />
+              <span>未能从注入脚本第一条目标中解析 Product/Lua 相对路径。</span>
             </div>
           )}
 

@@ -64,6 +64,13 @@ def test_build_runtime_gm_code_patches_host_and_port():
     assert 'gmClient.Start("192.168.31.24", 12666)' in code
 
 
+def test_patch_runtime_gm_code_rejects_source_without_start_call():
+    from tools.gm_console.runtime_gm_code import patch_runtime_gm_code
+
+    with pytest.raises(ValueError, match="未找到 gmClient.Start"):
+        patch_runtime_gm_code("print('missing start')", "192.168.31.24", 12581)
+
+
 def test_detect_local_lan_ip_parses_windows_ipconfig():
     from tools.gm_console.runtime_gm_code import detect_local_lan_ip
 
@@ -135,6 +142,24 @@ def test_inject_script_uses_runtime_lua_source_not_readme():
     assert "README_RuntimeGM_Client" not in content
 
 
+def test_download_target_relative_path_follows_first_inject_target():
+    from tools.gm_console.inject_runtime_gm import get_primary_target_relative_path
+
+    relative_path = get_primary_target_relative_path([
+        r"F:\HaruTrunk\Product\Lua\Launch\XLaunchRuntimeGmInject.lua",
+        r"F:\HaruBranchV4.8\Product\Lua\Launch\TemporaryRuntimeGm.lua",
+    ])
+
+    assert relative_path == r"Product\Lua\Launch\XLaunchRuntimeGmInject.lua"
+
+
+def test_download_target_relative_path_requires_product_lua_marker():
+    from tools.gm_console.inject_runtime_gm import get_primary_target_relative_path
+
+    with pytest.raises(ValueError, match="不包含 Product/Lua"):
+        get_primary_target_relative_path([r"F:\HaruTrunk\Dev\Client\Wrong.lua"])
+
+
 def test_run_inject_runtime_gm_bat_executes_inject_script():
     assert os.path.isfile(RUN_INJECT_RUNTIME_GM_BAT)
     content = read_file(RUN_INJECT_RUNTIME_GM_BAT)
@@ -152,6 +177,9 @@ def test_main_exposes_runtime_gm_code_endpoint():
     assert "build_runtime_gm_code" in content
     assert "detect_local_lan_ip" in content
     assert 'host: str = "localhost"' not in content
+    assert '"runtimeGmDownload"' in content
+    assert "get_primary_target_relative_path()" in content
+    assert '"targetPath"' not in content
 
 
 def test_frontend_exposes_runtime_gm_code_modal():
@@ -165,6 +193,14 @@ def test_frontend_exposes_runtime_gm_code_modal():
     assert "window.location.hostname" not in content
     assert "cachedHostRef" in content
     assert "useEffect(() => {\n    loadRuntimeGmCode(false)" not in content
+    assert "new Blob([code]" in content
+    assert "下载替换文件" in content
+    assert "<目标客户端 HaruRoot>" in content
+    assert "你想接入当前 GM Console 的那份客户端工程根目录" in content
+    assert "copyText(downloadInfo.relativePath)" in content
+    assert "downloadInfo.targetPath" not in content
+    assert "haruRootInfo={haruRootInfo}" in content
+    assert "XLaunchRuntimeGmInject.lua" not in content
 
 
 def test_animator_viewer_is_idle_when_tab_inactive():
