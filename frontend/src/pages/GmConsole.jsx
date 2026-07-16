@@ -1310,7 +1310,7 @@ end`
                             : ''
                         }`}
                         onClick={() => handleSelectClient(client)}
-                        title={`${client.device || 'Unknown'}\n#${client.pid || '?'} · ${client.ip || ''} · ${client.platform || ''}`}
+                        title={`${client.device || 'Unknown'}\n#${client.pid || '?'} · ${client.ip || ''} · ${client.platform || ''}${client.appVersion ? ` · v${client.appVersion}` : ''}`}
                       >
                         <PlatformIcon platform={client.platform} size={14}
                           className={
@@ -1396,7 +1396,7 @@ end`
                         }`}
                         onClick={() => handleSelectClient(client)}
                       >
-                        <span title={`${client.device || 'Unknown'}\n${client.ip || ''} · #${client.pid || '?'} · ${client.platform || ''}${client.svnAuthor ? `\nSVN 用户：${client.svnAuthor}` : ''}${client.svnBranch ? `\nSVN 分支：${client.svnBranch}${client.svnRevision ? ` @ r${client.svnRevision}` : ''}` : ''}${client.svnUrl ? `\n${client.svnUrl}` : ''}`}>
+                        <span title={`${client.device || 'Unknown'}\n${client.ip || ''} · #${client.pid || '?'} · ${client.platform || ''}${client.appVersion ? `\n版本：${client.appVersion}` : ''}${client.svnAuthor ? `\nSVN 用户：${client.svnAuthor}` : ''}${client.svnBranch ? `\nSVN 分支：${client.svnBranch}${client.svnRevision ? ` @ r${client.svnRevision}` : ''}` : ''}${client.svnUrl ? `\n${client.svnUrl}` : ''}`}>
                           <PlatformIcon platform={client.platform} size={14}
                             className="text-[var(--caramel)] shrink-0" />
                         </span>

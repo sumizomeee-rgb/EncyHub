@@ -383,6 +383,13 @@ local function StartRuntimeGM()
         end
     end
 
+    -- 每次 HELLO 都重新读取，因为版本号可能在运行期被 GM 面板的"改版本号"改动。
+    local function getAppVersion()
+        local version = ""
+        pcall(function() version = tostring(CS.XRemoteConfig.ApplicationVersion) end)
+        return version
+    end
+
     function RuntimeGMClient.SendHello()
         RuntimeGMClient.Send({
             type = "HELLO",
@@ -391,6 +398,7 @@ local function StartRuntimeGM()
             platform = RuntimeGMClient.DeviceInfo.platform,
             packageName = RuntimeGMClient.DeviceInfo.packageName,
             persistentDataPath = RuntimeGMClient.DeviceInfo.persistentDataPath,
+            appVersion = getAppVersion(),
             svn_author = RuntimeGMClient.SvnAuthor or "",
             svn_url = RuntimeGMClient.SvnUrl or "",
             svn_branch = RuntimeGMClient.SvnBranch or "",

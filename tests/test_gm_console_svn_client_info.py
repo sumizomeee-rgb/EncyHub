@@ -29,6 +29,7 @@ def test_client_serializes_structured_svn_info():
         "pid": 0,
         "packageName": "",
         "persistentDataPath": "",
+        "appVersion": "",
         "gm_tree": [],
         "svnAuthor": "huangyongxi",
         "svnUrl": "https://svn.example.com/svn/haru/trunk/Dev/Client/Assets",
@@ -36,6 +37,22 @@ def test_client_serializes_structured_svn_info():
         "svnRevision": "1541437",
         "svnDetection": "cli_realm",
     }
+
+
+def test_hello_packet_accepts_app_version():
+    mgr = ServerMgr()
+    client = Client(id="temp:127.0.0.1:50002:3", port=12581, writer=DummyWriter(), ip="127.0.0.1")
+    mgr.clients[client.id] = client
+
+    mgr._process_packet(client, {
+        "type": "HELLO",
+        "pid": 125,
+        "device": "Editor",
+        "platform": "WindowsEditor",
+        "appVersion": "1.2.3",
+    })
+
+    assert client.app_version == "1.2.3"
 
 
 def test_hello_packet_accepts_new_svn_fields_and_keeps_old_clients_compatible():

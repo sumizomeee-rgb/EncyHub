@@ -26,6 +26,7 @@ class Client:
     pid: int = 0
     package_name: str = ""
     persistent_data_path: str = ""
+    app_version: str = ""
     svn_author: str = ""
     svn_url: str = ""
     svn_branch: str = ""
@@ -44,6 +45,7 @@ class Client:
             "pid": self.pid,
             "packageName": self.package_name,
             "persistentDataPath": self.persistent_data_path,
+            "appVersion": self.app_version,
             "gm_tree": self.gm_tree,
             "svnAuthor": self.svn_author,
             "svnUrl": self.svn_url,
@@ -361,6 +363,7 @@ class ServerMgr:
             c.pid = pkt.get("pid", 0) or 0
             c.package_name = pkt.get("packageName", "") or pkt.get("package_name", "") or ""
             c.persistent_data_path = pkt.get("persistentDataPath", "") or pkt.get("persistent_data_path", "") or ""
+            c.app_version = pkt.get("appVersion", "") or pkt.get("app_version", "") or ""
             c.svn_author = pkt.get("svn_author", "") or ""
             c.svn_url = pkt.get("svn_url", "") or ""
             c.svn_branch = pkt.get("svn_branch", "") or ""
