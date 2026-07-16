@@ -90,6 +90,33 @@ Windows IP 配置
     assert detect_local_lan_ip(ipconfig_output=ipconfig_output) == "10.101.0.8"
 
 
+def test_detect_local_lan_ip_prefers_adapter_with_default_gateway():
+    from tools.gm_console.runtime_gm_code import detect_local_lan_ip
+
+    ipconfig_output = """
+Windows IP 配置
+
+
+以太网适配器 vEthernet (Default Switch):
+
+   连接特定的 DNS 后缀 . . . . . . . :
+   本地链接 IPv6 地址. . . . . . . . : fe80::d16b:a294:c95a:9c0a%8
+   IPv4 地址 . . . . . . . . . . . . : 172.23.0.1
+   子网掩码  . . . . . . . . . . . . : 255.255.240.0
+   默认网关. . . . . . . . . . . . . :
+
+以太网适配器 以太网 2:
+
+   连接特定的 DNS 后缀 . . . . . . . :
+   本地链接 IPv6 地址. . . . . . . . : fe80::ab67:e8ad:8818:a042%16
+   IPv4 地址 . . . . . . . . . . . . : 10.101.0.8
+   子网掩码  . . . . . . . . . . . . : 255.255.255.0
+   默认网关. . . . . . . . . . . . . : 10.101.0.254
+"""
+
+    assert detect_local_lan_ip(ipconfig_output=ipconfig_output) == "10.101.0.8"
+
+
 def test_detect_local_lan_ip_does_not_fallback_to_localhost():
     from tools.gm_console.runtime_gm_code import detect_local_lan_ip
 

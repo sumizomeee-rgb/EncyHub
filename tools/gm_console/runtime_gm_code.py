@@ -52,6 +52,37 @@ def _parse_ipconfig_ipv4(ipconfig_output: str) -> list[str]:
     return re.findall(r"IPv4[^\r\n:]*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", ipconfig_output)
 
 
+def _split_ipconfig_adapter_blocks(ipconfig_output: str) -> list[str]:
+    """按适配器切分 ipconfig 输出：适配器标题行不缩进且以冒号结尾，属性行缩进。"""
+    blocks = []
+    current: list[str] = []
+    for line in ipconfig_output.splitlines():
+        if line and not line[0].isspace() and line.rstrip().endswith(":"):
+            if current:
+                blocks.append("\n".join(current))
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def _adapter_has_default_gateway(block: str) -> bool:
+    return bool(re.search(r"(?:默认网关|Default Gateway)[^\r\n:]*:\s*[0-9]{1,3}(?:\.[0-9]{1,3}){3}", block))
+
+
+def _pick_ip_with_default_gateway(ipconfig_output: str) -> str | None:
+    """优先取有默认网关的适配器 IP——虚拟网卡（Hyper-V/WSL 等）通常没有默认网关。"""
+    for block in _split_ipconfig_adapter_blocks(ipconfig_output):
+        if not _adapter_has_default_gateway(block):
+            continue
+        for ip in _parse_ipconfig_ipv4(block):
+            if _is_usable_ipv4(ip):
+                return ip
+    return None
+
+
 def _detect_local_lan_ip_uncached(ipconfig_output: str | None = None, include_socket: bool = True) -> str:
     candidates = []
     if ipconfig_output is None:
@@ -68,7 +99,9 @@ def _detect_local_lan_ip_uncached(ipconfig_output: str | None = None, include_so
         except (FileNotFoundError, subprocess.SubprocessError, LookupError):
             ipconfig_output = ""
 
-    candidates.extend(_parse_ipconfig_ipv4(ipconfig_output or ""))
+    ipconfig_output = ipconfig_output or ""
+    gateway_ip = _pick_ip_with_default_gateway(ipconfig_output)
+    candidates.extend(_parse_ipconfig_ipv4(ipconfig_output))
 
     if include_socket:
         try:
@@ -76,6 +109,8 @@ def _detect_local_lan_ip_uncached(ipconfig_output: str | None = None, include_so
         except OSError:
             pass
 
+    if gateway_ip:
+        return gateway_ip
     return _pick_preferred_ipv4(candidates)
 
 
