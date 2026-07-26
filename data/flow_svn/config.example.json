@@ -1,0 +1,8 @@
+{
+  "settings": {
+    "svn_idle_timeout": 1800,
+    "svn_max_timeout": 7200
+  },
+  "tasks": [],
+  "templates": []
+}

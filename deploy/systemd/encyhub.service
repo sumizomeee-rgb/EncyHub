@@ -1,0 +1,17 @@
+[Unit]
+Description=EncyHub tool platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/harucode/EncyHub
+ExecStart=/home/harucode/EncyHub/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

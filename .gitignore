@@ -37,3 +37,10 @@ logs/
 temp/
 tmp/
 data/adb_master/Devices/
+
+# Runtime data (machine/user state, not in Git; templates tracked as *.example.json)
+data/registry.json
+data/*/config.json
+data/gm_console/custom_gm.json
+data/gm_console/haruroot_config.json
+data/gm_console/proto_cache.json

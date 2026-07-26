@@ -8,17 +8,20 @@ echo "  EncyHub Startup Script"
 echo "========================================"
 echo ""
 
-# 1. Check Python
+# 1. Check Python (require >= 3.10; skip old system pythons)
 echo "[1/6] Checking environment..."
-if command -v python3 &>/dev/null; then
-    PYTHON=python3
-elif command -v python &>/dev/null; then
-    PYTHON=python
-else
-    echo "[ERROR] Python not found"
+PYTHON=""
+for cand in python3.13 python3.12 python3.11 python3.10 python3 python; do
+    if command -v "$cand" &>/dev/null && "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        PYTHON="$cand"
+        break
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo "[ERROR] Python >= 3.10 not found"
     exit 1
 fi
-echo "      Python: OK ($($PYTHON --version 2>&1))"
+echo "      Python: OK ($PYTHON - $($PYTHON --version 2>&1))"
 
 # Check Node
 if command -v node &>/dev/null; then
@@ -62,7 +65,12 @@ echo ""
 echo "[4/6] Building frontend..."
 if [ -f "frontend/package.json" ]; then
     cd frontend
-    npm install --silent 2>/dev/null || true
+    # Install only when node_modules is missing; use npm ci so package-lock.json
+    # is never rewritten (keeps worktree clean for git pull on deploy machines).
+    # After pulling dependency changes, run: npm ci --include=optional
+    if [ ! -d node_modules ]; then
+        npm ci --include=optional --silent 2>/dev/null || npm install --silent 2>/dev/null || true
+    fi
     npm run build 2>/dev/null || true
     cd ..
 fi
