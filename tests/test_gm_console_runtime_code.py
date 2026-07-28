@@ -276,6 +276,18 @@ def test_hierarchy_go_search_requires_enter_to_submit():
     assert "[filterText, selectedClient?.id, wsConnected, request]" not in content
 
 
+def test_hierarchy_runtime_supports_nested_custom_object_read_write():
+    content = read_file(RUNTIME_GM_LUA)
+
+    assert "function LuaHierarchy.GetValueChildren(packet)" in content
+    assert "function LuaHierarchy.SetNestedProp(packet)" in content
+    assert 'elseif action == "value_children" then' in content
+    assert 'elseif action == "set_nested_prop" then' in content
+    assert 'kind = "object"' in content
+    assert 'kind = "member"' in content
+    assert 'kind = "index"' in content
+
+
 def test_lua_ui_root_locate_falls_back_to_common_root_go_fields():
     content = read_file(RUNTIME_GM_LUA)
 

@@ -2013,23 +2013,46 @@ local function StartRuntimeGM()
 
     -- 描述单个集合元素 → { kind:"go"|"comp"|"value", instanceId?, name?, typeName?, display? }
     -- 对 GameObject / Component 提取 instanceId 让前端可点击 Locate；其它做 tostring
-    local function hierDescribeItem(el)
-        if el == nil then return { kind = "value", display = "nil", typeName = "nil" } end
+    local function hierClonePath(path)
+        local cloned = {}
+        for i = 1, #(path or {}) do
+            local seg = path[i]
+            cloned[i] = { kind = seg.kind, name = seg.name, index = seg.index }
+        end
+        return cloned
+    end
+
+    local function hierAppendPath(path, segment)
+        local nextPath = hierClonePath(path)
+        nextPath[#nextPath + 1] = segment
+        return nextPath
+    end
+
+    local function hierDescribeItem(el, accessPath, editable, declaredTypeName)
+        if el == nil then return { kind = "value", display = "nil", typeName = declaredTypeName or "nil", path = accessPath } end
         local lt = type(el)
-        if lt == "boolean" then return { kind = "value", display = tostring(el), typeName = "Boolean" } end
-        if lt == "number" then return { kind = "value", display = tostring(el), typeName = "Number" } end
-        if lt == "string" then return { kind = "value", display = el, typeName = "String" } end
+        if lt == "boolean" then return { kind = "value", display = tostring(el), value = el, valueType = "bool", typeName = declaredTypeName or "Boolean", editable = editable == true, path = accessPath } end
+        if lt == "number" then
+            local tn = declaredTypeName or "Number"
+            local isInt = tn == "Int32" or tn == "Int64" or tn == "Byte" or tn == "Int16"
+            return { kind = "value", display = tostring(el), value = el, valueType = isInt and "int" or "float", typeName = tn, editable = editable == true, path = accessPath }
+        end
+        if lt == "string" then return { kind = "value", display = el, value = el, valueType = "string", typeName = declaredTypeName or "String", editable = editable == true, path = accessPath } end
         if lt ~= "userdata" then return { kind = "value", display = tostring(el), typeName = lt } end
 
-        local typeName = "?"
-        pcall(function() typeName = tostring(el:GetType().Name) end)
+        local typeName = declaredTypeName or "?"
+        if not declaredTypeName then pcall(function() typeName = tostring(el:GetType().Name) end) end
 
         -- GameObject
         if typeName == "GameObject" then
             local id = -1; pcall(function() id = el:GetInstanceID() end)
             local name = "?"; pcall(function() name = el.name end)
             hierCacheGo(el)
-            return { kind = "go", instanceId = id, name = name, typeName = "GameObject" }
+            return {
+                kind = "go", instanceId = id, name = name, display = name, value = name,
+                typeName = "GameObject", actualType = "GameObject",
+                valueType = "ref", path = accessPath,
+            }
         end
 
         -- Component（Transform / 任意 MonoBehaviour 子类等）有 .gameObject 反指 GO
@@ -2039,12 +2062,151 @@ local function StartRuntimeGM()
             local id = -1; pcall(function() id = goObj:GetInstanceID() end)
             local name = "?"; pcall(function() name = goObj.name end)
             hierCacheGo(goObj)
-            return { kind = "comp", instanceId = id, name = name, typeName = typeName }
+            return {
+                kind = "comp", instanceId = id, name = name, display = name, value = name,
+                typeName = typeName, actualType = typeName,
+                valueType = "ref", path = accessPath,
+            }
         end
 
-        -- 其他 userdata（struct 如 Vector3 / 自定义值类型 等）
+        -- 可直接编辑的 Unity struct / 基础 CLR 值。
+        local serialized, valueType, extra = inspectorSerializePropValue(el, typeName)
+        if valueType == "vector2" or valueType == "vector3" or valueType == "vector4"
+            or valueType == "color" or valueType == "rect" or valueType == "euler"
+            or valueType == "bool" or valueType == "int" or valueType == "float"
+            or valueType == "string" then
+            return {
+                kind = "value", display = tostring(el), value = serialized,
+                valueType = valueType, typeName = typeName,
+                editable = editable == true, path = accessPath,
+            }
+        end
+        if valueType == "collection" and extra then
+            return {
+                kind = "collection", display = serialized, value = serialized,
+                valueType = "collection", typeName = typeName,
+                count = extra.count, collectionKind = extra.kind,
+                editable = false, path = accessPath,
+            }
+        end
+
+        -- 其他 userdata 作为可展开自定义对象返回，不再退化为地址式 tostring。
+        local memberCount = 0
+        pcall(function()
+            local fields = el:GetType():GetFields(20)
+            if fields then memberCount = fields.Length end
+        end)
         local s = "?"; pcall(function() s = tostring(el) end)
-        return { kind = "value", display = s, typeName = typeName }
+        return {
+            kind = "object", display = s, value = typeName,
+            valueType = "object", typeName = typeName,
+            memberCount = memberCount, editable = false, path = accessPath,
+        }
+    end
+
+    local function hierGetMemberValue(owner, name)
+        local value
+        local ok = pcall(function() value = owner[name] end)
+        if ok and value ~= nil then return value end
+        local found = false
+        pcall(function()
+            local t = owner:GetType()
+            local fld = t:GetField(name)
+            if fld then value = fld:GetValue(owner); found = true; return end
+            local prop = t:GetProperty(name)
+            if prop and prop.CanRead then value = prop:GetValue(owner, nil); found = true end
+        end)
+        if found then return value end
+        error("成员不存在或不可读: " .. tostring(name))
+    end
+
+    local function hierSetMemberValue(owner, name, value)
+        local setOk = false
+        local directOk = pcall(function() owner[name] = value; setOk = true end)
+        if directOk and setOk then return end
+        local reflectOk, reflectErr = pcall(function()
+            local t = owner:GetType()
+            local fld = t:GetField(name)
+            if fld and not fld.IsInitOnly then fld:SetValue(owner, value); setOk = true; return end
+            local prop = t:GetProperty(name)
+            if prop and prop.CanWrite then prop:SetValue(owner, value, nil); setOk = true; return end
+            error("成员不存在或不可写: " .. tostring(name))
+        end)
+        if not reflectOk then error(reflectErr) end
+        if not setOk then error("成员不存在或不可写: " .. tostring(name)) end
+    end
+
+    local function hierGetPathValue(root, path)
+        local current = root
+        for i = 1, #(path or {}) do
+            local seg = path[i]
+            if seg.kind == "index" then
+                current = current[tonumber(seg.index)]
+            elseif seg.kind == "member" then
+                current = hierGetMemberValue(current, seg.name)
+            else
+                error("未知路径段: " .. tostring(seg.kind))
+            end
+        end
+        return current
+    end
+
+    local function hierGetRootValue(comp, propName)
+        return hierGetMemberValue(comp, propName)
+    end
+
+    local function hierSetPathValue(comp, propName, path, value, valueType)
+        if not path or #path == 0 then
+            hierSetMemberValue(comp, propName, convertTypedValue(value, valueType))
+            return
+        end
+
+        local root = hierGetRootValue(comp, propName)
+        local current = root
+        local frames = {}
+        for i = 1, #path - 1 do
+            local seg = path[i]
+            frames[#frames + 1] = { owner = current, segment = seg }
+            if seg.kind == "index" then
+                current = current[tonumber(seg.index)]
+            elseif seg.kind == "member" then
+                current = hierGetMemberValue(current, seg.name)
+            else
+                error("未知路径段: " .. tostring(seg.kind))
+            end
+        end
+
+        local leaf = path[#path]
+        local converted = convertTypedValue(value, valueType)
+        if leaf.kind == "index" then
+            current[tonumber(leaf.index)] = converted
+        elseif leaf.kind == "member" then
+            hierSetMemberValue(current, leaf.name, converted)
+        else
+            error("未知路径段: " .. tostring(leaf.kind))
+        end
+
+        -- 将可能被装箱的值类型逐层写回；对引用类型重复赋值同样安全。
+        local updated = current
+        for i = #frames, 1, -1 do
+            local frame = frames[i]
+            if frame.segment.kind == "index" then
+                frame.owner[tonumber(frame.segment.index)] = updated
+            else
+                hierSetMemberValue(frame.owner, frame.segment.name, updated)
+            end
+            updated = frame.owner
+        end
+        hierSetMemberValue(comp, propName, updated)
+    end
+
+    local function hierGetComponentRef(goId, compIndex)
+        local key = goId .. "_" .. compIndex
+        local ref = LuaHierarchyCore._compRefs[key]
+        if not ref or not ref.comp then
+            return nil, { error = "Component 缓存丢失，请重新选中 GameObject" }
+        end
+        return ref, nil
     end
 
     -- 获取集合元素（懒加载，按需分页）
@@ -2058,9 +2220,8 @@ local function StartRuntimeGM()
         if limit < 1 then limit = 1 end
         if limit > 200 then limit = 200 end
 
-        local key = goId .. "_" .. compIndex
-        local ref = LuaHierarchyCore._compRefs[key]
-        if not ref or not ref.comp then return { error = "Component 缓存丢失，请重新选中 GameObject" } end
+        local ref, refErr = hierGetComponentRef(goId, compIndex)
+        if not ref then return refErr end
 
         -- 取属性/字段值（先尝试 xlua property accessor，失败再走反射 Field/Property GetValue）
         local val
@@ -2122,7 +2283,7 @@ local function StartRuntimeGM()
                 local maxI = math.min(offset + limit, total)
                 for i = offset, maxI - 1 do
                     pcall(function()
-                        local d = hierDescribeItem(val[i])
+                        local d = hierDescribeItem(val[i], { { kind = "index", index = i } }, true)
                         d.index = i
                         items[#items + 1] = d
                     end)
@@ -2137,7 +2298,7 @@ local function StartRuntimeGM()
                 local maxI = math.min(offset + limit, total)
                 for i = offset, maxI - 1 do
                     pcall(function()
-                        local d = hierDescribeItem(val[i])
+                        local d = hierDescribeItem(val[i], { { kind = "index", index = i } }, true)
                         d.index = i
                         items[#items + 1] = d
                     end)
@@ -2157,7 +2318,7 @@ local function StartRuntimeGM()
                 if idx >= offset and #items < limit then
                     local cur
                     pcall(function() cur = enum.Current end)
-                    local d = hierDescribeItem(cur)
+                    local d = hierDescribeItem(cur, { { kind = "index", index = idx } }, true)
                     d.index = idx
                     items[#items + 1] = d
                 end
@@ -2176,6 +2337,116 @@ local function StartRuntimeGM()
             limit = limit,
             items = items,
         }
+    end
+
+    -- 懒加载集合元素或自定义对象的公开字段。
+    -- path 相对组件顶层 propName，使用 {kind="index"|"member", ...} 分段，避免解析字符串表达式。
+    function LuaHierarchy.GetValueChildren(packet)
+        local goId = packet.goInstanceId
+        local compIndex = packet.compIndex
+        local propName = packet.propName
+        local path = packet.path or {}
+        local offset = tonumber(packet.offset) or 0
+        local limit = tonumber(packet.limit) or 50
+        if limit < 1 then limit = 1 end
+        if limit > 200 then limit = 200 end
+        if #path > 12 then return { error = "嵌套层级超过上限" } end
+
+        local ref, refErr = hierGetComponentRef(goId, compIndex)
+        if not ref then return refErr end
+
+        local ok, target = pcall(function()
+            return hierGetPathValue(hierGetRootValue(ref.comp, propName), path)
+        end)
+        if not ok then return { error = "读取嵌套值失败: " .. tostring(target) } end
+        if target == nil then return { error = "嵌套值为 nil" } end
+
+        local targetType
+        pcall(function() targetType = target:GetType() end)
+        if not targetType then return { error = "该值没有可展开成员" } end
+
+        local items = {}
+        local total = 0
+
+        -- 嵌套 Array / List<T>。
+        local isArray = false
+        pcall(function() isArray = targetType.IsArray end)
+        local count
+        if isArray then
+            pcall(function() count = target.Length end)
+        else
+            pcall(function() count = target.Count end)
+        end
+        if count ~= nil then
+            total = tonumber(count) or 0
+            local maxI = math.min(offset + limit, total)
+            for i = offset, maxI - 1 do
+                pcall(function()
+                    local childPath = hierAppendPath(path, { kind = "index", index = i })
+                    local d = hierDescribeItem(target[i], childPath, true)
+                    d.index = i
+                    items[#items + 1] = d
+                end)
+            end
+            return {
+                total = total, kind = "list", offset = offset, limit = limit, items = items,
+            }
+        end
+
+        -- 自定义对象仅枚举公开实例字段，与当前组件字段反射范围保持一致。
+        local fields
+        local fieldsOk, fieldsErr = pcall(function() fields = targetType:GetFields(20) end)
+        if not fieldsOk or not fields then
+            return { error = "读取对象字段失败: " .. tostring(fieldsErr) }
+        end
+
+        local fieldList = {}
+        for i = 0, fields.Length - 1 do
+            local fld = fields[i]
+            if fld and not fld.IsSpecialName then
+                fieldList[#fieldList + 1] = fld
+            end
+        end
+        table.sort(fieldList, function(a, b) return tostring(a.Name) < tostring(b.Name) end)
+        total = #fieldList
+
+        local maxI = math.min(offset + limit, total)
+        for i = offset + 1, maxI do
+            local fld = fieldList[i]
+            pcall(function()
+                local name = tostring(fld.Name)
+                local typeName = tostring(fld.FieldType.Name)
+                local child = fld:GetValue(target)
+                local childPath = hierAppendPath(path, { kind = "member", name = name })
+                local d = hierDescribeItem(child, childPath, not fld.IsInitOnly, typeName)
+                d.name = name
+                d.typeName = typeName
+                d.editable = (not fld.IsInitOnly)
+                    and d.valueType ~= "readonly"
+                    and d.valueType ~= "collection"
+                    and d.valueType ~= "object"
+                    and d.valueType ~= "ref"
+                items[#items + 1] = d
+            end)
+        end
+
+        return {
+            total = total, kind = "object", offset = offset, limit = limit, items = items,
+        }
+    end
+
+    function LuaHierarchy.SetNestedProp(packet)
+        local path = packet.path or {}
+        if #path == 0 then return { error = "缺少嵌套成员路径" } end
+        if #path > 12 then return { error = "嵌套层级超过上限" } end
+
+        local ref, refErr = hierGetComponentRef(packet.goInstanceId, packet.compIndex)
+        if not ref then return refErr end
+        local ok, err = pcall(function()
+            hierSetPathValue(ref.comp, packet.propName, path, packet.value, packet.valueType)
+        end)
+        if not ok then return { error = "写入嵌套值失败: " .. tostring(err) } end
+        return { success = true }
     end
 
     -- ========== LuaHierarchy.Search: 全场景 GO / Component / 字段高级搜索 ==========
@@ -2772,6 +3043,10 @@ local function StartRuntimeGM()
             result = LuaHierarchy.Locate(packet)
         elseif action == "collection_items" then
             result = LuaHierarchy.GetCollectionItems(packet)
+        elseif action == "value_children" then
+            result = LuaHierarchy.GetValueChildren(packet)
+        elseif action == "set_nested_prop" then
+            result = LuaHierarchy.SetNestedProp(packet)
         elseif action == "go_search" then
             result = LuaHierarchy.SearchGameObjects(packet)
         elseif action == "set_go_active" then

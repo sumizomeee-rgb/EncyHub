@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
-import { RotateCw, ChevronRight, ChevronDown, Loader2, Search, Clipboard, Crosshair, X, Eye, EyeOff } from 'lucide-react'
+import { RotateCw, ChevronRight, ChevronDown, Loader2, Search, Clipboard, Crosshair, X, Eye, EyeOff, Check, AlertCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
-import { sortHierarchySearchHits } from '../utils/hierarchySearchSort'
+import { sortHierarchyGoSearchHits } from '../utils/hierarchySearchSort'
+import { splitHierarchyPathForDisplay } from '../utils/hierarchyPath'
 import PropRow from '../components/PropRow'
 import HierarchySearchModal from '../components/HierarchySearchModal'
 
@@ -275,6 +276,13 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         }, cb)
     }, [request, selectedId])
 
+    const loadValueChildren = useCallback((compIndex, propName, path, offset, limit, cb) => {
+        if (!selectedId) { cb && cb({ error: '未选中 GameObject' }); return }
+        request('value_children', {
+            goInstanceId: selectedId, compIndex, propName, path, offset, limit,
+        }, cb)
+    }, [request, selectedId])
+
     // --- 高亮 + 2s 淡出（避免 Locate 命中后边框常驻） ---
     const highlightTimerRef = useRef(null)
     const flashHighlight = useCallback((compIndex) => {
@@ -316,6 +324,16 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         if (!selectedId) return
         request('set_prop', { goInstanceId: selectedId, compIndex, propName, value, valueType }, () => {
             loadDetail(selectedId)
+        })
+    }, [request, selectedId, loadDetail])
+
+    const setNestedProp = useCallback((compIndex, propName, path, value, valueType, cb) => {
+        if (!selectedId) return
+        request('set_nested_prop', {
+            goInstanceId: selectedId, compIndex, propName, path, value, valueType,
+        }, data => {
+            if (!data?.error) loadDetail(selectedId)
+            cb && cb(data)
         })
     }, [request, selectedId, loadDetail])
 
@@ -414,10 +432,10 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
 
         const normalizeResults = (data) => {
             const rows = data?.results || data?.hits || []
-            return sortHierarchySearchHits(rows.filter(r => {
+            return sortHierarchyGoSearchHits(rows.filter(r => {
                 if (r.goInstanceId == null || r.goInstanceId === -1) return false
                 return !r.memberKind || r.memberKind === 'go'
-            }))
+            }), q)
         }
 
         const applyResult = (data) => {
@@ -683,9 +701,11 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                         onRefresh={() => loadDetail(selectedId)}
                         onSetGoActive={setGoActive}
                         onSetProp={setProp}
+                        onSetNestedProp={setNestedProp}
                         onSetComponentEnabled={setComponentEnabled}
                         onCallMethod={callMethod}
                         onLoadCollection={loadCollectionItems}
+                        onLoadValueChildren={loadValueChildren}
                         onLocate={(instanceId) => locateAndSelect({ instanceId }, () => {})}
                     />
                 )}
@@ -918,7 +938,50 @@ function nodeMatches(node, filterLower, childrenMap) {
 // ============================================================================
 // 右侧 Inspector
 // ============================================================================
-function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onToggleCompType, methodResults, onRefresh, onSetGoActive, onSetProp, onSetComponentEnabled, onCallMethod, onLoadCollection, onLocate }) {
+function CopyableHierarchyPath({ path }) {
+    const [copyStatus, setCopyStatus] = useState('idle')
+    const timerRef = useRef(null)
+    const { prefix, leaf } = splitHierarchyPathForDisplay(path)
+
+    useEffect(() => () => {
+        if (timerRef.current) clearTimeout(timerRef.current)
+    }, [])
+
+    const handleCopy = async () => {
+        if (timerRef.current) clearTimeout(timerRef.current)
+        try {
+            await copyText(path)
+            setCopyStatus('copied')
+        } catch (err) {
+            console.error('[Hierarchy] copy path failed:', err)
+            setCopyStatus('error')
+        }
+        timerRef.current = setTimeout(() => setCopyStatus('idle'), 1000)
+    }
+
+    return (
+        <button
+            type="button"
+            onClick={handleCopy}
+            className={`mt-1 flex w-full min-w-0 items-center overflow-hidden rounded px-1 py-0.5 text-left font-mono text-[10px] transition-colors ${
+                copyStatus === 'copied'
+                    ? 'bg-[var(--sage)]/10 text-[var(--sage)]'
+                    : copyStatus === 'error'
+                        ? 'bg-[var(--terracotta)]/10 text-[var(--terracotta)]'
+                        : 'text-[var(--coffee-muted)] opacity-60 hover:bg-[var(--caramel)]/10 hover:text-[var(--caramel)] hover:opacity-100'
+            }`}
+            title={`${path}\n点击复制完整路径`}
+        >
+            {prefix && <span className="min-w-0 truncate">{prefix}</span>}
+            {prefix && <span className="flex-shrink-0">/</span>}
+            <span className="flex-shrink-0">{leaf}</span>
+            {copyStatus === 'copied' && <Check size={10} className="ml-1 flex-shrink-0" />}
+            {copyStatus === 'error' && <AlertCircle size={10} className="ml-1 flex-shrink-0" />}
+        </button>
+    )
+}
+
+function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onToggleCompType, methodResults, onRefresh, onSetGoActive, onSetProp, onSetNestedProp, onSetComponentEnabled, onCallMethod, onLoadCollection, onLoadValueChildren, onLocate }) {
     if (loading && !detail) {
         return <div className="flex items-center justify-center gap-2 h-32 text-[var(--coffee-muted)] text-sm"><Loader2 size={16} className="animate-spin" /> 加载中...</div>
     }
@@ -952,7 +1015,7 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
                     <span className="text-[10px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">#{detail.instanceId}</span>
                 </div>
                 {detail.hierarchyPath && (
-                    <div className="mt-1 text-[10px] text-[var(--coffee-muted)] opacity-60 truncate select-text" title={detail.hierarchyPath}>{detail.hierarchyPath}</div>
+                    <CopyableHierarchyPath path={detail.hierarchyPath} />
                 )}
                 <div className="mt-1 flex items-center gap-3 text-[10px] text-[var(--coffee-muted)]">
                     <span>layer: <span className="font-mono">{detail.layer ?? '-'}</span></span>
@@ -969,9 +1032,11 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
                     onToggleExpanded={() => onToggleCompType(comp.typeName)}
                     methodResults={methodResults}
                     onSetProp={onSetProp}
+                    onSetNestedProp={onSetNestedProp}
                     onSetEnabled={onSetComponentEnabled}
                     onCallMethod={onCallMethod}
                     onLoadCollection={onLoadCollection}
+                    onLoadValueChildren={onLoadValueChildren}
                     onLocate={onLocate}
                 />
             ))}
@@ -979,7 +1044,7 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
     )
 }
 
-function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResults, onSetProp, onSetEnabled, onCallMethod, onLoadCollection, onLocate }) {
+function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResults, onSetProp, onSetNestedProp, onSetEnabled, onCallMethod, onLoadCollection, onLoadValueChildren, onLocate }) {
     const [filter, setFilter] = useState('')
     const [propsCollapsed, setPropsCollapsed] = useState(false)
     const [methodsCollapsed, setMethodsCollapsed] = useState(true)
@@ -1034,6 +1099,8 @@ function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResu
                                             <PropRow key={`${p.name}_${i}`} prop={p}
                                                 onSet={(val) => onSetProp(comp.compIndex, p.name, val, p.valueType)}
                                                 onLoadCollection={(propName, offset, limit, cb) => onLoadCollection && onLoadCollection(comp.compIndex, propName, offset, limit, cb)}
+                                                onLoadNested={(path, offset, limit, cb) => onLoadValueChildren && onLoadValueChildren(comp.compIndex, p.name, path, offset, limit, cb)}
+                                                onSetNested={(path, value, valueType, cb) => onSetNestedProp && onSetNestedProp(comp.compIndex, p.name, path, value, valueType, cb)}
                                                 onLocate={onLocate}
                                             />
                                         ))}

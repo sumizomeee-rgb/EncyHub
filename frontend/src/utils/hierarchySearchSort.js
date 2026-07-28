@@ -40,3 +40,40 @@ export function sortHierarchySearchHits(hits) {
         ))
         .map(entry => entry.hit)
 }
+
+function getGoSearchMatchRank(hit, query) {
+    const q = String(query || '').trim().toLowerCase()
+    if (!q) return 0
+
+    const name = String(hit?.goName || '').toLowerCase()
+    const path = String(hit?.hierarchyPath || hit?.goPath || '').toLowerCase()
+
+    if (name === q) return 0
+    if (name.startsWith(q)) return 1
+    if (name.includes(q)) return 2
+    if (path === q) return 3
+    if (path.endsWith(`/${q}`)) return 4
+    return 5
+}
+
+// 普通 GO 搜索优先考虑用户输入与节点名的匹配度；
+// 同匹配度下再沿用 active、层级深度和服务端稳定顺序。
+export function sortHierarchyGoSearchHits(hits, query) {
+    if (!Array.isArray(hits)) return []
+
+    return hits
+        .map((hit, index) => ({
+            hit,
+            index,
+            rank: getGoSearchMatchRank(hit, query),
+            depth: getHierarchySearchHitDepth(hit),
+            active: isHierarchySearchHitActive(hit),
+        }))
+        .sort((a, b) => (
+            a.rank - b.rank
+            || Number(b.active) - Number(a.active)
+            || b.depth - a.depth
+            || a.index - b.index
+        ))
+        .map(entry => entry.hit)
+}

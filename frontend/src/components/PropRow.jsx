@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { ChevronRight, ChevronDown, Crosshair, Loader2 } from 'lucide-react'
+import { parseNumericDraft } from '../utils/numericInput'
 
 // 复用：Hierarchy / 未来其它反射面板共用的属性单行组件
 // 接收 prop 对象：{ name, value, valueType, typeName, editable, count?, collectionKind? }
@@ -19,7 +20,34 @@ const ChevronSlot = ({ children }) => (
     <span className="w-3 flex-shrink-0 inline-flex items-center justify-center text-[var(--coffee-muted)]">{children}</span>
 )
 
-export default function PropRow({ prop, onSet, onLoadCollection, onLocate }) {
+function NumericInput({ value, valueType = 'float', onCommit, className }) {
+    const [draft, setDraft] = useState(null)
+    const isEditing = draft !== null
+
+    const finishEdit = () => {
+        if (!isEditing) return
+        const parsed = parseNumericDraft(draft, valueType)
+        setDraft(null)
+        if (parsed !== null && parsed !== value) onCommit(parsed)
+    }
+
+    return (
+        <input
+            type="text"
+            inputMode={valueType === 'int' ? 'numeric' : 'decimal'}
+            value={isEditing ? draft : String(value ?? 0)}
+            onFocus={() => setDraft(String(value ?? 0))}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={finishEdit}
+            onKeyDown={e => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+            }}
+            className={className}
+        />
+    )
+}
+
+export default function PropRow({ prop, onSet, onLoadCollection, onLoadNested, onSetNested, onLocate }) {
     const [editVal, setEditVal] = useState(null)
     const p = prop
     const isEditing = editVal !== null
@@ -42,12 +70,10 @@ export default function PropRow({ prop, onSet, onLoadCollection, onLocate }) {
             <div className="flex items-center gap-2 py-0.5 text-xs">
                 <ChevronSlot />
                 <span className={NAME_COL} title={p.name}>{p.name}:</span>
-                <input type="number" step={p.valueType === 'float' ? 0.01 : 1}
-                    value={isEditing ? editVal : (p.value ?? 0)}
-                    onFocus={() => setEditVal(p.value ?? 0)}
-                    onChange={e => setEditVal(parseFloat(e.target.value) || 0)}
-                    onBlur={() => { if (isEditing) commit(editVal) }}
-                    onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
+                <NumericInput
+                    value={p.value ?? 0}
+                    valueType={p.valueType}
+                    onCommit={onSet}
                     className={`!w-24 ${INPUT_CLS}`}
                 />
             </div>
@@ -72,7 +98,6 @@ export default function PropRow({ prop, onSet, onLoadCollection, onLocate }) {
         const arr = Array.isArray(p.value) ? p.value : [0, 0, 0, 0]
         const labels = p.valueType === 'color' ? ['R','G','B','A'] : p.valueType === 'rect' ? ['X','Y','W','H'] : ['X','Y','Z','W']
         const count = p.valueType === 'vector2' ? 2 : (p.valueType === 'vector3' || p.valueType === 'euler') ? 3 : 4
-        const current = isEditing ? editVal : arr.slice(0, count)
         return (
             <div className="flex items-center gap-1 py-0.5 text-xs flex-wrap">
                 <ChevronSlot />
@@ -81,12 +106,14 @@ export default function PropRow({ prop, onSet, onLoadCollection, onLocate }) {
                 {Array.from({ length: count }).map((_, i) => (
                     <div key={i} className="flex items-center gap-0.5">
                         <span className="text-[9px] text-[var(--coffee-muted)] opacity-50">{labels[i]}</span>
-                        <input type="number" step={0.01}
-                            value={isEditing ? current[i] : (arr[i] ?? 0)}
-                            onFocus={() => { if (!isEditing) setEditVal([...arr.slice(0, count)]) }}
-                            onChange={e => { const n = [...(editVal || arr.slice(0, count))]; n[i] = parseFloat(e.target.value) || 0; setEditVal(n) }}
-                            onBlur={() => { if (isEditing) commit(editVal) }}
-                            onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
+                        <NumericInput
+                            value={arr[i] ?? 0}
+                            valueType="float"
+                            onCommit={value => {
+                                const next = [...arr.slice(0, count)]
+                                next[i] = value
+                                onSet(next)
+                            }}
                             className={`!w-14 ${INPUT_CLS}`}
                         />
                     </div>
@@ -94,8 +121,14 @@ export default function PropRow({ prop, onSet, onLoadCollection, onLocate }) {
             </div>
         )
     }
-    if (p.valueType === 'collection' && onLoadCollection) {
-        return <CollectionField p={p} onLoadCollection={onLoadCollection} onLocate={onLocate} />
+    if (p.valueType === 'object' && onLoadNested) {
+        return <ObjectField p={p} onLoadCollection={onLoadCollection} onLoadNested={onLoadNested} onSetNested={onSetNested} onLocate={onLocate} />
+    }
+    if (p.valueType === 'collection' && (onLoadCollection || (p.path && onLoadNested))) {
+        const loader = p.path && onLoadNested
+            ? (_propName, offset, limit, cb) => onLoadNested(p.path, offset, limit, cb)
+            : onLoadCollection
+        return <CollectionField p={p} onLoadCollection={loader} onLoadNested={onLoadNested} onSetNested={onSetNested} onLocate={onLocate} />
     }
     if (p.valueType === 'ref' && p.instanceId != null && p.instanceId !== -1) {
         return (
@@ -129,7 +162,7 @@ export default function PropRow({ prop, onSet, onLoadCollection, onLocate }) {
 // ============================================================================
 // 集合字段（懒加载 + 元素行 + 🎯 Locate）
 // ============================================================================
-function CollectionField({ p, onLoadCollection, onLocate }) {
+function CollectionField({ p, onLoadCollection, onLoadNested, onSetNested, onLocate }) {
     const [expanded, setExpanded] = useState(false)
     const [items, setItems] = useState(null)
     const [total, setTotal] = useState(p.count ?? 0)
@@ -182,7 +215,11 @@ function CollectionField({ p, onLoadCollection, onLocate }) {
                     {items && items.map(it => (
                         kind === 'dict'
                             ? <DictRow key={it.index} item={it} onLocate={onLocate} />
-                            : <ListRow key={it.index} item={it} onLocate={onLocate} />
+                            : <ListRow key={it.index} item={it}
+                                onLoadNested={onLoadNested}
+                                onSetNested={onSetNested}
+                                onLocate={onLocate}
+                            />
                     ))}
                     {loading && (
                         <div className="flex items-center gap-1 text-[var(--coffee-muted)] text-[10px]">
@@ -204,8 +241,92 @@ function CollectionField({ p, onLoadCollection, onLocate }) {
     )
 }
 
-function ListRow({ item, onLocate }) {
+function ObjectField({ p, onLoadCollection, onLoadNested, onSetNested, onLocate }) {
+    const [expanded, setExpanded] = useState(false)
+    const [items, setItems] = useState(null)
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState(null)
+    const isEmpty = (p.memberCount ?? 0) === 0
+
+    const load = useCallback(() => {
+        setLoading(true)
+        setError(null)
+        onLoadNested(p.path, 0, 200, data => {
+            setLoading(false)
+            if (!data || data.error) {
+                setError(data?.error || '加载失败')
+                return
+            }
+            setItems(data.items || [])
+        })
+    }, [onLoadNested, p.path])
+
+    const toggleExpand = useCallback(() => {
+        if (isEmpty) return
+        if (!expanded && items === null) load()
+        setExpanded(!expanded)
+    }, [expanded, items, isEmpty, load])
+
+    return (
+        <div className="py-0.5 text-xs">
+            <div className="flex items-center gap-2">
+                <ChevronSlot>
+                    <button onClick={toggleExpand} disabled={isEmpty}
+                        className={`p-0 ${isEmpty ? 'opacity-25 cursor-default' : 'cursor-pointer hover:text-[var(--coffee-deep)]'}`}
+                        title={isEmpty ? '无公开字段' : (expanded ? '折叠' : '展开对象')}>
+                        {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                    </button>
+                </ChevronSlot>
+                <span className={`${NAME_COL} ${isEmpty ? '' : 'cursor-pointer hover:text-[var(--coffee-deep)]'}`}
+                    title={p.name}
+                    onClick={isEmpty ? undefined : toggleExpand}>{p.name}:</span>
+                <span className="font-mono text-[var(--coffee-deep)] text-[10px] truncate">{p.typeName}</span>
+                <span className="text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">{p.memberCount ?? 0} fields</span>
+            </div>
+            {expanded && (
+                <div className="ml-5 mt-0.5 border-l border-[var(--glass-border)] pl-2 space-y-0.5">
+                    {error && <div className="text-[var(--terracotta)] text-[10px]">⚠ {error}</div>}
+                    {loading && (
+                        <div className="flex items-center gap-1 text-[var(--coffee-muted)] text-[10px]">
+                            <Loader2 size={10} className="animate-spin" /> 加载中...
+                        </div>
+                    )}
+                    {items && items.map((member, index) => (
+                        <PropRow
+                            key={`${member.name || member.index}_${index}`}
+                            prop={member}
+                            onSet={value => onSetNested?.(member.path, value, member.valueType, data => {
+                                if (data?.error) {
+                                    setError(data.error)
+                                    return
+                                }
+                                load()
+                            })}
+                            onLoadCollection={onLoadCollection}
+                            onLoadNested={onLoadNested}
+                            onSetNested={onSetNested}
+                            onLocate={onLocate}
+                        />
+                    ))}
+                </div>
+            )}
+        </div>
+    )
+}
+
+function ListRow({ item, onLoadNested, onSetNested, onLocate }) {
     const isLocatable = (item.kind === 'go' || item.kind === 'comp') && item.instanceId != null && item.instanceId !== -1 && onLocate
+    if ((item.valueType === 'object' || item.valueType === 'collection') && onLoadNested) {
+        return (
+            <PropRow
+                prop={{ ...item, name: `[${item.index}]` }}
+                onSet={value => onSetNested?.(item.path, value, item.valueType)}
+                onLoadNested={onLoadNested}
+                onSetNested={onSetNested}
+                onLocate={onLocate}
+            />
+        )
+    }
     return (
         <div className="flex items-center gap-1.5 text-[10px]">
             <span className="text-[var(--coffee-muted)] opacity-40 font-mono w-6 flex-shrink-0">[{item.index}]</span>
