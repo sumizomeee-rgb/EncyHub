@@ -288,6 +288,18 @@ def test_hierarchy_runtime_supports_nested_custom_object_read_write():
     assert 'kind = "index"' in content
 
 
+def test_hierarchy_material_property_type_supports_numeric_xlua_enum_strings():
+    content = read_file(RUNTIME_GM_LUA)
+
+    assert '["0"] = "Color"' in content
+    assert '["1"] = "Vector"' in content
+    assert '["2"] = "Float"' in content
+    assert '["3"] = "Range"' in content
+    assert '["4"] = "Texture"' in content
+    assert '["5"] = "Int"' in content
+    assert "propertyType = shaderPropertyTypeNames[propertyType] or propertyType" in content
+
+
 def test_lua_ui_root_locate_falls_back_to_common_root_go_fields():
     content = read_file(RUNTIME_GM_LUA)
 

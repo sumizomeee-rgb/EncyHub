@@ -283,6 +283,16 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         }, cb)
     }, [request, selectedId])
 
+    const loadMaterialDetail = useCallback((materialInstanceId, cb) => {
+        request('material_detail', { materialInstanceId }, cb)
+    }, [request])
+
+    const setMaterialProperty = useCallback((materialInstanceId, propertyName, propertyType, value, cb) => {
+        request('material_set_prop', {
+            materialInstanceId, propertyName, propertyType, value,
+        }, cb)
+    }, [request])
+
     // --- 高亮 + 2s 淡出（避免 Locate 命中后边框常驻） ---
     const highlightTimerRef = useRef(null)
     const flashHighlight = useCallback((compIndex) => {
@@ -706,6 +716,8 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                         onCallMethod={callMethod}
                         onLoadCollection={loadCollectionItems}
                         onLoadValueChildren={loadValueChildren}
+                        onLoadMaterial={loadMaterialDetail}
+                        onSetMaterial={setMaterialProperty}
                         onLocate={(instanceId) => locateAndSelect({ instanceId }, () => {})}
                     />
                 )}
@@ -981,7 +993,7 @@ function CopyableHierarchyPath({ path }) {
     )
 }
 
-function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onToggleCompType, methodResults, onRefresh, onSetGoActive, onSetProp, onSetNestedProp, onSetComponentEnabled, onCallMethod, onLoadCollection, onLoadValueChildren, onLocate }) {
+function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onToggleCompType, methodResults, onRefresh, onSetGoActive, onSetProp, onSetNestedProp, onSetComponentEnabled, onCallMethod, onLoadCollection, onLoadValueChildren, onLoadMaterial, onSetMaterial, onLocate }) {
     if (loading && !detail) {
         return <div className="flex items-center justify-center gap-2 h-32 text-[var(--coffee-muted)] text-sm"><Loader2 size={16} className="animate-spin" /> 加载中...</div>
     }
@@ -1037,6 +1049,8 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
                     onCallMethod={onCallMethod}
                     onLoadCollection={onLoadCollection}
                     onLoadValueChildren={onLoadValueChildren}
+                    onLoadMaterial={onLoadMaterial}
+                    onSetMaterial={onSetMaterial}
                     onLocate={onLocate}
                 />
             ))}
@@ -1044,12 +1058,17 @@ function Inspector({ detail, loading, highlightCompIndex, expandedCompTypes, onT
     )
 }
 
-function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResults, onSetProp, onSetNestedProp, onSetEnabled, onCallMethod, onLoadCollection, onLoadValueChildren, onLocate }) {
+function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResults, onSetProp, onSetNestedProp, onSetEnabled, onCallMethod, onLoadCollection, onLoadValueChildren, onLoadMaterial, onSetMaterial, onLocate }) {
     const [filter, setFilter] = useState('')
-    const [propsCollapsed, setPropsCollapsed] = useState(false)
+    const [serializedCollapsed, setSerializedCollapsed] = useState(false)
+    const [advancedCollapsed, setAdvancedCollapsed] = useState(true)
+    const [propsCollapsed, setPropsCollapsed] = useState(true)
     const [methodsCollapsed, setMethodsCollapsed] = useState(true)
 
     const lf = filter.toLowerCase()
+    const filteredSerialized = (comp.serializedFields || []).filter(p => !lf
+        || p.name.toLowerCase().includes(lf)
+        || (p.displayName || '').toLowerCase().includes(lf))
     const filteredProps = (comp.properties || []).filter(p => !lf || p.name.toLowerCase().includes(lf))
     const filteredMethods = (comp.methods || []).filter(m => !lf || m.name.toLowerCase().includes(lf))
 
@@ -1082,11 +1101,49 @@ function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResu
                         <>
                             <div className="mb-1">
                                 <input type="text" value={filter} onChange={e => setFilter(e.target.value)}
-                                    placeholder="搜索属性 / 方法..."
+                                    placeholder="搜索序列化字段 / 运行时成员..."
                                     className="w-full px-2 py-1 text-[10px] rounded border border-[var(--glass-border)] bg-white/50 focus:outline-none focus:border-[var(--caramel)]"
                                 />
                             </div>
 
+                            <div className="mb-1">
+                                <button onClick={() => setSerializedCollapsed(!serializedCollapsed)}
+                                    className="flex items-center gap-1 text-[10px] font-semibold text-[#7D9B76] mb-0.5 hover:opacity-80">
+                                    {serializedCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+                                    序列化字段 ({filteredSerialized.length}{filter ? ' / ' + (comp.serializedFields?.length || 0) : ''})
+                                </button>
+                                {!serializedCollapsed && (
+                                    <div className="space-y-0.5 rounded-md border border-[#7D9B76]/15 bg-[#7D9B76]/[0.035] px-1.5 py-1">
+                                        {filteredSerialized.length === 0 && (
+                                            <div className="px-1 py-1 text-[10px] text-[var(--coffee-muted)] opacity-50">
+                                                {filter ? '没有匹配的序列化字段' : '该组件没有可显示的序列化字段'}
+                                            </div>
+                                        )}
+                                        {filteredSerialized.map((p, i) => (
+                                            <PropRow key={`${p.name}_${i}`} prop={p}
+                                                onSet={(val) => onSetNestedProp(comp.compIndex, p.name, p.path || [], val, p.valueType)}
+                                                onLoadCollection={(propName, offset, limit, cb) => onLoadCollection && onLoadCollection(comp.compIndex, propName, offset, limit, cb)}
+                                                onLoadNested={(path, offset, limit, cb) => onLoadValueChildren && onLoadValueChildren(comp.compIndex, p.name, path, offset, limit, cb)}
+                                                onSetNested={(path, value, valueType, cb) => onSetNestedProp && onSetNestedProp(comp.compIndex, p.name, path, value, valueType, cb)}
+                                                onLoadMaterial={onLoadMaterial}
+                                                onSetMaterial={onSetMaterial}
+                                                onLocate={onLocate}
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="mt-1 border-t border-[var(--glass-border)]/60 pt-1">
+                                <button onClick={() => setAdvancedCollapsed(!advancedCollapsed)}
+                                    className="flex items-center gap-1 text-[10px] font-semibold text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]">
+                                    {advancedCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+                                    高级运行时成员
+                                    <span className="font-normal opacity-45">({(comp.properties?.length || 0) + (comp.methods?.length || 0)})</span>
+                                </button>
+                            </div>
+
+                            {!advancedCollapsed && <div className="mt-1 ml-1 border-l border-[var(--glass-border)] pl-2">
                             <div className="mb-1">
                                 <button onClick={() => setPropsCollapsed(!propsCollapsed)}
                                     className="flex items-center gap-1 text-[10px] font-semibold text-[#7D9B76] mb-0.5 hover:opacity-80">
@@ -1101,6 +1158,8 @@ function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResu
                                                 onLoadCollection={(propName, offset, limit, cb) => onLoadCollection && onLoadCollection(comp.compIndex, propName, offset, limit, cb)}
                                                 onLoadNested={(path, offset, limit, cb) => onLoadValueChildren && onLoadValueChildren(comp.compIndex, p.name, path, offset, limit, cb)}
                                                 onSetNested={(path, value, valueType, cb) => onSetNestedProp && onSetNestedProp(comp.compIndex, p.name, path, value, valueType, cb)}
+                                                onLoadMaterial={onLoadMaterial}
+                                                onSetMaterial={onSetMaterial}
                                                 onLocate={onLocate}
                                             />
                                         ))}
@@ -1120,26 +1179,26 @@ function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResu
                                             const rKey = `${comp.compIndex}_${m.name}`
                                             const result = methodResults[rKey]
                                             return (
-                                                <div key={i} className="flex items-center gap-2 py-0.5 text-xs">
-                                                    <span className="font-mono text-[var(--coffee-deep)] truncate min-w-0">{m.name}({m.params?.map(p => p.name).join(', ')})</span>
-                                                    <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
-                                                        {result && (
-                                                            <>
-                                                                <span className={`text-[10px] font-mono truncate max-w-[160px] ${result.error ? 'text-[var(--terracotta)]' : 'text-[var(--sage)]'}`}>
-                                                                    {result.error ? `✗ ${result.error}` : `→ ${result.result}`}
-                                                                </span>
-                                                                {result.result && !result.error && (
-                                                                    <button onClick={() => copyText(result.result)}
-                                                                        className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)]" title="复制返回值">
-                                                                        <Clipboard size={10} />
-                                                                    </button>
-                                                                )}
-                                                            </>
+                                                <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,10rem)_3.5rem] items-center gap-2 py-0.5 text-xs">
+                                                    <span className="min-w-0 truncate font-mono text-[var(--coffee-deep)]" title={`${m.name}(${m.params?.map(p => p.name).join(', ')})`}>
+                                                        {m.name}({m.params?.map(p => p.name).join(', ')})
+                                                    </span>
+                                                    <div className="flex min-w-0 items-center justify-end gap-1">
+                                                        {result && <span className={`min-w-0 truncate text-[10px] font-mono ${result.error ? 'text-[var(--terracotta)]' : 'text-[var(--sage)]'}`}>
+                                                            {result.error ? `✗ ${result.error}` : `→ ${result.result}`}
+                                                        </span>}
+                                                        {result?.result && !result.error && (
+                                                            <button onClick={() => copyText(result.result)}
+                                                                className="flex-shrink-0 rounded p-0.5 text-[var(--coffee-muted)] hover:bg-black/5" title="复制返回值">
+                                                                <Clipboard size={10} />
+                                                            </button>
                                                         )}
+                                                    </div>
+                                                    <div className="flex w-14 justify-end">
                                                         {m.paramCount === 0 && m.callable !== false && (
                                                             <button onClick={() => onCallMethod(comp.compIndex, m.name)}
-                                                                className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--sage)]/10 text-[var(--sage)] hover:bg-[var(--sage)]/20">
-                                                                ▶ Call
+                                                                className="w-14 rounded bg-[var(--sage)]/10 px-1.5 py-0.5 text-[10px] text-[var(--sage)] hover:bg-[var(--sage)]/20">
+                                                                ▶ 调用
                                                             </button>
                                                         )}
                                                     </div>
@@ -1149,6 +1208,7 @@ function ComponentCard({ comp, highlight, expanded, onToggleExpanded, methodResu
                                     </div>
                                 )}
                             </div>
+                            </div>}
                         </>
                     )}
                 </div>

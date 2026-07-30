@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ChevronRight, ChevronDown, Crosshair, Loader2 } from 'lucide-react'
+import { ChevronRight, ChevronDown, Crosshair, Loader2, Palette, ShieldAlert } from 'lucide-react'
 import { parseNumericDraft } from '../utils/numericInput'
 
 // 复用：Hierarchy / 未来其它反射面板共用的属性单行组件
@@ -19,6 +19,20 @@ const INPUT_CLS = "!h-5 !py-0 !px-1 !rounded !border !border-[var(--glass-border
 const ChevronSlot = ({ children }) => (
     <span className="w-3 flex-shrink-0 inline-flex items-center justify-center text-[var(--coffee-muted)]">{children}</span>
 )
+
+function FieldDecorations({ p, children }) {
+    return (
+        <>
+            {!!p.space && <div style={{ height: Math.min(Number(p.space) || 8, 24) }} />}
+            {p.header && (
+                <div className="mt-1.5 mb-0.5 border-l-2 border-[var(--caramel)]/55 pl-1.5 text-[10px] font-semibold text-[var(--coffee-deep)]">
+                    {p.header}
+                </div>
+            )}
+            <div title={p.tooltip || undefined}>{children}</div>
+        </>
+    )
+}
 
 function NumericInput({ value, valueType = 'float', onCommit, className }) {
     const [draft, setDraft] = useState(null)
@@ -47,94 +61,132 @@ function NumericInput({ value, valueType = 'float', onCommit, className }) {
     )
 }
 
-export default function PropRow({ prop, onSet, onLoadCollection, onLoadNested, onSetNested, onLocate }) {
+export default function PropRow({ prop, onSet, onLoadCollection, onLoadNested, onSetNested, onLoadMaterial, onSetMaterial, onLocate }) {
     const [editVal, setEditVal] = useState(null)
     const p = prop
     const isEditing = editVal !== null
     const commit = (val) => { onSet(val); setEditVal(null) }
 
     if (p.valueType === 'bool' && p.editable) {
-        return (
+        return <FieldDecorations p={p}>
             <div className="flex items-center gap-2 py-0.5 text-xs">
                 <ChevronSlot />
-                <span className={NAME_COL} title={p.name}>{p.name}:</span>
+                <span className={NAME_COL} title={p.tooltip || p.name}>{p.displayName || p.name}:</span>
                 <button onClick={() => onSet(!p.value)}
                     className={`relative inline-flex items-center h-4 w-7 flex-shrink-0 rounded-full transition-colors ${p.value ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/30'}`}>
                     <span className={`inline-block w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${p.value ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
                 </button>
             </div>
-        )
+        </FieldDecorations>
     }
     if ((p.valueType === 'int' || p.valueType === 'float') && p.editable) {
-        return (
+        const min = p.rangeMin ?? p.min
+        const max = p.rangeMax
+        const commitNumber = value => onSet(min != null ? Math.max(Number(min), value) : value)
+        return <FieldDecorations p={p}>
             <div className="flex items-center gap-2 py-0.5 text-xs">
                 <ChevronSlot />
-                <span className={NAME_COL} title={p.name}>{p.name}:</span>
+                <span className={NAME_COL} title={p.tooltip || p.name}>{p.displayName || p.name}:</span>
+                {min != null && max != null && (
+                    <input type="range" min={min} max={max} step={p.valueType === 'int' ? 1 : 'any'}
+                        value={Number(p.value ?? 0)}
+                        onChange={e => commitNumber(p.valueType === 'int' ? Number.parseInt(e.target.value, 10) : Number(e.target.value))}
+                        className="!w-28 !h-1 !p-0 accent-[var(--caramel)] flex-shrink-0"
+                    />
+                )}
                 <NumericInput
                     value={p.value ?? 0}
                     valueType={p.valueType}
-                    onCommit={onSet}
+                    onCommit={commitNumber}
                     className={`!w-24 ${INPUT_CLS}`}
                 />
             </div>
-        )
+        </FieldDecorations>
     }
-    if (p.valueType === 'string' && p.editable) {
-        return (
+    if (p.valueType === 'enum' && p.editable) {
+        return <FieldDecorations p={p}>
             <div className="flex items-center gap-2 py-0.5 text-xs">
                 <ChevronSlot />
-                <span className={NAME_COL} title={p.name}>{p.name}:</span>
-                <input type="text" value={isEditing ? editVal : (p.value ?? '')}
+                <span className={NAME_COL} title={p.tooltip || p.name}>{p.displayName || p.name}:</span>
+                <select value={String(p.value ?? '')} onChange={e => onSet(e.target.value)}
+                    className="!h-5 !py-0 !px-1 !rounded !border !border-[var(--glass-border)] !bg-white/70 font-mono !text-[10px] min-w-28">
+                    {(p.enumOptions || [String(p.value ?? '')]).map(option => <option key={option} value={option}>{option}</option>)}
+                </select>
+            </div>
+        </FieldDecorations>
+    }
+    if (p.valueType === 'string' && p.editable) {
+        return <FieldDecorations p={p}>
+            <div className="flex items-center gap-2 py-0.5 text-xs">
+                <ChevronSlot />
+                <span className={NAME_COL} title={p.tooltip || p.name}>{p.displayName || p.name}:</span>
+                {p.textArea ? <textarea value={isEditing ? editVal : (p.value ?? '')}
+                    rows={p.lines || p.minLines || 3}
+                    onFocus={() => setEditVal(p.value ?? '')}
+                    onChange={e => setEditVal(e.target.value)}
+                    onBlur={() => { if (isEditing) commit(editVal) }}
+                    className="!flex-1 !min-h-14 !py-1 !px-1 !rounded !border !border-[var(--glass-border)] !bg-white/70 font-mono !text-[10px]"
+                /> : <input type="text" value={isEditing ? editVal : (p.value ?? '')}
                     onFocus={() => setEditVal(p.value ?? '')}
                     onChange={e => setEditVal(e.target.value)}
                     onBlur={() => { if (isEditing) commit(editVal) }}
                     onKeyDown={e => { if (e.key === 'Enter') { commit(editVal); e.target.blur() } }}
                     className={`!flex-1 ${INPUT_CLS}`}
-                />
+                />}
             </div>
-        )
+        </FieldDecorations>
     }
     if ((p.valueType === 'vector2' || p.valueType === 'vector3' || p.valueType === 'vector4' || p.valueType === 'color' || p.valueType === 'euler' || p.valueType === 'rect') && p.editable) {
         const arr = Array.isArray(p.value) ? p.value : [0, 0, 0, 0]
         const labels = p.valueType === 'color' ? ['R','G','B','A'] : p.valueType === 'rect' ? ['X','Y','W','H'] : ['X','Y','Z','W']
         const count = p.valueType === 'vector2' ? 2 : (p.valueType === 'vector3' || p.valueType === 'euler') ? 3 : 4
-        return (
-            <div className="flex items-center gap-1 py-0.5 text-xs flex-wrap">
+        return <FieldDecorations p={p}>
+            <div className="grid grid-cols-[12px_7rem_minmax(0,1fr)] items-center gap-2 py-0.5 text-xs">
                 <ChevronSlot />
-                <span className={NAME_COL} title={p.name}>{p.name}:</span>
-                {p.valueType === 'color' && <span className="w-3 h-3 rounded-sm border border-black/10 flex-shrink-0" style={{ background: `rgba(${(arr[0]*255)|0},${(arr[1]*255)|0},${(arr[2]*255)|0},${arr[3]??1})` }} />}
-                {Array.from({ length: count }).map((_, i) => (
-                    <div key={i} className="flex items-center gap-0.5">
-                        <span className="text-[9px] text-[var(--coffee-muted)] opacity-50">{labels[i]}</span>
-                        <NumericInput
-                            value={arr[i] ?? 0}
-                            valueType="float"
-                            onCommit={value => {
-                                const next = [...arr.slice(0, count)]
-                                next[i] = value
-                                onSet(next)
-                            }}
-                            className={`!w-14 ${INPUT_CLS}`}
-                        />
+                <span className={NAME_COL} title={p.tooltip || p.name}>{p.displayName || p.name}:</span>
+                <div className="flex min-w-0 items-center gap-1.5">
+                    <span
+                        className={`h-3 w-3 flex-shrink-0 rounded-sm border ${p.valueType === 'color' ? 'border-black/10' : 'invisible border-transparent'}`}
+                        style={p.valueType === 'color' ? { background: `rgba(${(arr[0]*255)|0},${(arr[1]*255)|0},${(arr[2]*255)|0},${arr[3]??1})` } : undefined}
+                    />
+                    <div className="grid grid-flow-col auto-cols-[4.25rem] gap-1">
+                        {Array.from({ length: count }).map((_, i) => (
+                            <label key={i} className="grid grid-cols-[10px_3.5rem] items-center gap-0.5">
+                                <span className="text-center text-[9px] text-[var(--coffee-muted)] opacity-50">{labels[i]}</span>
+                                <NumericInput
+                                    value={arr[i] ?? 0}
+                                    valueType="float"
+                                    onCommit={value => {
+                                        const next = [...arr.slice(0, count)]
+                                        next[i] = value
+                                        onSet(next)
+                                    }}
+                                    className={`!w-14 ${INPUT_CLS}`}
+                                />
+                            </label>
+                        ))}
                     </div>
-                ))}
+                </div>
             </div>
-        )
+        </FieldDecorations>
     }
     if (p.valueType === 'object' && onLoadNested) {
-        return <ObjectField p={p} onLoadCollection={onLoadCollection} onLoadNested={onLoadNested} onSetNested={onSetNested} onLocate={onLocate} />
+        return <FieldDecorations p={p}><ObjectField p={p} onLoadCollection={onLoadCollection} onLoadNested={onLoadNested} onSetNested={onSetNested} onLoadMaterial={onLoadMaterial} onSetMaterial={onSetMaterial} onLocate={onLocate} /></FieldDecorations>
     }
     if (p.valueType === 'collection' && (onLoadCollection || (p.path && onLoadNested))) {
         const loader = p.path && onLoadNested
             ? (_propName, offset, limit, cb) => onLoadNested(p.path, offset, limit, cb)
             : onLoadCollection
-        return <CollectionField p={p} onLoadCollection={loader} onLoadNested={onLoadNested} onSetNested={onSetNested} onLocate={onLocate} />
+        return <FieldDecorations p={p}><CollectionField p={p} onLoadCollection={loader} onLoadNested={onLoadNested} onSetNested={onSetNested} onLoadMaterial={onLoadMaterial} onSetMaterial={onSetMaterial} onLocate={onLocate} /></FieldDecorations>
+    }
+    if (p.valueType === 'material' && p.materialInstanceId != null) {
+        return <FieldDecorations p={p}><MaterialField p={p} onLoadMaterial={onLoadMaterial} onSetMaterial={onSetMaterial} /></FieldDecorations>
     }
     if (p.valueType === 'ref' && p.instanceId != null && p.instanceId !== -1) {
-        return (
+        return <FieldDecorations p={p}>
             <div className="flex items-center gap-2 py-0.5 text-xs">
                 <ChevronSlot />
-                <span className={NAME_COL} title={p.name}>{p.name}:</span>
+                <span className={NAME_COL} title={p.tooltip || p.name}>{p.displayName || p.name}:</span>
                 <span className="text-[var(--sage)] font-medium truncate min-w-0" title={`#${p.instanceId} ${p.value}`}>
                     {p.value}
                 </span>
@@ -147,22 +199,210 @@ export default function PropRow({ prop, onSet, onLoadCollection, onLoadNested, o
                     </button>
                 )}
             </div>
-        )
+        </FieldDecorations>
     }
-    return (
+    return <FieldDecorations p={p}>
         <div className="flex items-center gap-2 py-0.5 text-xs">
             <ChevronSlot />
-            <span className={NAME_COL} title={p.name}>{p.name}:</span>
+            <span className={NAME_COL} title={p.tooltip || p.name}>{p.displayName || p.name}:</span>
             <span className="font-mono text-[var(--coffee-muted)] opacity-60 text-[10px] truncate">{String(p.value ?? 'null')}</span>
             <span className="text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">{p.typeName}</span>
         </div>
+    </FieldDecorations>
+}
+
+// ============================================================================
+// 材质字段（显式按需加载；不访问 Renderer.material，避免隐式实例化）
+// ============================================================================
+function MaterialField({ p, onLoadMaterial, onSetMaterial }) {
+    const [expanded, setExpanded] = useState(false)
+    const [detail, setDetail] = useState(null)
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState(null)
+
+    const load = useCallback(() => {
+        if (!onLoadMaterial) return
+        setLoading(true)
+        setError(null)
+        onLoadMaterial(p.materialInstanceId, data => {
+            setLoading(false)
+            if (!data || data.error) {
+                setError(data?.error || '加载材质参数失败')
+                return
+            }
+            setDetail(data)
+        })
+    }, [onLoadMaterial, p.materialInstanceId])
+
+    const toggle = () => {
+        if (!expanded && !detail) load()
+        setExpanded(value => !value)
+    }
+
+    const setProperty = (propertyName, propertyType, value) => {
+        if (!onSetMaterial) return
+        setError(null)
+        onSetMaterial(p.materialInstanceId, propertyName, propertyType, value, data => {
+            if (data?.error) {
+                setError(data.error)
+                return
+            }
+            load()
+        })
+    }
+
+    return (
+        <div className="py-0.5 text-xs">
+            <div className="flex items-center gap-2">
+                <ChevronSlot>
+                    <button onClick={toggle} className="p-0 hover:text-[var(--coffee-deep)]" title={expanded ? '收起材质参数' : '加载材质参数'}>
+                        {loading ? <Loader2 size={10} className="animate-spin" /> : expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                    </button>
+                </ChevronSlot>
+                <span className={`${NAME_COL} cursor-pointer hover:text-[var(--coffee-deep)]`} onClick={toggle} title={p.name}>
+                    {p.displayName || p.name}:
+                </span>
+                <Palette size={11} className="text-[var(--caramel)] flex-shrink-0" />
+                <span className="font-medium text-[var(--coffee-deep)] truncate min-w-0">{p.value || 'Material'}</span>
+                <span className="text-[9px] text-[var(--coffee-muted)] opacity-45 truncate min-w-0">{p.shaderName}</span>
+                {!expanded && (
+                    <button onClick={toggle} className="ml-auto rounded border border-[var(--caramel)]/25 px-1.5 py-0.5 text-[9px] text-[var(--caramel)] hover:bg-[var(--caramel)]/10">
+                        加载参数
+                    </button>
+                )}
+            </div>
+            {expanded && (
+                <div className="ml-5 mt-1 overflow-hidden rounded-md border border-[var(--caramel)]/20 bg-[var(--cream-warm)]/20">
+                    <div className="flex items-start gap-1.5 border-b border-[var(--caramel)]/15 bg-[var(--caramel)]/[0.045] px-2 py-1.5 text-[9px] text-[var(--coffee-muted)]">
+                        <ShieldAlert size={11} className="mt-0.5 flex-shrink-0 text-[var(--caramel)]" />
+                        <span>运行时直接编辑当前材质引用；共享材质的变化会影响所有使用者，刷新或退出游戏后不会保存。</span>
+                    </div>
+                    {error && <div className="px-2 py-1 text-[10px] text-[var(--terracotta)]">⚠ {error}</div>}
+                    {loading && !detail && (
+                        <div className="flex items-center gap-1 px-2 py-2 text-[10px] text-[var(--coffee-muted)]">
+                            <Loader2 size={10} className="animate-spin" /> 正在读取 Shader 参数...
+                        </div>
+                    )}
+                    {detail && (
+                        <>
+                            <div className="flex items-center gap-2 border-b border-[var(--glass-border)]/60 px-2 py-1 text-[9px] text-[var(--coffee-muted)]">
+                                <span className="font-medium text-[var(--coffee-deep)]">{detail.shaderName || 'Unknown Shader'}</span>
+                                <span className="ml-auto">Queue {detail.renderQueue}</span>
+                                <button onClick={load} className="hover:text-[var(--caramel)]">刷新</button>
+                            </div>
+                            <div className="max-h-80 space-y-0.5 overflow-y-auto px-2 py-1">
+                                {(detail.properties || []).map(prop => (
+                                    <MaterialPropertyRow key={prop.name} prop={prop} onSet={setProperty} />
+                                ))}
+                                {(detail.properties || []).length === 0 && (
+                                    <div className="py-2 text-center text-[10px] text-[var(--coffee-muted)] opacity-50">Shader 没有可枚举参数</div>
+                                )}
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
+    )
+}
+
+function MaterialPropertyRow({ prop, onSet }) {
+    const label = prop.displayName || prop.name
+    const propertyType = prop.propertyType
+    if (propertyType === 'Float' || propertyType === 'Range' || propertyType === 'Int') {
+        const isInt = propertyType === 'Int'
+        return (
+            <div className="flex items-center gap-1.5 py-0.5">
+                <span className="w-32 flex-shrink-0 truncate font-mono text-[10px] text-[var(--coffee-muted)]" title={`${label} (${prop.name})`}>{label}</span>
+                {propertyType === 'Range' && prop.rangeMin != null && prop.rangeMax != null && (
+                    <input type="range" min={prop.rangeMin} max={prop.rangeMax} step="any" value={Number(prop.value ?? 0)}
+                        onChange={e => onSet(prop.name, propertyType, Number(e.target.value))}
+                        className="!h-1 !w-28 !p-0 accent-[var(--caramel)]"
+                    />
+                )}
+                <NumericInput value={prop.value ?? 0} valueType={isInt ? 'int' : 'float'}
+                    onCommit={value => onSet(prop.name, propertyType, value)}
+                    className={`!w-20 ${INPUT_CLS}`}
+                />
+            </div>
+        )
+    }
+    if (propertyType === 'Color' || propertyType === 'Vector') {
+        const values = Array.isArray(prop.value) ? prop.value : [0, 0, 0, propertyType === 'Color' ? 1 : 0]
+        const labels = propertyType === 'Color' ? ['R', 'G', 'B', 'A'] : ['X', 'Y', 'Z', 'W']
+        return (
+            <div className="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5 py-0.5">
+                <span className="w-32 flex-shrink-0 truncate font-mono text-[10px] text-[var(--coffee-muted)]" title={`${label} (${prop.name})`}>{label}</span>
+                <div className="flex min-w-0 items-center gap-1">
+                    <span
+                        className={`h-3 w-3 flex-shrink-0 rounded-sm border ${propertyType === 'Color' ? 'border-black/10' : 'invisible border-transparent'}`}
+                        style={propertyType === 'Color' ? { background: `rgba(${(values[0] * 255) | 0},${(values[1] * 255) | 0},${(values[2] * 255) | 0},${values[3] ?? 1})` } : undefined}
+                    />
+                    <div className="grid grid-flow-col auto-cols-[3.75rem] gap-1">
+                        {labels.map((axis, index) => (
+                            <label key={axis} className="grid grid-cols-[9px_3rem] items-center gap-0.5">
+                                <span className="text-center text-[8px] text-[var(--coffee-muted)] opacity-45">{axis}</span>
+                                <NumericInput value={values[index] ?? 0} valueType="float"
+                                    onCommit={value => {
+                                        const next = [...values]
+                                        next[index] = value
+                                        onSet(prop.name, propertyType, next)
+                                    }}
+                                    className={`!w-12 ${INPUT_CLS}`}
+                                />
+                            </label>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        )
+    }
+    if (propertyType === 'Texture') {
+        return (
+            <div className="border-b border-[var(--glass-border)]/30 py-1 last:border-0">
+                <div className="flex items-center gap-1.5">
+                    <span className="w-32 flex-shrink-0 truncate font-mono text-[10px] text-[var(--coffee-muted)]" title={`${label} (${prop.name})`}>{label}</span>
+                    <span className="truncate font-mono text-[10px] text-[var(--coffee-deep)]">{prop.textureName || 'None'}</span>
+                    {prop.textureWidth != null && <span className="text-[8px] text-[var(--coffee-muted)] opacity-45">{prop.textureWidth}×{prop.textureHeight}</span>}
+                </div>
+                {!prop.noScaleOffset && <div className="ml-32 mt-0.5 flex items-center gap-2 pl-1.5">
+                    <MaterialVector2 label="Offset" value={prop.offset} onCommit={value => onSet(prop.name, 'TextureOffset', value)} />
+                    <MaterialVector2 label="Scale" value={prop.scale} onCommit={value => onSet(prop.name, 'TextureScale', value)} />
+                </div>}
+            </div>
+        )
+    }
+    return (
+        <div className="flex items-center gap-1.5 py-0.5 text-[10px] text-[var(--coffee-muted)]">
+            <span className="w-32 truncate font-mono">{label}</span>
+            <span className="opacity-45">{String(prop.value ?? propertyType)}</span>
+        </div>
+    )
+}
+
+function MaterialVector2({ label, value, onCommit }) {
+    const values = Array.isArray(value) ? value : [0, 0]
+    return (
+        <span className="inline-grid grid-cols-[2rem_auto_auto] items-center gap-1">
+            <span className="text-[8px] text-[var(--coffee-muted)] opacity-45">{label}</span>
+            {[0, 1].map(index => (
+                <NumericInput key={index} value={values[index] ?? 0} valueType="float"
+                    onCommit={nextValue => {
+                        const next = [...values]
+                        next[index] = nextValue
+                        onCommit(next)
+                    }}
+                    className={`!w-11 ${INPUT_CLS}`}
+                />
+            ))}
+        </span>
     )
 }
 
 // ============================================================================
 // 集合字段（懒加载 + 元素行 + 🎯 Locate）
 // ============================================================================
-function CollectionField({ p, onLoadCollection, onLoadNested, onSetNested, onLocate }) {
+function CollectionField({ p, onLoadCollection, onLoadNested, onSetNested, onLoadMaterial, onSetMaterial, onLocate }) {
     const [expanded, setExpanded] = useState(false)
     const [items, setItems] = useState(null)
     const [total, setTotal] = useState(p.count ?? 0)
@@ -202,7 +442,7 @@ function CollectionField({ p, onLoadCollection, onLoadNested, onSetNested, onLoc
                 </ChevronSlot>
                 <span className={`${NAME_COL} ${isEmpty ? '' : 'cursor-pointer hover:text-[var(--coffee-deep)]'}`}
                     title={p.name}
-                    onClick={isEmpty ? undefined : toggleExpand}>{p.name}:</span>
+                    onClick={isEmpty ? undefined : toggleExpand}>{p.displayName || p.name}:</span>
                 <span className="font-mono text-[var(--coffee-muted)] opacity-60 text-[10px] truncate">{p.value}</span>
                 <span className="text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">{p.typeName}</span>
             </div>
@@ -218,6 +458,8 @@ function CollectionField({ p, onLoadCollection, onLoadNested, onSetNested, onLoc
                             : <ListRow key={it.index} item={it}
                                 onLoadNested={onLoadNested}
                                 onSetNested={onSetNested}
+                                onLoadMaterial={onLoadMaterial}
+                                onSetMaterial={onSetMaterial}
                                 onLocate={onLocate}
                             />
                     ))}
@@ -241,7 +483,7 @@ function CollectionField({ p, onLoadCollection, onLoadNested, onSetNested, onLoc
     )
 }
 
-function ObjectField({ p, onLoadCollection, onLoadNested, onSetNested, onLocate }) {
+function ObjectField({ p, onLoadCollection, onLoadNested, onSetNested, onLoadMaterial, onSetMaterial, onLocate }) {
     const [expanded, setExpanded] = useState(false)
     const [items, setItems] = useState(null)
     const [loading, setLoading] = useState(false)
@@ -279,7 +521,7 @@ function ObjectField({ p, onLoadCollection, onLoadNested, onSetNested, onLocate 
                 </ChevronSlot>
                 <span className={`${NAME_COL} ${isEmpty ? '' : 'cursor-pointer hover:text-[var(--coffee-deep)]'}`}
                     title={p.name}
-                    onClick={isEmpty ? undefined : toggleExpand}>{p.name}:</span>
+                    onClick={isEmpty ? undefined : toggleExpand}>{p.displayName || p.name}:</span>
                 <span className="font-mono text-[var(--coffee-deep)] text-[10px] truncate">{p.typeName}</span>
                 <span className="text-[9px] text-[var(--coffee-muted)] opacity-40 flex-shrink-0">{p.memberCount ?? 0} fields</span>
             </div>
@@ -305,6 +547,8 @@ function ObjectField({ p, onLoadCollection, onLoadNested, onSetNested, onLocate 
                             onLoadCollection={onLoadCollection}
                             onLoadNested={onLoadNested}
                             onSetNested={onSetNested}
+                            onLoadMaterial={onLoadMaterial}
+                            onSetMaterial={onSetMaterial}
                             onLocate={onLocate}
                         />
                     ))}
@@ -314,15 +558,17 @@ function ObjectField({ p, onLoadCollection, onLoadNested, onSetNested, onLocate 
     )
 }
 
-function ListRow({ item, onLoadNested, onSetNested, onLocate }) {
+function ListRow({ item, onLoadNested, onSetNested, onLoadMaterial, onSetMaterial, onLocate }) {
     const isLocatable = (item.kind === 'go' || item.kind === 'comp') && item.instanceId != null && item.instanceId !== -1 && onLocate
-    if ((item.valueType === 'object' || item.valueType === 'collection') && onLoadNested) {
+    if (((item.valueType === 'object' || item.valueType === 'collection') && onLoadNested) || item.valueType === 'material') {
         return (
             <PropRow
                 prop={{ ...item, name: `[${item.index}]` }}
                 onSet={value => onSetNested?.(item.path, value, item.valueType)}
                 onLoadNested={onLoadNested}
                 onSetNested={onSetNested}
+                onLoadMaterial={onLoadMaterial}
+                onSetMaterial={onSetMaterial}
                 onLocate={onLocate}
             />
         )

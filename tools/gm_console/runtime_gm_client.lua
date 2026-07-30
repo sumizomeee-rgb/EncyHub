@@ -1431,6 +1431,213 @@ local function StartRuntimeGM()
         CompareTag=1, SendMessage=1, SendMessageUpwards=1, BroadcastMessage=1, TryGetComponent=1,
         StartCoroutine=1, StopCoroutine=1, StopAllCoroutines=1, Invoke=1, InvokeRepeating=1, CancelInvoke=1, IsInvoking=1,
     }
+    local HIER_BINDING_INSTANCE_ALL = 52          -- Instance | Public | NonPublic
+    local HIER_BINDING_DECLARED_INSTANCE_ALL = 54 -- DeclaredOnly | Instance | Public | NonPublic
+
+    local function hierAttributeName(attr)
+        local name = ""
+        pcall(function() name = tostring(attr:GetType().Name) end)
+        return name:gsub("Attribute$", "")
+    end
+
+    local function hierReadFieldMetadata(field)
+        local meta = {}
+        local attrs
+        pcall(function() attrs = field:GetCustomAttributes(true) end)
+        if attrs then
+            local count = 0
+            pcall(function() count = attrs.Length end)
+            for i = 0, count - 1 do
+                local attr = attrs[i]
+                local name = hierAttributeName(attr)
+                if name == "SerializeField" then
+                    meta.serializeField = true
+                elseif name == "SerializeReference" then
+                    meta.serializeReference = true
+                elseif name == "HideInInspector" then
+                    meta.hidden = true
+                elseif name == "NonSerialized" then
+                    meta.nonSerialized = true
+                elseif name == "Header" then
+                    pcall(function() meta.header = tostring(attr.header) end)
+                elseif name == "Tooltip" then
+                    pcall(function() meta.tooltip = tostring(attr.tooltip) end)
+                elseif name == "Range" then
+                    pcall(function()
+                        meta.rangeMin = tonumber(attr.min)
+                        meta.rangeMax = tonumber(attr.max)
+                    end)
+                elseif name == "Min" then
+                    pcall(function() meta.min = tonumber(attr.min) end)
+                elseif name == "Space" then
+                    pcall(function() meta.space = tonumber(attr.height) or 8 end)
+                elseif name == "TextArea" then
+                    pcall(function()
+                        meta.textArea = true
+                        meta.minLines = tonumber(attr.minLines)
+                        meta.maxLines = tonumber(attr.maxLines)
+                    end)
+                elseif name == "Multiline" then
+                    pcall(function()
+                        meta.textArea = true
+                        meta.lines = tonumber(attr.lines)
+                    end)
+                end
+            end
+        end
+        -- 某些 IL2CPP/XLua 组合无法稳定枚举 Attribute 数组，关键筛选属性再用 IsDefined 兜底。
+        pcall(function()
+            if field:IsDefined(typeof(CS.UnityEngine.SerializeField), true) then meta.serializeField = true end
+        end)
+        pcall(function()
+            if field:IsDefined(typeof(CS.UnityEngine.SerializeReference), true) then meta.serializeReference = true end
+        end)
+        pcall(function()
+            if field:IsDefined(typeof(CS.UnityEngine.HideInInspector), true) then meta.hidden = true end
+        end)
+        pcall(function()
+            if field:IsDefined(typeof(CS.System.NonSerializedAttribute), true) then meta.nonSerialized = true end
+        end)
+        return meta
+    end
+
+    local function hierNicifyFieldName(name)
+        local value = tostring(name or "")
+        value = value:gsub("^m_", "")
+        value = value:gsub("^_", "")
+        value = value:gsub("_", " ")
+        value = value:gsub("(%l)(%u)", "%1 %2")
+        value = value:gsub("(%a)(%d)", "%1 %2")
+        value = value:gsub("(%d)(%a)", "%1 %2")
+        if #value > 0 then value = value:sub(1, 1):upper() .. value:sub(2) end
+        return value
+    end
+
+    local function hierIsUnityBaseComponentType(t)
+        local fullName = ""
+        pcall(function() fullName = tostring(t.FullName) end)
+        return fullName == "UnityEngine.Object"
+            or fullName == "UnityEngine.Component"
+            or fullName == "UnityEngine.Behaviour"
+            or fullName == "UnityEngine.MonoBehaviour"
+            or fullName == "System.Object"
+    end
+
+    local function hierCollectSerializableFields(targetType)
+        local chain = {}
+        local current = targetType
+        while current and not hierIsUnityBaseComponentType(current) do
+            chain[#chain + 1] = current
+            local nextType
+            pcall(function() nextType = current.BaseType end)
+            current = nextType
+        end
+
+        local result = {}
+        for ci = #chain, 1, -1 do
+            local fields
+            pcall(function() fields = chain[ci]:GetFields(HIER_BINDING_DECLARED_INSTANCE_ALL) end)
+            local declared = {}
+            if fields then
+                for i = 0, fields.Length - 1 do declared[#declared + 1] = fields[i] end
+            end
+            table.sort(declared, function(a, b)
+                local at, bt = 0, 0
+                pcall(function() at = tonumber(a.MetadataToken) or 0 end)
+                pcall(function() bt = tonumber(b.MetadataToken) or 0 end)
+                return at < bt
+            end)
+            for _, field in ipairs(declared) do
+                local meta = hierReadFieldMetadata(field)
+                local isStatic, isLiteral, isInitOnly, isNotSerialized = false, false, false, false
+                pcall(function() isStatic = field.IsStatic end)
+                pcall(function() isLiteral = field.IsLiteral end)
+                pcall(function() isInitOnly = field.IsInitOnly end)
+                pcall(function() isNotSerialized = field.IsNotSerialized end)
+                local include = (field.IsPublic or meta.serializeField or meta.serializeReference)
+                    and not isStatic and not isLiteral and not isInitOnly
+                    and not isNotSerialized and not meta.nonSerialized and not meta.hidden
+                if include then
+                    result[#result + 1] = { field = field, meta = meta }
+                end
+            end
+        end
+        return result
+    end
+
+    local function hierCountSerializableFields(targetType)
+        local ok, fields = pcall(hierCollectSerializableFields, targetType)
+        return ok and #fields or 0
+    end
+
+    local function hierEnumOptions(enumType)
+        local options = {}
+        pcall(function()
+            local names = CS.System.Enum.GetNames(enumType)
+            for i = 0, names.Length - 1 do options[#options + 1] = tostring(names[i]) end
+        end)
+        return options
+    end
+
+    local function hierApplyValueExtra(entry, valueType, extra)
+        if not extra then return end
+        if valueType == "collection" then
+            entry.count = extra.count
+            entry.collectionKind = extra.kind
+        elseif valueType == "ref" then
+            entry.instanceId = extra.instanceId
+            entry.refKind = extra.refKind
+            entry.actualType = extra.actualType
+        elseif valueType == "material" then
+            entry.materialInstanceId = extra.materialInstanceId
+            entry.shaderName = extra.shaderName
+        end
+    end
+
+    local function hierBuildSerializedFieldEntry(owner, field, meta)
+        local fieldName = tostring(field.Name)
+        local typeName = tostring(field.FieldType.Name)
+        local value = field:GetValue(owner)
+        local serialized, valueType, extra = inspectorSerializePropValue(value, typeName)
+        if value ~= nil and valueType == "readonly" then
+            local memberCount = hierCountSerializableFields(field.FieldType)
+            if memberCount > 0 then
+                valueType = "object"
+                serialized = typeName
+                extra = { memberCount = memberCount }
+            end
+        end
+        local entry = {
+            name = fieldName,
+            displayName = hierNicifyFieldName(fieldName),
+            typeName = typeName,
+            valueType = valueType,
+            value = serialized,
+            editable = valueType ~= "readonly" and valueType ~= "collection"
+                and valueType ~= "object" and valueType ~= "ref" and valueType ~= "material",
+            isField = true,
+            serializedField = true,
+            path = {},
+        }
+        for key, val in pairs(meta or {}) do entry[key] = val end
+        if valueType == "object" and extra then entry.memberCount = extra.memberCount end
+        local isEnum = false
+        pcall(function() isEnum = field.FieldType.IsEnum end)
+        if isEnum then entry.enumOptions = hierEnumOptions(field.FieldType) end
+        hierApplyValueExtra(entry, valueType, extra)
+        return entry
+    end
+
+    local function readSerializedFields(comp)
+        local result = {}
+        local fields = hierCollectSerializableFields(comp:GetType())
+        for _, item in ipairs(fields) do
+            pcall(function()
+                result[#result + 1] = hierBuildSerializedFieldEntry(comp, item.field, item.meta)
+            end)
+        end
+        return result
+    end
 
     local function convertTypedValue(value, valueType)
         if valueType == "bool" then return (value == true or value == "true")
@@ -1463,7 +1670,12 @@ local function StartRuntimeGM()
 
     -- 读取组件的属性、字段、方法（Hierarchy.GetDetail 和 Inspector.GetComponentDetail 共用）
     local function readComponentDetail(comp)
-        local result = { properties = {}, methods = {}, _debug = { propCount = 0, tried = 0, failed = 0 } }
+        local result = {
+            serializedFields = readSerializedFields(comp),
+            properties = {},
+            methods = {},
+            _debug = { propCount = 0, tried = 0, failed = 0 },
+        }
 
         -- 属性 (Properties)
         local props
@@ -1490,16 +1702,10 @@ local function StartRuntimeGM()
                 local serialized, valueType, extra = inspectorSerializePropValue(val, propTypeName)
                 local entry = {
                     name = pName, typeName = propTypeName, valueType = valueType,
-                    value = serialized, editable = prop.CanWrite and valueType ~= "readonly" and valueType ~= "collection" and valueType ~= "ref",
+                    value = serialized, editable = prop.CanWrite and valueType ~= "readonly"
+                        and valueType ~= "collection" and valueType ~= "ref" and valueType ~= "material",
                 }
-                if valueType == "collection" and extra then
-                    entry.count = extra.count
-                    entry.collectionKind = extra.kind
-                elseif valueType == "ref" and extra then
-                    entry.instanceId = extra.instanceId
-                    entry.refKind = extra.refKind
-                    entry.actualType = extra.actualType
-                end
+                hierApplyValueExtra(entry, valueType, extra)
                 result.properties[#result.properties + 1] = entry
             end)
         end
@@ -1521,16 +1727,10 @@ local function StartRuntimeGM()
                 local serialized, valueType, extra = inspectorSerializePropValue(val, fTypeName)
                 local entry = {
                     name = fName, typeName = fTypeName, valueType = valueType,
-                    value = serialized, editable = (not fld.IsInitOnly) and valueType ~= "readonly" and valueType ~= "collection" and valueType ~= "ref", isField = true,
+                    value = serialized, editable = (not fld.IsInitOnly) and valueType ~= "readonly"
+                        and valueType ~= "collection" and valueType ~= "ref" and valueType ~= "material", isField = true,
                 }
-                if valueType == "collection" and extra then
-                    entry.count = extra.count
-                    entry.collectionKind = extra.kind
-                elseif valueType == "ref" and extra then
-                    entry.instanceId = extra.instanceId
-                    entry.refKind = extra.refKind
-                    entry.actualType = extra.actualType
-                end
+                hierApplyValueExtra(entry, valueType, extra)
                 result.properties[#result.properties + 1] = entry
             end)
         end
@@ -1707,6 +1907,7 @@ local function StartRuntimeGM()
     -- 让 set_prop / call_method 直接走 LuaHierarchyCore 的现有实现，不重复造轮子。
     local LuaHierarchy = {}
     LuaHierarchy._goCache = setmetatable({}, { __mode = "v" })  -- instanceId(number) → GameObject (弱引用，GO 销毁后自动回收)
+    LuaHierarchy._materialRefs = setmetatable({}, { __mode = "v" }) -- instanceId(number) → Material
 
     origin_print("[RuntimeGM] LuaHierarchy module initialized")
 
@@ -1906,6 +2107,7 @@ local function StartRuntimeGM()
             if not c then
                 entry.error = "missing component"
                 entry.typeName = "<missing>"
+                entry.serializedFields = {}
                 entry.properties = {}
                 entry.methods = {}
             else
@@ -1923,13 +2125,64 @@ local function StartRuntimeGM()
                 local ok, det = pcall(readComponentDetail, c)
                 if not ok then
                     entry.error = tostring(det)
+                    entry.serializedFields = {}
                     entry.properties = {}
                     entry.methods = {}
                 else
+                    entry.serializedFields = det.serializedFields or {}
                     entry.properties = det.properties or {}
                     entry.methods = det.methods or {}
-                    table.sort(entry.properties, function(a, b) return a.name < b.name end)
+                    -- Unity 默认 Inspector 保留序列化声明顺序；高级运行时成员仍按名称排序便于检索。
                     table.sort(entry.methods, function(a, b) return a.name < b.name end)
+
+                    -- Renderer 的 sharedMaterials 与 UI Graphic 的 material 不是普通序列化字段，
+                    -- 但属于 Unity Inspector 的通用材质入口。只读取不会隐式实例化的引用。
+                    local seenMaterials = {}
+                    for _, field in ipairs(entry.serializedFields) do
+                        if field.materialInstanceId then seenMaterials[field.materialInstanceId] = true end
+                    end
+                    local function appendMaterial(material, label)
+                        if not material then return end
+                        local id = -1
+                        pcall(function() id = material:GetInstanceID() end)
+                        if id == -1 or seenMaterials[id] then return end
+                        seenMaterials[id] = true
+                        LuaHierarchy._materialRefs[id] = material
+                        local materialName, shaderName = "Material", ""
+                        pcall(function() materialName = tostring(material.name) end)
+                        pcall(function() shaderName = tostring(material.shader.name) end)
+                        entry.serializedFields[#entry.serializedFields + 1] = {
+                            name = label,
+                            displayName = label,
+                            typeName = "Material",
+                            valueType = "material",
+                            value = materialName,
+                            materialInstanceId = id,
+                            shaderName = shaderName,
+                            editable = false,
+                            serializedField = true,
+                            synthetic = true,
+                            path = {},
+                        }
+                    end
+                    pcall(function()
+                        local shared = c.sharedMaterials
+                        if shared then
+                            for mi = 0, shared.Length - 1 do
+                                appendMaterial(shared[mi], shared.Length > 1 and ("Material " .. mi) or "Material")
+                            end
+                        end
+                    end)
+                    local isGraphic = false
+                    pcall(function()
+                        local ct = c:GetType()
+                        while ct do
+                            if tostring(ct.FullName) == "UnityEngine.UI.Graphic" then isGraphic = true; break end
+                            ct = ct.BaseType
+                        end
+                    end)
+                    if isGraphic then pcall(function() appendMaterial(c.material, "Material") end) end
+
                     -- enabled 字段（仅 Behaviour 子类有该属性）
                     pcall(function()
                         local v = c.enabled
@@ -2071,6 +2324,15 @@ local function StartRuntimeGM()
 
         -- 可直接编辑的 Unity struct / 基础 CLR 值。
         local serialized, valueType, extra = inspectorSerializePropValue(el, typeName)
+        if valueType == "material" and extra then
+            return {
+                kind = "material", display = serialized, value = serialized,
+                valueType = "material", typeName = "Material",
+                materialInstanceId = extra.materialInstanceId,
+                shaderName = extra.shaderName,
+                editable = false, path = accessPath,
+            }
+        end
         if valueType == "vector2" or valueType == "vector3" or valueType == "vector4"
             or valueType == "color" or valueType == "rect" or valueType == "euler"
             or valueType == "bool" or valueType == "int" or valueType == "float"
@@ -2092,10 +2354,7 @@ local function StartRuntimeGM()
 
         -- 其他 userdata 作为可展开自定义对象返回，不再退化为地址式 tostring。
         local memberCount = 0
-        pcall(function()
-            local fields = el:GetType():GetFields(20)
-            if fields then memberCount = fields.Length end
-        end)
+        pcall(function() memberCount = hierCountSerializableFields(el:GetType()) end)
         local s = "?"; pcall(function() s = tostring(el) end)
         return {
             kind = "object", display = s, value = typeName,
@@ -2111,9 +2370,13 @@ local function StartRuntimeGM()
         local found = false
         pcall(function()
             local t = owner:GetType()
-            local fld = t:GetField(name)
-            if fld then value = fld:GetValue(owner); found = true; return end
-            local prop = t:GetProperty(name)
+            while t do
+                local fld = t:GetField(name, HIER_BINDING_INSTANCE_ALL)
+                if fld then value = fld:GetValue(owner); found = true; return end
+                t = t.BaseType
+            end
+            t = owner:GetType()
+            local prop = t:GetProperty(name, HIER_BINDING_INSTANCE_ALL)
             if prop and prop.CanRead then value = prop:GetValue(owner, nil); found = true end
         end)
         if found then return value end
@@ -2126,9 +2389,23 @@ local function StartRuntimeGM()
         if directOk and setOk then return end
         local reflectOk, reflectErr = pcall(function()
             local t = owner:GetType()
-            local fld = t:GetField(name)
-            if fld and not fld.IsInitOnly then fld:SetValue(owner, value); setOk = true; return end
-            local prop = t:GetProperty(name)
+            while t do
+                local fld = t:GetField(name, HIER_BINDING_INSTANCE_ALL)
+                if fld and not fld.IsInitOnly then
+                    local converted = value
+                    local isEnum = false
+                    pcall(function() isEnum = fld.FieldType.IsEnum end)
+                    if isEnum and type(value) == "string" then
+                        converted = CS.System.Enum.Parse(fld.FieldType, value)
+                    end
+                    fld:SetValue(owner, converted)
+                    setOk = true
+                    return
+                end
+                t = t.BaseType
+            end
+            t = owner:GetType()
+            local prop = t:GetProperty(name, HIER_BINDING_INSTANCE_ALL)
             if prop and prop.CanWrite then prop:SetValue(owner, value, nil); setOk = true; return end
             error("成员不存在或不可写: " .. tostring(name))
         end)
@@ -2223,24 +2500,9 @@ local function StartRuntimeGM()
         local ref, refErr = hierGetComponentRef(goId, compIndex)
         if not ref then return refErr end
 
-        -- 取属性/字段值（先尝试 xlua property accessor，失败再走反射 Field/Property GetValue）
+        -- 同时支持公开运行时成员和私有 [SerializeField]。
         local val
-        local ok = pcall(function() val = ref.comp[propName] end)
-        if not ok or val == nil then
-            -- 尝试反射 GetField / GetProperty
-            pcall(function()
-                local t = ref.comp:GetType()
-                local fld = t:GetField(propName)
-                if fld then val = fld:GetValue(ref.comp) end
-            end)
-            if val == nil then
-                pcall(function()
-                    local t = ref.comp:GetType()
-                    local p = t:GetProperty(propName)
-                    if p then val = p:GetValue(ref.comp, nil) end
-                end)
-            end
-        end
+        local ok = pcall(function() val = hierGetRootValue(ref.comp, propName) end)
         if val == nil then return { error = "属性为 nil 或无法访问: " .. tostring(propName) } end
 
         local items = {}
@@ -2393,39 +2655,22 @@ local function StartRuntimeGM()
             }
         end
 
-        -- 自定义对象仅枚举公开实例字段，与当前组件字段反射范围保持一致。
-        local fields
-        local fieldsOk, fieldsErr = pcall(function() fields = targetType:GetFields(20) end)
-        if not fieldsOk or not fields then
-            return { error = "读取对象字段失败: " .. tostring(fieldsErr) }
+        -- 自定义对象按 Unity 序列化规则枚举字段，并携带 Header/Tooltip/Range 等元数据。
+        local fieldsOk, fieldList = pcall(hierCollectSerializableFields, targetType)
+        if not fieldsOk or not fieldList then
+            return { error = "读取对象字段失败: " .. tostring(fieldList) }
         end
-
-        local fieldList = {}
-        for i = 0, fields.Length - 1 do
-            local fld = fields[i]
-            if fld and not fld.IsSpecialName then
-                fieldList[#fieldList + 1] = fld
-            end
-        end
-        table.sort(fieldList, function(a, b) return tostring(a.Name) < tostring(b.Name) end)
         total = #fieldList
 
         local maxI = math.min(offset + limit, total)
         for i = offset + 1, maxI do
-            local fld = fieldList[i]
+            local item = fieldList[i]
+            local fld = item.field
             pcall(function()
                 local name = tostring(fld.Name)
-                local typeName = tostring(fld.FieldType.Name)
-                local child = fld:GetValue(target)
                 local childPath = hierAppendPath(path, { kind = "member", name = name })
-                local d = hierDescribeItem(child, childPath, not fld.IsInitOnly, typeName)
-                d.name = name
-                d.typeName = typeName
-                d.editable = (not fld.IsInitOnly)
-                    and d.valueType ~= "readonly"
-                    and d.valueType ~= "collection"
-                    and d.valueType ~= "object"
-                    and d.valueType ~= "ref"
+                local d = hierBuildSerializedFieldEntry(target, fld, item.meta)
+                d.path = childPath
                 items[#items + 1] = d
             end)
         end
@@ -2437,7 +2682,6 @@ local function StartRuntimeGM()
 
     function LuaHierarchy.SetNestedProp(packet)
         local path = packet.path or {}
-        if #path == 0 then return { error = "缺少嵌套成员路径" } end
         if #path > 12 then return { error = "嵌套层级超过上限" } end
 
         local ref, refErr = hierGetComponentRef(packet.goInstanceId, packet.compIndex)
@@ -2446,6 +2690,145 @@ local function StartRuntimeGM()
             hierSetPathValue(ref.comp, packet.propName, path, packet.value, packet.valueType)
         end)
         if not ok then return { error = "写入嵌套值失败: " .. tostring(err) } end
+        return { success = true }
+    end
+
+    local function hierGetMaterial(materialInstanceId)
+        local id = tonumber(materialInstanceId)
+        if not id then return nil end
+        local material = LuaHierarchy._materialRefs[id]
+        if not material then return nil end
+        local alive = false
+        pcall(function() alive = material.name ~= nil end)
+        if not alive then
+            LuaHierarchy._materialRefs[id] = nil
+            return nil
+        end
+        return material
+    end
+
+    function LuaHierarchy.GetMaterialDetail(packet)
+        local material = hierGetMaterial(packet.materialInstanceId)
+        if not material then return { error = "材质引用已失效，请刷新 Inspector" } end
+
+        local result = {
+            materialInstanceId = tonumber(packet.materialInstanceId),
+            name = "Material",
+            shaderName = "",
+            renderQueue = 0,
+            properties = {},
+        }
+        pcall(function() result.name = tostring(material.name) end)
+        pcall(function() result.shaderName = tostring(material.shader.name) end)
+        pcall(function() result.renderQueue = tonumber(material.renderQueue) or 0 end)
+
+        local shader
+        pcall(function() shader = material.shader end)
+        if not shader then return result end
+        local count = 0
+        local countOk, countErr = pcall(function() count = shader:GetPropertyCount() end)
+        if not countOk then
+            return { error = "当前真机未暴露 Shader 属性枚举 API: " .. tostring(countErr) }
+        end
+
+        -- 不同 Unity/XLua 版本对 ShaderPropertyType 的 tostring 表现不一致：
+        -- 有的返回 "Float"，有的返回 "Float: 2"，当前真机则只返回 "2"。
+        -- 统一映射为稳定名称，避免所有参数落入“不支持”分支。
+        local shaderPropertyTypeNames = {
+            ["0"] = "Color",
+            ["1"] = "Vector",
+            ["2"] = "Float",
+            ["3"] = "Range",
+            ["4"] = "Texture",
+            ["5"] = "Int",
+        }
+        for i = 0, count - 1 do
+            pcall(function()
+                local name = tostring(shader:GetPropertyName(i))
+                local displayName = name
+                pcall(function() displayName = tostring(shader:GetPropertyDescription(i)) end)
+                local propertyType = tostring(shader:GetPropertyType(i))
+                propertyType = propertyType:match("([%w_]+)$") or propertyType
+                propertyType = shaderPropertyTypeNames[propertyType] or propertyType
+                local flags = ""
+                pcall(function() flags = tostring(shader:GetPropertyFlags(i)) end)
+                if flags:find("HideInInspector", 1, true) then return end
+                local entry = {
+                    name = name,
+                    displayName = displayName,
+                    propertyType = propertyType,
+                    editable = true,
+                    flags = flags,
+                    noScaleOffset = flags:find("NoScaleOffset", 1, true) ~= nil,
+                }
+
+                if propertyType == "Color" then
+                    local value = material:GetColor(name)
+                    entry.value = { value.r, value.g, value.b, value.a }
+                elseif propertyType == "Vector" then
+                    local value = material:GetVector(name)
+                    entry.value = { value.x, value.y, value.z, value.w }
+                elseif propertyType == "Float" or propertyType == "Range" then
+                    entry.value = tonumber(material:GetFloat(name)) or 0
+                    if propertyType == "Range" then
+                        pcall(function()
+                            local limits = shader:GetPropertyRangeLimits(i)
+                            entry.rangeMin = tonumber(limits.x)
+                            entry.rangeMax = tonumber(limits.y)
+                        end)
+                    end
+                elseif propertyType == "Int" or propertyType == "Integer" then
+                    local intOk, intValue = pcall(function() return material:GetInt(name) end)
+                    entry.value = intOk and tonumber(intValue) or tonumber(material:GetFloat(name)) or 0
+                    entry.propertyType = "Int"
+                elseif propertyType == "Texture" then
+                    local texture
+                    pcall(function() texture = material:GetTexture(name) end)
+                    entry.editable = false
+                    entry.textureName = texture and tostring(texture.name) or "None"
+                    if texture then
+                        pcall(function() entry.textureWidth = tonumber(texture.width) end)
+                        pcall(function() entry.textureHeight = tonumber(texture.height) end)
+                    end
+                    local offset = material:GetTextureOffset(name)
+                    local scale = material:GetTextureScale(name)
+                    entry.offset = { offset.x, offset.y }
+                    entry.scale = { scale.x, scale.y }
+                else
+                    entry.editable = false
+                    entry.value = "(暂不支持)"
+                end
+                result.properties[#result.properties + 1] = entry
+            end)
+        end
+        return result
+    end
+
+    function LuaHierarchy.SetMaterialProperty(packet)
+        local material = hierGetMaterial(packet.materialInstanceId)
+        if not material then return { error = "材质引用已失效，请刷新 Inspector" } end
+        local name = tostring(packet.propertyName or "")
+        if name == "" then return { error = "缺少材质属性名" } end
+        local propertyType = tostring(packet.propertyType or "")
+        local value = packet.value
+        local ok, err = pcall(function()
+            if propertyType == "Color" then
+                material:SetColor(name, CS.UnityEngine.Color(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 1))
+            elseif propertyType == "Vector" then
+                material:SetVector(name, CS.UnityEngine.Vector4(value[1] or 0, value[2] or 0, value[3] or 0, value[4] or 0))
+            elseif propertyType == "Float" or propertyType == "Range" then
+                material:SetFloat(name, tonumber(value) or 0)
+            elseif propertyType == "Int" or propertyType == "Integer" then
+                material:SetInt(name, math.floor(tonumber(value) or 0))
+            elseif propertyType == "TextureOffset" then
+                material:SetTextureOffset(name, CS.UnityEngine.Vector2(value[1] or 0, value[2] or 0))
+            elseif propertyType == "TextureScale" then
+                material:SetTextureScale(name, CS.UnityEngine.Vector2(value[1] or 1, value[2] or 1))
+            else
+                error("不支持的材质属性类型: " .. propertyType)
+            end
+        end)
+        if not ok then return { error = tostring(err) } end
         return { success = true }
     end
 
@@ -3047,6 +3430,10 @@ local function StartRuntimeGM()
             result = LuaHierarchy.GetValueChildren(packet)
         elseif action == "set_nested_prop" then
             result = LuaHierarchy.SetNestedProp(packet)
+        elseif action == "material_detail" then
+            result = LuaHierarchy.GetMaterialDetail(packet)
+        elseif action == "material_set_prop" then
+            result = LuaHierarchy.SetMaterialProperty(packet)
         elseif action == "go_search" then
             result = LuaHierarchy.SearchGameObjects(packet)
         elseif action == "set_go_active" then
@@ -3538,6 +3925,20 @@ local function StartRuntimeGM()
             if type(val) ~= "userdata" then return nil end
             local t = val:GetType()
             local tName = tostring(t.Name)
+            -- Material 是资源引用，没有 gameObject，单独缓存后交给按需材质面板处理。
+            if tName == "Material" then
+                local id = -1; pcall(function() id = val:GetInstanceID() end)
+                local name = "Material"; pcall(function() name = tostring(val.name) end)
+                local shaderName = ""; pcall(function() shaderName = tostring(val.shader.name) end)
+                if id ~= -1 then LuaHierarchy._materialRefs[id] = val end
+                return {
+                    display = name,
+                    materialInstanceId = id,
+                    shaderName = shaderName,
+                    actualType = "Material",
+                    isMaterial = true,
+                }
+            end
             -- GameObject 自身
             if tName == "GameObject" then
                 local id = -1; pcall(function() id = val:GetInstanceID() end)
@@ -3554,6 +3955,9 @@ local function StartRuntimeGM()
             end
             return nil
         end)
+        if rOk and rInfo and rInfo.isMaterial and rInfo.materialInstanceId ~= -1 then
+            return rInfo.display, "material", rInfo
+        end
         if rOk and rInfo and rInfo.instanceId and rInfo.instanceId ~= -1 then
             return rInfo.display, "ref", rInfo
         end
