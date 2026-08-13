@@ -75,6 +75,8 @@ echo   (Ctrl+C or Dashboard to stop)
 echo ========================================
 echo.
 
+start "" "http://localhost:9524"
+
 :start_loop
 .venv\Scripts\python.exe main.py
 set EXIT_CODE=%ERRORLEVEL%
