@@ -43,6 +43,13 @@ INJECT_SHELL_TEMPLATE = """-- EncyHub RuntimeGM 注入占位文件。
 -- inject_runtime_gm.py 会把 RuntimeGMClient 代码追加到下方的自动注入块里。
 """
 
+AUTO_INJECT_SEPARATOR = "\n\n-- ========== [EncyHub] RuntimeGMClient Auto-Injected ==========\n\n"
+
+
+def build_inject_file_content(lua_code: str) -> str:
+    """生成可直接覆盖 XLaunchRuntimeGmInject.lua 的完整内容。"""
+    return INJECT_SHELL_TEMPLATE.rstrip("\n") + AUTO_INJECT_SEPARATOR + lua_code.rstrip("\n") + "\n"
+
 
 def get_primary_target_relative_path(targets=None) -> str:
     """从第一条注入路径提取 HaruRoot 下的 Product/Lua 相对路径。"""
@@ -97,8 +104,16 @@ def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
         with open(target, "r", encoding="utf-8") as f:
             original = f.read()
 
-        separator = "\n\n-- ========== [EncyHub] RuntimeGMClient Auto-Injected ==========\n\n"
-        base = original.split(separator, 1)[0].rstrip("\n")
+        separator = AUTO_INJECT_SEPARATOR
+        is_dedicated_shell = os.path.basename(target).casefold() == "xlaunchruntimegminject.lua"
+        has_raw_runtime = "local function StartRuntimeGM()" in original and "gmClient.Start(" in original
+        if separator in original:
+            base = original.split(separator, 1)[0].rstrip("\n")
+        elif is_dedicated_shell and has_raw_runtime:
+            # 兼容旧版网页下载/历史追加产物：专用空壳里已经是裸 RuntimeGM 时，整段替换，不能继续追加。
+            base = INJECT_SHELL_TEMPLATE.rstrip("\n")
+        else:
+            base = original.rstrip("\n")
         with open(target, "w", encoding="utf-8") as f:
             f.write(base)
             f.write(separator)
@@ -107,6 +122,8 @@ def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
 
         created = "，已创建空壳文件" if created_shell else ""
         stripped = "，已替换旧注入块" if separator in original else ""
+        if is_dedicated_shell and has_raw_runtime and separator not in original:
+            stripped = "，已替换旧式裸 RuntimeGM"
         return True, f"原 {original.count(chr(10))+1} 行 → 基础 {base.count(chr(10))+1} 行 +{lua_code.count(chr(10))+1} 行 @ port {port}{created}{stripped}"
     except Exception as e:
         return False, f"IO 错误: {e}"

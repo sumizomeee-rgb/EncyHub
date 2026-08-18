@@ -15,7 +15,7 @@ import uvicorn
 
 from .server_mgr import ServerMgr
 from .custom_gm import CustomGmManager
-from .inject_runtime_gm import get_primary_target_relative_path
+from .inject_runtime_gm import build_inject_file_content, get_primary_target_relative_path
 from .proto_parser import ProtoParser, validate_haruroot, generate_lua_code, parse_log_file
 from .runtime_gm_code import build_runtime_gm_code, detect_local_lan_ip
 
@@ -531,6 +531,7 @@ async def get_runtime_gm_code(port: int = DEFAULT_TCP_PORT):
         raise HTTPException(500, "RuntimeGM Lua 源文件不存在")
     return {
         "code": code,
+        "downloadCode": build_inject_file_content(code),
         "host": host,
         "port": port,
     }

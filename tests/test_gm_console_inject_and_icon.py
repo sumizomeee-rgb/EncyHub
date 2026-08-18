@@ -48,6 +48,28 @@ def test_runtime_gm_inject_creates_dedicated_shell_when_missing(tmp_path):
     assert "print('runtime gm')" in content
 
 
+def test_runtime_gm_inject_replaces_legacy_raw_runtime_instead_of_appending(tmp_path):
+    from tools.gm_console.inject_runtime_gm import inject_one
+
+    target = tmp_path / "Product" / "Lua" / "Launch" / "XLaunchRuntimeGmInject.lua"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "local function StartRuntimeGM() end\n"
+        "local gmClient = StartRuntimeGM()\n"
+        "gmClient.Start(gmClient.Host, gmClient.Port)\n" * 2,
+        encoding="utf-8",
+    )
+
+    ok, info = inject_one(str(target), "print('new runtime gm')", 12581)
+
+    assert ok, info
+    content = target.read_text(encoding="utf-8")
+    assert "已替换旧式裸 RuntimeGM" in info
+    assert content.count("StartRuntimeGM") == 0
+    assert content.count("print('new runtime gm')") == 1
+    assert content.count("[EncyHub] RuntimeGMClient Auto-Injected") == 1
+
+
 def test_runtime_gm_bridge_button_icon_stays_simple():
     source = _read_repo_file("frontend", "src", "pages", "GmConsole.jsx")
     start = source.index("function RuntimeGmBridgeIcon")

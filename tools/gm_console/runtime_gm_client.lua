@@ -1,5 +1,11 @@
 -- 2. RuntimeGMClient 核心逻辑 (内嵌版)
 -- 将 RuntimeGMClient 的内容封装在这里，避免污染全局，但最后会 rawset 到 _G 以供调用
+local existingRuntimeGM = rawget(_G, "RuntimeGMClient")
+if existingRuntimeGM and existingRuntimeGM.IsRunning then
+    print("[RuntimeGM] Existing client is already running, skip duplicate initialization")
+    return existingRuntimeGM
+end
+
 local function StartRuntimeGM()
     local RuntimeGMClient = {}
     RuntimeGMClient.Socket = nil
@@ -83,6 +89,10 @@ local function StartRuntimeGM()
             if t == "string" then
                 return '"' .. val:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. '"'
             elseif t == "number" then
+                -- Lua 允许 NaN/Infinity，但它们不是合法 JSON 数字。任何一个非法值都会让服务端丢弃整包。
+                if val ~= val or val == math.huge or val == -math.huge then
+                    return "null"
+                end
                 return tostring(val)
             elseif t == "boolean" then
                 return val and "true" or "false"
@@ -4696,6 +4706,13 @@ local function StartRuntimeGM()
 
     local SubPkgMonitor = {}
 
+    local function _spm_safeNumber(value, fallback)
+        if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
+            return fallback
+        end
+        return value
+    end
+
     local function _spm_getAgency()
         local ok, agency = pcall(function() return XMVCA.XSubPackage end)
         if not ok or not agency then return nil end
@@ -4808,8 +4825,9 @@ local function StartRuntimeGM()
         pcall(function() isOpen = agency:IsOpen() end)
         if not isOpen then _spm_sendError("get_status", "SubPackage system not open"); return end
 
-        local resDict, subDict
+        local resDict, subDict, subIndexInfo
         pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
+        pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
         if not subDict and not resDict then _spm_sendError("get_status", "Item dicts are nil"); return end
 
         local subsStatus = {}
@@ -4820,6 +4838,10 @@ local function StartRuntimeGM()
                 pcall(function() e.dlSize = item:GetDownloadSize() end)
                 pcall(function() e.totalSize = item:GetTotalSize() end)
                 pcall(function() e.progress = item:GetProgress() end)
+                e.state = _spm_safeNumber(e.state, -1)
+                e.dlSize = _spm_safeNumber(e.dlSize, 0)
+                e.totalSize = _spm_safeNumber(e.totalSize, 0)
+                e.progress = _spm_safeNumber(e.progress, 0)
                 subsStatus[tostring(subId)] = e
             end
         end
@@ -4827,13 +4849,22 @@ local function StartRuntimeGM()
         local resStatus = {}
         if resDict then
             for resId, item in pairs(resDict) do
-                local e = {}
-                pcall(function() e.state = item:GetState() end)
-                pcall(function() local tg = item:GetTaskGroup(); e.tgState = tg and tg.State or -1 end)
-                pcall(function() e.dlSize = item:GetDownloadSize() end)
-                pcall(function() e.totalSize = item:GetTotalSize() end)
-                pcall(function() e.progress = item:GetProgress() end)
-                resStatus[tostring(resId)] = e
+                -- 新旧分支都可能预创建未进入当前资源索引的 ResItem；这些对象没有有效任务状态。
+                -- 结构响应本来就以 SubIndexInfo 为准，状态响应保持相同口径，避免幽灵 Res 污染监控。
+                if not subIndexInfo or subIndexInfo[resId] then
+                    local e = {}
+                    pcall(function() e.state = item:GetState() end)
+                    pcall(function() local tg = item:GetTaskGroup(); e.tgState = tg and tg.State or -1 end)
+                    pcall(function() e.dlSize = item:GetDownloadSize() end)
+                    pcall(function() e.totalSize = item:GetTotalSize() end)
+                    pcall(function() e.progress = item:GetProgress() end)
+                    e.state = _spm_safeNumber(e.state, -1)
+                    e.tgState = _spm_safeNumber(e.tgState, -1)
+                    e.dlSize = _spm_safeNumber(e.dlSize, 0)
+                    e.totalSize = _spm_safeNumber(e.totalSize, 0)
+                    e.progress = _spm_safeNumber(e.progress, 0)
+                    resStatus[tostring(resId)] = e
+                end
             end
         end
 
@@ -6642,14 +6673,24 @@ local function StartRuntimeGM()
         RuntimeGMClient.IsRunning = true
         print = HookPrint
         local goName = "RuntimeGMUpdater"
-        local go = CS.UnityEngine.GameObject.Find(goName)
-        if not go then
-            go = CS.UnityEngine.GameObject(goName)
-            CS.UnityEngine.Object.DontDestroyOnLoad(go)
+        local oldGo = CS.UnityEngine.GameObject.Find(goName)
+        if oldGo then
+            -- Launch 模块更新会重建 Lua 环境，但 DontDestroyOnLoad 的 Updater 仍在。
+            -- 先销毁旧 Updater，让旧 LuaOnDestroy 主动关闭 Socket，避免新旧客户端短暂并存互踢。
+            CS.UnityEngine.Object.Destroy(oldGo)
         end
+        local go = CS.UnityEngine.GameObject(goName)
+        CS.UnityEngine.Object.DontDestroyOnLoad(go)
         local behaviour = go:GetComponent(typeof(CS.XLuaBehaviour))
         if not behaviour then behaviour = go:AddComponent(typeof(CS.XLuaBehaviour)) end
-        behaviour.LuaUpdate = function() RuntimeGMClient.Update() end
+        local startDelayFrames = oldGo and 2 or 0
+        behaviour.LuaUpdate = function()
+            if startDelayFrames > 0 then
+                startDelayFrames = startDelayFrames - 1
+                return
+            end
+            RuntimeGMClient.Update()
+        end
         behaviour.LuaOnDestroy = function()
             origin_print("[RuntimeGM] OnDestroy: closing connection")
             RuntimeGMClient.Close()

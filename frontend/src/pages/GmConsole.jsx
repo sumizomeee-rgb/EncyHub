@@ -2201,12 +2201,14 @@ function RuntimeGmCodeModal({ open, handshakePort, haruRootInfo, onClose }) {
   const port = handshakePort || 12581
   const [host, setHost] = useState('')
   const [code, setCode] = useState('')
+  const [downloadCode, setDownloadCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [copyStatus, setCopyStatus] = useState('idle')
   const [downloaded, setDownloaded] = useState(false)
   const copyTimerRef = useRef(null)
   const cachedCodeRef = useRef('')
+  const cachedDownloadCodeRef = useRef('')
   const cachedHostRef = useRef('')
   const cachedPortRef = useRef(null)
 
@@ -2217,6 +2219,7 @@ function RuntimeGmCodeModal({ open, handshakePort, haruRootInfo, onClose }) {
   const loadRuntimeGmCode = useCallback(async (force = false) => {
     if (!force && cachedCodeRef.current && cachedPortRef.current === port) {
       setCode(cachedCodeRef.current)
+      setDownloadCode(cachedDownloadCodeRef.current)
       setHost(cachedHostRef.current)
       return
     }
@@ -2228,13 +2231,19 @@ function RuntimeGmCodeModal({ open, handshakePort, haruRootInfo, onClose }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || '获取 RuntimeGM Bridge 代码失败')
       const nextCode = data.code || ''
+      const nextDownloadCode = data.downloadCode || nextCode
       cachedCodeRef.current = nextCode
+      cachedDownloadCodeRef.current = nextDownloadCode
       cachedHostRef.current = data.host || ''
       cachedPortRef.current = port
       setCode(nextCode)
+      setDownloadCode(nextDownloadCode)
       setHost(data.host || '')
     } catch (err) {
-      if (!cachedCodeRef.current) setCode('')
+      if (!cachedCodeRef.current) {
+        setCode('')
+        setDownloadCode('')
+      }
       setError(err.message || '获取 RuntimeGM Bridge 代码失败')
     } finally {
       setLoading(false)
@@ -2284,7 +2293,7 @@ function RuntimeGmCodeModal({ open, handshakePort, haruRootInfo, onClose }) {
   const handleDownload = () => {
     if (!code || !downloadInfo?.fileName || !downloadInfo?.relativePath) return
     try {
-      const blob = new Blob([code], { type: 'text/x-lua;charset=utf-8' })
+      const blob = new Blob([downloadCode || code], { type: 'text/x-lua;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url

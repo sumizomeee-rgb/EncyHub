@@ -35,6 +35,26 @@ def test_runtime_gm_lua_is_the_authoritative_source():
     assert "```lua" not in content
     assert "10.101.0.8" not in content
     assert 'gmClient.Start(gmClient.Host, gmClient.Port)' in content
+    assert content.count("local function StartRuntimeGM()") == 1
+
+
+def test_runtime_gm_guards_duplicate_start_and_non_finite_json_numbers():
+    content = read_file(RUNTIME_GM_LUA)
+
+    assert 'rawget(_G, "RuntimeGMClient")' in content
+    assert "Existing client is already running" in content
+    assert "val ~= val or val == math.huge or val == -math.huge" in content
+    assert 'local oldGo = CS.UnityEngine.GameObject.Find(goName)' in content
+    assert "CS.UnityEngine.Object.Destroy(oldGo)" in content
+    assert "local startDelayFrames = oldGo and 2 or 0" in content
+
+
+def test_subpackage_monitor_filters_unindexed_resources_and_sanitizes_status():
+    content = read_file(RUNTIME_GM_LUA)
+
+    assert "subIndexInfo = agency:GetSubIndexInfo()" in content
+    assert "if not subIndexInfo or subIndexInfo[resId] then" in content
+    assert "e.progress = _spm_safeNumber(e.progress, 0)" in content
 
 
 def test_runtime_gm_queries_svn_by_working_copy_and_reports_structured_fields():
@@ -205,6 +225,7 @@ def test_main_exposes_runtime_gm_code_endpoint():
     assert "detect_local_lan_ip" in content
     assert 'host: str = "localhost"' not in content
     assert '"runtimeGmDownload"' in content
+    assert '"downloadCode": build_inject_file_content(code)' in content
     assert "get_primary_target_relative_path()" in content
     assert '"targetPath"' not in content
 
@@ -220,7 +241,7 @@ def test_frontend_exposes_runtime_gm_code_modal():
     assert "window.location.hostname" not in content
     assert "cachedHostRef" in content
     assert "useEffect(() => {\n    loadRuntimeGmCode(false)" not in content
-    assert "new Blob([code]" in content
+    assert "new Blob([downloadCode || code]" in content
     assert "下载替换文件" in content
     assert "<目标客户端 HaruRoot>" in content
     assert "你想接入当前 GM Console 的那份客户端工程根目录" in content
