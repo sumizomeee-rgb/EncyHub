@@ -319,6 +319,9 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     if (!structure?.subs) return []
     return Object.entries(structure.subs).map(([id, s]) => ({
       id, name: s.name, resIds: (s.resIds || []).map(String),
+      configuredResCount: s.configuredResCount ?? (s.resIds || []).length,
+      indexedResCount: s.indexedResCount ?? (s.resIds || []).length,
+      missingResCount: s.missingResCount ?? 0,
       ...(status?.subs?.[id] || { state: -1, dlSize: 0, totalSize: 0, progress: 0 })
     }))
   }, [structure, status])
@@ -327,6 +330,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     if (!structure?.resources) return []
     return Object.entries(structure.resources).map(([id, r]) => ({
       id, subIds: (r.subIds || []).map(String), fileCount: r.fileCount || 0,
+      configured: r.configured !== false, indexed: r.indexed !== false,
       ...(status?.resources?.[id] || { state: -1, dlSize: 0, totalSize: 0, progress: 0, tgState: -1 })
     }))
   }, [structure, status])
@@ -525,6 +529,11 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       <StateBadge state={sub.state} mini />
       <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">S{sub.id}</span>
       {sub.name && <span className="text-[11px] text-[var(--coffee-light)] truncate min-w-0 flex-1">{sub.name}</span>}
+      {sub.missingResCount > 0 && (
+        <span className="text-[10px] font-mono font-semibold text-[var(--terracotta)] whitespace-nowrap" title={`缺失索引 ${sub.missingResCount} 个`}>
+          索引 {sub.indexedResCount}/{sub.configuredResCount}
+        </span>
+      )}
       <div className="w-14 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
       <span className="text-[10px] text-[var(--coffee-muted)] w-[90px] text-right flex-shrink-0 whitespace-nowrap">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
     </div>
@@ -534,6 +543,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     <div key={res.id} data-id={res.id} onClick={() => onSelect(res.id)} className={cardCls(isSelected, extraClass, res.id)}>
       <StateBadge state={res.state} mini />
       <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">R{res.id}</span>
+      {!res.indexed && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap">无索引</span>}
       <div className="w-14 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
       <span className="text-[10px] text-[var(--coffee-muted)] w-[90px] text-right flex-shrink-0 whitespace-nowrap">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
       <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
@@ -648,6 +658,11 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                 <div className="flex items-center gap-3 mb-2">
                   <StateBadge state={selectedItem.state} />
                   <span className="text-xs text-[var(--coffee-muted)]">{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
+                  {selectedItem.missingResCount > 0 && (
+                    <span className="text-xs font-mono font-semibold text-[var(--terracotta)]">
+                      索引 {selectedItem.indexedResCount}/{selectedItem.configuredResCount}，缺失 {selectedItem.missingResCount}
+                    </span>
+                  )}
                 </div>
                 <ProgressBar progress={selectedItem.progress} state={selectedItem.state} />
               </div>

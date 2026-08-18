@@ -18,6 +18,7 @@ ANIMATOR_VIEWER_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "Animat
 LUA_UI_INSPECTOR_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "LuaUiInspector.jsx")
 HIERARCHY_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "Hierarchy.jsx")
 TIMELINE_MONITOR_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "TimelineMonitor.jsx")
+SUBPACKAGE_MONITOR_JSX = os.path.join(BASE_DIR, "frontend", "src", "pages", "SubPackageMonitor.jsx")
 
 
 def read_file(path):
@@ -49,12 +50,20 @@ def test_runtime_gm_guards_duplicate_start_and_non_finite_json_numbers():
     assert "local startDelayFrames = oldGo and 2 or 0" in content
 
 
-def test_subpackage_monitor_filters_unindexed_resources_and_sanitizes_status():
+def test_subpackage_monitor_keeps_configured_resources_and_sanitizes_status():
     content = read_file(RUNTIME_GM_LUA)
 
-    assert "subIndexInfo = agency:GetSubIndexInfo()" in content
-    assert "if not subIndexInfo or subIndexInfo[resId] then" in content
+    assert "_spm_getSubpackageTemplates" in content
+    assert "debug.getupvalue(initFn, i)" in content
+    assert "missingResCount = configuredResCount - indexedResCount" in content
+    assert "configured = true, indexed = fileDict ~= nil" in content
+    assert "if not subIndexInfo or subIndexInfo[resId] then" not in content
     assert "e.progress = _spm_safeNumber(e.progress, 0)" in content
+
+    frontend = read_file(SUBPACKAGE_MONITOR_JSX)
+    assert "索引 {sub.indexedResCount}/{sub.configuredResCount}" in frontend
+    assert "{!res.indexed &&" in frontend
+    assert "无索引" in frontend
 
 
 def test_runtime_gm_queries_svn_by_working_copy_and_reports_structured_fields():

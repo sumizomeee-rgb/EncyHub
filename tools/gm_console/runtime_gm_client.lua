@@ -4719,6 +4719,44 @@ local function StartRuntimeGM()
         return agency
     end
 
+    -- SubPackage.tab 的运行态完整模板是展示权威。_SubpackageDict 只包含已实例化对象，
+    -- _SubIndexInfo 只包含实际进入资源索引的 Res，都不能用于决定配置项是否展示。
+    local function _spm_getSubpackageTemplates(agency)
+        local templates = nil
+        pcall(function()
+            local model = agency and agency._Model
+            local initFn = model and model.InitSubpackage
+            if not model or not model._ConfigUtil or type(initFn) ~= "function" then return end
+
+            local tableKey = nil
+            for i = 1, 20 do
+                local name, value = debug.getupvalue(initFn, i)
+                if not name then break end
+                if name == "TableKey" and type(value) == "table" then
+                    tableKey = value
+                    break
+                end
+            end
+            if tableKey and tableKey.SubPackage then
+                templates = model._ConfigUtil:GetByTableKey(tableKey.SubPackage)
+            end
+        end)
+        return templates
+    end
+
+    local function _spm_fileCount(fileDict)
+        local count = 0
+        if fileDict then for _ in pairs(fileDict) do count = count + 1 end end
+        return count
+    end
+
+    local function _spm_addUniqueId(ids, id)
+        for _, existing in ipairs(ids) do
+            if existing == id then return end
+        end
+        ids[#ids + 1] = id
+    end
+
     local function _spm_sendError(action, msg)
         RuntimeGMClient.Send({ type = "SUBPKG_MONITOR_RESP", action = action, error = msg })
     end
@@ -4733,28 +4771,73 @@ local function StartRuntimeGM()
         local subIndexInfo, resDict, subDict
         pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
         pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
-        if not subDict then _spm_sendError("get_structure", "_SubpackageDict is nil"); return end
+        local templates = _spm_getSubpackageTemplates(agency)
+        if not templates and not subDict then _spm_sendError("get_structure", "SubPackage templates and item dict are nil"); return end
 
-        -- 1) subs
+        -- 1) SubPackage.tab 完整配置。索引缺失只记为异常计数，不隐藏 Sub。
         local subs = {}
-        for subId, _ in pairs(subDict) do
-            local template = nil
-            pcall(function() template = agency:GetSubpackageTemplate(subId) end)
-            subs[tostring(subId)] = {
-                name   = (template and template.Name) or ("Sub_" .. tostring(subId)),
-                resIds = (template and template.ResIds) or {}
-            }
+        if templates then
+            for key, template in pairs(templates) do
+                local subId = template.Id or key
+                local resIds = template.ResIds or {}
+                local configuredResCount = 0
+                local indexedResCount = 0
+                for _, resId in pairs(resIds) do
+                    if type(resId) == "number" and resId > 0 then
+                        configuredResCount = configuredResCount + 1
+                        if subIndexInfo and subIndexInfo[resId] then indexedResCount = indexedResCount + 1 end
+                    end
+                end
+                subs[tostring(subId)] = {
+                    name = template.Name or ("Sub_" .. tostring(subId)),
+                    resIds = resIds,
+                    configuredResCount = configuredResCount,
+                    indexedResCount = indexedResCount,
+                    missingResCount = configuredResCount - indexedResCount
+                }
+            end
+        elseif subDict then
+            -- 兼容无法读取完整模板的旧分支。
+            for subId, _ in pairs(subDict) do
+                local template = nil
+                pcall(function() template = agency:GetSubpackageTemplate(subId) end)
+                subs[tostring(subId)] = {
+                    name = (template and template.Name) or ("Sub_" .. tostring(subId)),
+                    resIds = (template and template.ResIds) or {}
+                }
+            end
         end
 
-        -- 2) resources (骨架：只含 subIds + fileCount，不含文件列表)
+        -- 2) Resource 取“配置并索引”的并集。配置有、索引无时保留并显示 0。
         local resources = {}
+        for subId, sub in pairs(subs) do
+            for _, resId in pairs(sub.resIds or {}) do
+                if type(resId) == "number" and resId > 0 then
+                    local key = tostring(resId)
+                    local fileDict = subIndexInfo and subIndexInfo[resId]
+                    local resource = resources[key]
+                    if not resource then
+                        resource = {
+                            subIds = {}, fileCount = _spm_fileCount(fileDict),
+                            configured = true, indexed = fileDict ~= nil
+                        }
+                        resources[key] = resource
+                    end
+                    _spm_addUniqueId(resource.subIds, tonumber(subId) or subId)
+                end
+            end
+        end
         if subIndexInfo then
             for resId, fileDict in pairs(subIndexInfo) do
-                local subIds = {}
-                pcall(function() subIds = agency._Model:GetSubpackageIdByResId(resId) or {} end)
-                local fileCount = 0
-                if fileDict then for _ in pairs(fileDict) do fileCount = fileCount + 1 end end
-                resources[tostring(resId)] = { subIds = subIds, fileCount = fileCount }
+                local key = tostring(resId)
+                if not resources[key] then
+                    local subIds = {}
+                    pcall(function() subIds = agency._Model:GetSubpackageIdByResId(resId) or {} end)
+                    resources[key] = {
+                        subIds = subIds, fileCount = _spm_fileCount(fileDict),
+                        configured = false, indexed = true
+                    }
+                end
             end
         end
 
@@ -4825,12 +4908,18 @@ local function StartRuntimeGM()
         pcall(function() isOpen = agency:IsOpen() end)
         if not isOpen then _spm_sendError("get_status", "SubPackage system not open"); return end
 
-        local resDict, subDict, subIndexInfo
+        local resDict, subDict
         pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
-        pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
         if not subDict and not resDict then _spm_sendError("get_status", "Item dicts are nil"); return end
 
         local subsStatus = {}
+        local templates = _spm_getSubpackageTemplates(agency)
+        if templates then
+            for key, template in pairs(templates) do
+                local subId = template.Id or key
+                subsStatus[tostring(subId)] = { state = -1, dlSize = 0, totalSize = 0, progress = 0 }
+            end
+        end
         if subDict then
             for subId, item in pairs(subDict) do
                 local e = {}
@@ -4847,24 +4936,31 @@ local function StartRuntimeGM()
         end
 
         local resStatus = {}
+        if templates then
+            for _, template in pairs(templates) do
+                for _, resId in pairs(template.ResIds or {}) do
+                    if type(resId) == "number" and resId > 0 then
+                        resStatus[tostring(resId)] = {
+                            state = -1, tgState = -1, dlSize = 0, totalSize = 0, progress = 0
+                        }
+                    end
+                end
+            end
+        end
         if resDict then
             for resId, item in pairs(resDict) do
-                -- 新旧分支都可能预创建未进入当前资源索引的 ResItem；这些对象没有有效任务状态。
-                -- 结构响应本来就以 SubIndexInfo 为准，状态响应保持相同口径，避免幽灵 Res 污染监控。
-                if not subIndexInfo or subIndexInfo[resId] then
-                    local e = {}
-                    pcall(function() e.state = item:GetState() end)
-                    pcall(function() local tg = item:GetTaskGroup(); e.tgState = tg and tg.State or -1 end)
-                    pcall(function() e.dlSize = item:GetDownloadSize() end)
-                    pcall(function() e.totalSize = item:GetTotalSize() end)
-                    pcall(function() e.progress = item:GetProgress() end)
-                    e.state = _spm_safeNumber(e.state, -1)
-                    e.tgState = _spm_safeNumber(e.tgState, -1)
-                    e.dlSize = _spm_safeNumber(e.dlSize, 0)
-                    e.totalSize = _spm_safeNumber(e.totalSize, 0)
-                    e.progress = _spm_safeNumber(e.progress, 0)
-                    resStatus[tostring(resId)] = e
-                end
+                local e = {}
+                pcall(function() e.state = item:GetState() end)
+                pcall(function() local tg = item:GetTaskGroup(); e.tgState = tg and tg.State or -1 end)
+                pcall(function() e.dlSize = item:GetDownloadSize() end)
+                pcall(function() e.totalSize = item:GetTotalSize() end)
+                pcall(function() e.progress = item:GetProgress() end)
+                e.state = _spm_safeNumber(e.state, -1)
+                e.tgState = _spm_safeNumber(e.tgState, -1)
+                e.dlSize = _spm_safeNumber(e.dlSize, 0)
+                e.totalSize = _spm_safeNumber(e.totalSize, 0)
+                e.progress = _spm_safeNumber(e.progress, 0)
+                resStatus[tostring(resId)] = e
             end
         end
 
