@@ -69,8 +69,10 @@ function sizeText(dlSize, totalSize, state) {
 // Sub-components
 // ============================================================================
 
-function StateBadge({ state, mini }) {
-  const cfg = stateOf(state)
+function StateBadge({ state, mini, error = false }) {
+  const cfg = error
+    ? { ...stateOf(state), color: 'var(--terracotta)', bg: 'rgba(193,102,107,0.10)' }
+    : stateOf(state)
   if (mini) {
     return (
       <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold flex-shrink-0 whitespace-nowrap"
@@ -525,15 +527,11 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     } ${highlightId === id ? 'highlight-flash' : ''} ${extraClass}`
 
   const renderSubCard = (sub, isSelected, onSelect, extraClass = '') => (
-    <div key={sub.id} data-id={sub.id} onClick={() => onSelect(sub.id)} className={cardCls(isSelected, extraClass, sub.id)}>
+    <div key={sub.id} data-id={sub.id} onClick={() => onSelect(sub.id)} className={cardCls(isSelected, extraClass, sub.id)}
+      title={sub.missingResCount > 0 ? `缺失索引 ${sub.missingResCount} 个` : undefined}>
       <StateBadge state={sub.state} mini />
       <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">S{sub.id}</span>
-      {sub.name && <span className="text-[11px] text-[var(--coffee-light)] truncate min-w-0 flex-1">{sub.name}</span>}
-      {sub.missingResCount > 0 && (
-        <span className="text-[10px] font-mono font-semibold text-[var(--terracotta)] whitespace-nowrap" title={`缺失索引 ${sub.missingResCount} 个`}>
-          索引 {sub.indexedResCount}/{sub.configuredResCount}
-        </span>
-      )}
+      {sub.name && <span className={`text-[11px] truncate min-w-0 flex-1 ${sub.missingResCount > 0 ? 'font-medium text-[var(--terracotta)]' : 'text-[var(--coffee-light)]'}`}>{sub.name}</span>}
       <div className="w-14 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
       <span className="text-[10px] text-[var(--coffee-muted)] w-[90px] text-right flex-shrink-0 whitespace-nowrap">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
     </div>
@@ -660,7 +658,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                   <span className="text-xs text-[var(--coffee-muted)]">{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
                   {selectedItem.missingResCount > 0 && (
                     <span className="text-xs font-mono font-semibold text-[var(--terracotta)]">
-                      索引 {selectedItem.indexedResCount}/{selectedItem.configuredResCount}，缺失 {selectedItem.missingResCount}
+                      索引 {selectedItem.indexedResCount}｜缺失 {selectedItem.missingResCount}
                     </span>
                   )}
                 </div>
@@ -684,7 +682,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                         }`} onClick={() => { setExpandedRes(prev => { const next = new Set(prev); if (next.has(res.id)) next.delete(res.id); else { next.add(res.id); fetchResFiles(res.id) } return next }) }}>
                           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                           <span className="text-xs font-mono font-semibold">Res {res.id}</span>
-                          <StateBadge state={res.state} />
+                          <StateBadge state={res.state} error={!res.indexed} />
                           <div className="flex-1" />
                           <span className="text-[10px] text-[var(--coffee-muted)]">{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>
                           {resFiles[res.id]?.files?.length > 0 && (
