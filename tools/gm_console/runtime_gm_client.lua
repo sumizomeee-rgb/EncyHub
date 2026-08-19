@@ -5650,6 +5650,7 @@ local function StartRuntimeGM()
     LuaTableMonitor._perfMonitorReady = false
     LuaTableMonitor._perfAgent = nil
     LuaTableMonitor._viewerLoadedTables = {}
+    LuaTableMonitor._externalCatalog = {}
 
     function LuaTableMonitor.Init()
         pcall(function()
@@ -5685,6 +5686,23 @@ local function StartRuntimeGM()
         if data then pkt.data = data end
         if err then pkt.error = err end
         RuntimeGMClient.Send(pkt)
+    end
+
+    local function _tm_applyCatalogEntry(entry)
+        if type(entry) ~= "table" or not entry.name then return end
+        LuaTableMonitor._externalCatalog[entry.name] = entry
+        if entry.path then
+            LuaTableMonitor._pathCache = LuaTableMonitor._pathCache or {}
+            LuaTableMonitor._pathCache[entry.name] = entry.path
+        end
+        if type(entry.fields) == "table" then
+            XTable[entry.name] = entry.fields
+        end
+    end
+
+    local function _tm_applyCatalog(catalog)
+        if type(catalog) ~= "table" then return end
+        for _, entry in ipairs(catalog) do _tm_applyCatalogEntry(entry) end
     end
 
     function LuaTableMonitor._buildPathCache()
@@ -5853,10 +5871,12 @@ local function StartRuntimeGM()
         return nil, false
     end
 
-    function LuaTableMonitor.HandleListTables()
+    function LuaTableMonitor.HandleListTables(packet)
+        _tm_applyCatalog(packet and packet.catalog)
         LuaTableMonitor._buildPathCache()
 
         local tables = {}
+        local seen = {}
         for name, def in pairs(XTable) do
             local path = LuaTableMonitor._pathCache and LuaTableMonitor._pathCache[name] or nil
             if path then
@@ -5872,6 +5892,20 @@ local function StartRuntimeGM()
                     pkField = pkField,
                     pkIsString = pkIsString or false,
                 }
+                seen[name] = true
+            end
+        end
+        for name, entry in pairs(LuaTableMonitor._externalCatalog) do
+            if not seen[name] and entry.path then
+                tables[#tables + 1] = {
+                    name = name,
+                    path = entry.path,
+                    pathFound = true,
+                    fieldCount = entry.fieldCount or 0,
+                    hasPK = entry.hasPK or false,
+                    pkField = entry.pkField,
+                    pkIsString = entry.pkIsString or false,
+                }
             end
         end
         table.sort(tables, function(a, b) return a.name < b.name end)
@@ -5883,7 +5917,8 @@ local function StartRuntimeGM()
         _tm_sendResp("list_tables", { tables = tables, stats = stats })
     end
 
-    function LuaTableMonitor.HandleGetSchema(tableName)
+    function LuaTableMonitor.HandleGetSchema(tableName, catalogEntry)
+        _tm_applyCatalogEntry(catalogEntry)
         if not tableName then _tm_sendResp("get_schema", nil, "missing tableName"); return end
         local xTableDef = XTable[tableName]
         if not xTableDef then _tm_sendResp("get_schema", nil, "table not found: " .. tostring(tableName)); return end
@@ -5941,6 +5976,7 @@ local function StartRuntimeGM()
     end
 
     function LuaTableMonitor.HandleGetData(packet)
+        _tm_applyCatalogEntry(packet.catalogEntry)
         local tableName = packet.tableName
         local page = packet.page or 1
         local pageSize = packet.pageSize or 50
@@ -6160,9 +6196,9 @@ local function StartRuntimeGM()
         _tm_activate()
 
         if action == "list_tables" then
-            LuaTableMonitor.HandleListTables()
+            LuaTableMonitor.HandleListTables(packet)
         elseif action == "get_schema" then
-            LuaTableMonitor.HandleGetSchema(packet.tableName)
+            LuaTableMonitor.HandleGetSchema(packet.tableName, packet.catalogEntry)
         elseif action == "get_data" then
             LuaTableMonitor.HandleGetData(packet)
         else

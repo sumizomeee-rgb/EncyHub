@@ -65,7 +65,8 @@ def get_primary_target_relative_path(targets=None) -> str:
     raise ValueError("TARGET_LUA_FILES 第一条路径不包含 Product/Lua")
 
 
-def svn_revert(filepath: str):
+def svn_revert(filepath: str) -> bool:
+    """尝试把目标恢复到 SVN 基线；成功返回 True。"""
     print(f"[SVN] revert {filepath}")
     try:
         result = subprocess.run(
@@ -74,21 +75,26 @@ def svn_revert(filepath: str):
         )
         if result.returncode == 0:
             print(f"[SVN] OK: {result.stdout.strip() or 'reverted'}")
+            return True
         else:
             stderr = result.stderr.strip()
             if "is not a working copy" in stderr or "is not under version control" in stderr:
                 print(f"[SVN] 跳过（非 SVN 工作副本）: {stderr}")
             else:
                 print(f"[SVN] 警告: {stderr}")
+            return False
     except FileNotFoundError:
         print("[SVN] 未找到 svn 命令，跳过 revert")
+        return False
     except subprocess.TimeoutExpired:
         print("[SVN] revert 超时，跳过")
+        return False
 
 
 def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
     """对单个目标文件执行注入。返回 (成功?, 描述)。失败时只记录、不抛异常。"""
     created_shell = False
+    reverted = False
     if not os.path.isfile(target):
         parent = os.path.dirname(target)
         if not os.path.isdir(parent):
@@ -99,6 +105,9 @@ def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
             created_shell = True
         except Exception as e:
             return False, f"创建空壳失败: {e}"
+    else:
+        # 必须先恢复 SVN 基线，再读取和追加，避免历史注入内容进入下一次基础文件。
+        reverted = svn_revert(target)
 
     try:
         with open(target, "r", encoding="utf-8") as f:
@@ -107,8 +116,17 @@ def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
         separator = AUTO_INJECT_SEPARATOR
         is_dedicated_shell = os.path.basename(target).casefold() == "xlaunchruntimegminject.lua"
         has_raw_runtime = "local function StartRuntimeGM()" in original and "gmClient.Start(" in original
-        if separator in original:
-            base = original.split(separator, 1)[0].rstrip("\n")
+        prefix = original.split(separator, 1)[0] if separator in original else original
+        legacy_runtime_in_prefix = (
+            is_dedicated_shell
+            and "local function StartRuntimeGM()" in prefix
+            and "gmClient.Start(" in prefix
+        )
+        if legacy_runtime_in_prefix:
+            # 兼容曾经出现的“裸 RuntimeGM + 自动注入块”叠加文件：专用空壳不得保留旧运行时前缀。
+            base = INJECT_SHELL_TEMPLATE.rstrip("\n")
+        elif separator in original:
+            base = prefix.rstrip("\n")
         elif is_dedicated_shell and has_raw_runtime:
             # 兼容旧版网页下载/历史追加产物：专用空壳里已经是裸 RuntimeGM 时，整段替换，不能继续追加。
             base = INJECT_SHELL_TEMPLATE.rstrip("\n")
@@ -121,10 +139,11 @@ def inject_one(target: str, lua_code: str, port: int) -> tuple[bool, str]:
             f.write("\n")
 
         created = "，已创建空壳文件" if created_shell else ""
-        stripped = "，已替换旧注入块" if separator in original else ""
+        stripped = "，已清理旧运行时并替换注入块" if legacy_runtime_in_prefix else ("，已替换旧注入块" if separator in original else "")
         if is_dedicated_shell and has_raw_runtime and separator not in original:
             stripped = "，已替换旧式裸 RuntimeGM"
-        return True, f"原 {original.count(chr(10))+1} 行 → 基础 {base.count(chr(10))+1} 行 +{lua_code.count(chr(10))+1} 行 @ port {port}{created}{stripped}"
+        reverted_text = "，已 SVN revert" if reverted else ""
+        return True, f"原 {original.count(chr(10))+1} 行 → 基础 {base.count(chr(10))+1} 行 +{lua_code.count(chr(10))+1} 行 @ port {port}{created}{reverted_text}{stripped}"
     except Exception as e:
         return False, f"IO 错误: {e}"
 

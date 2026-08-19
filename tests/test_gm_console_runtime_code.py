@@ -61,7 +61,11 @@ def test_subpackage_monitor_keeps_configured_resources_and_sanitizes_status():
     assert "e.progress = _spm_safeNumber(e.progress, 0)" in content
 
     frontend = read_file(SUBPACKAGE_MONITOR_JSX)
-    assert "索引 {sub.indexedResCount}/{sub.configuredResCount}" in frontend
+    assert "索引 {selectedItem.indexedResCount}｜缺失 {selectedItem.missingResCount}" not in frontend
+    assert "索引 {sub.indexedResCount}/{sub.configuredResCount}" not in frontend
+    assert "selectedMissingResIds.join(', ')" in frontend
+    assert "仅显示缺失 Resource" in frontend
+    assert "复制缺失 ResId" in frontend
     assert "{!res.indexed &&" in frontend
     assert "无索引" in frontend
 

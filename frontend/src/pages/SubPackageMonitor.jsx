@@ -181,6 +181,8 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   const [onlyShared, setOnlyShared] = useState(false)
   const [copiedSha1, setCopiedSha1] = useState(null)
   const [copiedFile, setCopiedFile] = useState(null)
+  const [onlyMissingRes, setOnlyMissingRes] = useState(false)
+  const [copiedMissingRes, setCopiedMissingRes] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(() => lsGet(LS_KEYS.autoRefresh, true))
   const [refreshInterval, setRefreshInterval] = useState(() => lsGet(LS_KEYS.interval, 2))
   const [leftWidth, setLeftWidth] = useState(() => lsGet(LS_KEYS.leftWidth, 300))
@@ -209,7 +211,11 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   useEffect(() => { lsSet(LS_KEYS.leftWidth, leftWidth) }, [leftWidth])
 
   // --- 切换选中项时收起所有展开的 Res ---
-  useEffect(() => { setExpandedRes(new Set()) }, [selectedId])
+  useEffect(() => {
+    setExpandedRes(new Set())
+    setOnlyMissingRes(false)
+    setCopiedMissingRes(false)
+  }, [selectedId])
 
   // --- Debounced search ---
   useEffect(() => {
@@ -604,6 +610,17 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     const selectedItem = isSub
       ? subList.find(s => s.id === selectedId)
       : resList.find(r => r.id === selectedId)
+    const selectedMissingResIds = isSub && selectedItem
+      ? selectedItem.resIds.filter(rid => resList.find(r => r.id === String(rid))?.indexed === false)
+      : []
+    const visibleSelectedResIds = onlyMissingRes ? selectedMissingResIds : (selectedItem?.resIds || [])
+
+    const copyMissingResIds = () => {
+      if (selectedMissingResIds.length === 0) return
+      copyText(selectedMissingResIds.join(', '))
+      setCopiedMissingRes(true)
+      setTimeout(() => setCopiedMissingRes(false), 900)
+    }
 
     return (
       <div className="flex h-full"
@@ -656,24 +673,47 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                 <div className="flex items-center gap-3 mb-2">
                   <StateBadge state={selectedItem.state} />
                   <span className="text-xs text-[var(--coffee-muted)]">{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
-                  {selectedItem.missingResCount > 0 && (
-                    <span className="text-xs font-mono font-semibold text-[var(--terracotta)]">
-                      索引 {selectedItem.indexedResCount}｜缺失 {selectedItem.missingResCount}
-                    </span>
-                  )}
                 </div>
                 <ProgressBar progress={selectedItem.progress} state={selectedItem.state} />
               </div>
 
               {/* Res table */}
               <div>
-                <h4 className="text-xs font-semibold text-[var(--coffee-deep)] mb-2">
-                  包含的 Resource ({selectedItem.resIds.length})
-                </h4>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <h4 className="text-xs font-semibold text-[var(--coffee-deep)] whitespace-nowrap">
+                    包含的 Resource ({selectedItem.resIds.length})
+                  </h4>
+                  {selectedMissingResIds.length > 0 && (
+                    <>
+                      <button
+                        onClick={() => setOnlyMissingRes(v => !v)}
+                        className={`inline-flex flex-shrink-0 items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap transition-colors ${
+                          onlyMissingRes
+                            ? 'border-[var(--terracotta)]/45 bg-[var(--terracotta)]/12 text-[var(--terracotta)]'
+                            : 'border-[var(--terracotta)]/25 bg-white/35 text-[var(--terracotta)]/80 hover:bg-[var(--terracotta)]/8 hover:border-[var(--terracotta)]/40'
+                        }`}
+                        title={onlyMissingRes ? '显示全部 Resource' : '仅显示缺失 Resource'}
+                      >
+                        <Filter size={9} />
+                        缺失 {selectedMissingResIds.length}
+                        {onlyMissingRes && <X size={9} />}
+                      </button>
+                      <button
+                        onClick={copyMissingResIds}
+                        className="p-1 rounded text-[var(--coffee-muted)] hover:text-[var(--terracotta)] hover:bg-[var(--terracotta)]/8 transition-colors"
+                        title={`复制 ${selectedMissingResIds.length} 个缺失 ResId`}
+                        aria-label="复制缺失 ResId"
+                      >
+                        {copiedMissingRes ? <span className="text-[10px] font-semibold text-[var(--sage)]">✓</span> : <Copy size={10} />}
+                      </button>
+                    </>
+                  )}
+                </div>
                 <div className="space-y-1">
-                  {selectedItem.resIds.map(rid => {
+                  {visibleSelectedResIds.map(rid => {
                     const res = resList.find(r => r.id === String(rid))
                     if (!res) return null
+                    const isMissing = !res.indexed
                     const isExpanded = expandedRes.has(res.id)
                     return (
                       <div key={res.id}>
@@ -682,9 +722,11 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                         }`} onClick={() => { setExpandedRes(prev => { const next = new Set(prev); if (next.has(res.id)) next.delete(res.id); else { next.add(res.id); fetchResFiles(res.id) } return next }) }}>
                           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                           <span className="text-xs font-mono font-semibold">Res {res.id}</span>
-                          <StateBadge state={res.state} error={!res.indexed} />
+                          {isMissing
+                            ? <span className="px-1.5 py-0.5 rounded-full bg-[var(--terracotta)]/10 text-[10px] font-semibold text-[var(--terracotta)]">缺索引</span>
+                            : <StateBadge state={res.state} />}
                           <div className="flex-1" />
-                          <span className="text-[10px] text-[var(--coffee-muted)]">{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>
+                          {!isMissing && <span className="text-[10px] text-[var(--coffee-muted)]">{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>}
                           {resFiles[res.id]?.files?.length > 0 && (
                             <button onClick={e => { e.stopPropagation(); copyText(formatFilesText(resFiles[res.id].files)); setCopiedFile('res_' + res.id); setTimeout(() => setCopiedFile(null), 800) }}
                               className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] hover:text-[var(--sky)] transition-colors" title="复制文件列表">

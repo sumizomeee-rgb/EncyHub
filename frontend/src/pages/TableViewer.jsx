@@ -1,13 +1,13 @@
-import { useState, useEffect, useRef, useCallback, useMemo, Fragment, memo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import {
-  Search, RefreshCw, Loader2, Table2, ChevronLeft, ChevronRight, ChevronDown,
-  Star, Eye, ArrowUpDown, ArrowUp, ArrowDown, X
+  Search, RefreshCw, Loader2, Table2, ChevronLeft, ChevronRight,
+  Star, Eye, ArrowUpDown, ArrowUp, ArrowDown, X, KeyRound, Copy, Check
 } from 'lucide-react'
 
 const API = '/api/gm_console'
 const PAGE_SIZES = [20, 50, 100]
-const SCHEMA_COL_DEFAULTS = { field: 145, type: 88, key: 48, collection: 118 }
 const QUICK_LIST_PREVIEW_LIMIT = 10
+const ROW_NUMBER_WIDTH = 44
 const COLUMN_TINTS = [
   '123, 163, 201', // sky
   '125, 155, 118', // sage
@@ -46,6 +46,19 @@ function stripPrefix(name) {
 
 function columnTint(index, alpha = 0.06) {
   return `rgba(${COLUMN_TINTS[index % COLUMN_TINTS.length]}, ${alpha})`
+}
+
+function fieldTypeLabel(field) {
+  const valueType = field?.valueType || 'unknown'
+  if (field?.collectionType === 1) return `${valueType}[]`
+  if (field?.collectionType === 2) return `Dict<${field.keyType || '?'}, ${valueType}>`
+  return valueType
+}
+
+function cellText(value) {
+  if (value == null) return ''
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
 }
 
 function humanStatsReason(reason) {
@@ -91,7 +104,8 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
   const [dataSearch, setDataSearch] = useState('')
   const [sortField, setSortField] = useState('')
   const [sortDir, setSortDir] = useState('asc')
-  const [selectedRow, setSelectedRow] = useState(null)
+  const [selectedCell, setSelectedCell] = useState(null)
+  const [copiedCell, setCopiedCell] = useState(false)
   const [loading, setLoading] = useState(false)
   const [schemaLoading, setSchemaLoading] = useState(false)
   const [wsConnected, setWsConnected] = useState(false)
@@ -102,7 +116,6 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
   const [showDropdown, setShowDropdown] = useState(false)
   const [showAllQuickItems, setShowAllQuickItems] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useLocalStorage('table_monitor_sidebar_width', 240)
-  const [schemaColWidths, setSchemaColWidths] = useLocalStorage('table_monitor_schema_col_widths', SCHEMA_COL_DEFAULTS)
   const [dataColWidths, setDataColWidths] = useLocalStorage('table_monitor_data_col_widths', {})
 
   const wsRef = useRef(null)
@@ -112,6 +125,7 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
   const dataSearchTimerRef = useRef(null)
   const resizingRef = useRef(false)
   const colResizeRef = useRef(null)
+  const gridRef = useRef(null)
 
   activeRef.current = active
 
@@ -220,9 +234,11 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
     setDataSearch('')
     setSortField('')
     setSortDir('asc')
-    setSelectedRow(null)
+    setSelectedCell(null)
     setSchemaLoading(true)
+    setLoading(true)
     sendCommand('get_schema', { tableName })
+    sendCommand('get_data', { tableName, page: 1, pageSize, search: '', sortField: '', sortDir: 'asc' })
     addRecent(tableName)
   }
 
@@ -258,7 +274,7 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
   // --- data loading ---
   function loadData(p = 1, search = dataSearch, sf = sortField, sd = sortDir, ps = pageSize) {
     setLoading(true)
-    setSelectedRow(null)
+    setSelectedCell(null)
     sendCommand('get_data', {
       tableName: selectedTable,
       page: p, pageSize: ps,
@@ -375,18 +391,14 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
     document.body.style.userSelect = 'none'
 
     const onMove = (ev) => {
-      const nextW = clamp(startW + ev.clientX - startX, scope === 'schema' ? 48 : 64, scope === 'schema' ? 420 : 520)
-      if (scope === 'schema') {
-        setSchemaColWidths(prev => ({ ...prev, [key]: nextW }))
-      } else {
-        setDataColWidths(prev => ({
-          ...prev,
-          [selectedTable]: {
-            ...(prev[selectedTable] || {}),
-            [key]: nextW,
-          },
-        }))
-      }
+      const nextW = clamp(startW + ev.clientX - startX, 64, 520)
+      setDataColWidths(prev => ({
+        ...prev,
+        [selectedTable]: {
+          ...(prev[selectedTable] || {}),
+          [key]: nextW,
+        },
+      }))
     }
 
     const onUp = () => {
@@ -399,7 +411,43 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [selectedTable, setDataColWidths, setSchemaColWidths])
+  }, [selectedTable, setDataColWidths])
+
+  const selectCell = useCallback((rowIndex, colIndex) => {
+    setSelectedCell({ rowIndex, colIndex })
+    setCopiedCell(false)
+    gridRef.current?.focus({ preventScroll: true })
+  }, [])
+
+  const copySelectedCell = useCallback(async () => {
+    if (!selectedCell || !rows || !schema?.fields) return
+    const field = schema.fields[selectedCell.colIndex]
+    const row = rows[selectedCell.rowIndex]
+    if (!field || !row) return
+    try {
+      await navigator.clipboard.writeText(cellText(row[field.name]))
+      setCopiedCell(true)
+      setTimeout(() => setCopiedCell(false), 900)
+    } catch {}
+  }, [selectedCell, rows, schema])
+
+  const handleGridKeyDown = useCallback((event) => {
+    if (!rows?.length || !schema?.fields?.length) return
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+      event.preventDefault()
+      copySelectedCell()
+      return
+    }
+    const moves = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }
+    const move = moves[event.key]
+    if (!move) return
+    event.preventDefault()
+    const current = selectedCell || { rowIndex: 0, colIndex: 0 }
+    setSelectedCell({
+      rowIndex: clamp(current.rowIndex + move[0], 0, rows.length - 1),
+      colIndex: clamp(current.colIndex + move[1], 0, schema.fields.length - 1),
+    })
+  }, [rows, schema, selectedCell, copySelectedCell])
 
   const currentTableStats = useMemo(() => {
     if (!statsAvailable || !selectedTable) return null
@@ -410,6 +458,25 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
     if (!selectedTable) return null
     return tableList.find(t => t.name === selectedTable) || null
   }, [selectedTable, tableList])
+
+  const selectedField = selectedCell ? schema?.fields?.[selectedCell.colIndex] : null
+  const selectedValue = selectedCell && selectedField ? rows?.[selectedCell.rowIndex]?.[selectedField.name] : null
+
+  useEffect(() => {
+    if (!selectedCell || !gridRef.current) return
+    gridRef.current.querySelector(`[data-cell="${selectedCell.rowIndex}:${selectedCell.colIndex}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selectedCell])
+
+  function autoFitColumn(field, colIndex) {
+    const samples = (rows || []).slice(0, 100).map(row => cellText(row[field.name]).length)
+    const contentLength = Math.max(field.name.length, fieldTypeLabel(field).length, ...samples, 4)
+    const width = clamp(contentLength * 7 + 30, 72, 420)
+    setDataColWidths(prev => ({
+      ...prev,
+      [selectedTable]: { ...(prev[selectedTable] || {}), [field.name]: width },
+    }))
+    setSelectedCell(prev => prev ? { ...prev, colIndex } : prev)
+  }
 
   const visibleDropdownItems = showAllQuickItems
     ? dropdownItems
@@ -427,10 +494,8 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
   }
 
   const totalPages = Math.max(1, Math.ceil((matchedRows || totalRows) / pageSize))
-  const schemaWidths = { ...SCHEMA_COL_DEFAULTS, ...(schemaColWidths || {}) }
-  const schemaTableWidth = schemaWidths.field + schemaWidths.type + schemaWidths.key + schemaWidths.collection
   const dataTableWidth = Math.max(
-    schema?.fields?.reduce((sum, f) => sum + getDataColWidth(f.name, f), 0) || 0,
+    ROW_NUMBER_WIDTH + (schema?.fields?.reduce((sum, f) => sum + getDataColWidth(f.name, f), 0) || 0),
     760
   )
 
@@ -666,23 +731,12 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
                     Stats off · {statsReason}
                   </span>
                 )}
-                {!dataLoaded ? (
-                  <button
-                    className="text-xs px-3 py-1 rounded-md bg-[var(--caramel)] text-white hover:bg-[var(--caramel-dark)] transition-colors disabled:opacity-50"
-                    onClick={() => loadData(1)}
-                    disabled={loading || !schema}
-                  >
-                    {loading ? <Loader2 className="w-3 h-3 animate-spin inline mr-1" /> : null}
-                    加载数据
-                  </button>
-                ) : (
-                  <button
-                    className="text-xs px-2 py-1 rounded-md border border-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee)] hover:border-[var(--caramel)] transition-colors"
-                    onClick={() => { setDataLoaded(false); setRows(null); setDataSearch(''); setSortField(''); loadData(1, '', '', 'asc') }}
-                  >
-                    <RefreshCw className="w-3 h-3 inline mr-1" />重新加载
-                  </button>
-                )}
+                <button
+                  className="text-xs px-2 py-1 rounded-md border border-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--coffee)] hover:border-[var(--caramel)] transition-colors disabled:opacity-40"
+                  onClick={() => loadData(page)} disabled={loading || !schema}
+                >
+                  <RefreshCw className={`w-3 h-3 inline mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
+                </button>
               </div>
             </div>
 
@@ -700,60 +754,8 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
               </div>
             )}
 
-            {/* Schema */}
-            {schemaLoading ? (
-              <div className="flex items-center justify-center py-8 flex-shrink-0"><Loader2 className="w-5 h-5 animate-spin text-[var(--caramel)]" /></div>
-            ) : schema ? (
-              <div className="border-b border-[var(--cream-warm)] overflow-auto overscroll-contain flex-shrink-0" style={{ maxHeight: dataLoaded ? 150 : 400, scrollbarGutter: 'stable' }}>
-                <table className="text-xs table-fixed border-collapse" style={{ width: schemaTableWidth }}>
-                  <colgroup>
-                    <col style={{ width: schemaWidths.field }} />
-                    <col style={{ width: schemaWidths.type }} />
-                    <col style={{ width: schemaWidths.key }} />
-                    <col style={{ width: schemaWidths.collection }} />
-                  </colgroup>
-                  <thead>
-                    <tr className="text-left text-[10px] text-[var(--coffee-muted)] border-b border-[var(--cream-warm)]">
-                      {[
-                        ['field', 'Field'],
-                        ['type', 'Type'],
-                        ['key', 'Key'],
-                        ['collection', 'Collection'],
-                      ].map(([key, label]) => (
-                        <th
-                          key={key}
-                          className={`relative px-2 py-1 font-medium ${key === 'key' ? 'text-center' : ''}`}
-                          style={{ backgroundColor: columnTint(['field', 'type', 'key', 'collection'].indexOf(key), 0.13) }}
-                          title={key === 'key' ? 'Primary Key — 该字段是表的唯一索引键' : undefined}
-                        >
-                          <span className="truncate block">{label}</span>
-                          <span
-                            className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-[var(--caramel)]/30"
-                            onMouseDown={(e) => handleColumnResizeStart(e, 'schema', key, schemaWidths[key])}
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {schema.fields?.map(f => (
-                      <tr key={f.name} className={`border-b border-[var(--cream-warm)]/50 ${f.primaryKey ? 'bg-[var(--cream-warm)]/40' : 'hover:bg-[var(--cream-warm)]/20'}`}>
-                        <td className="px-2 py-1 truncate" style={{ backgroundColor: columnTint(0, f.primaryKey ? 0.11 : 0.055) }} title={f.name}>{f.name}</td>
-                        <td className="px-2 py-1 font-mono text-[var(--coffee-muted)] truncate" style={{ backgroundColor: columnTint(1, f.primaryKey ? 0.11 : 0.055) }} title={f.valueType}>{f.valueType}</td>
-                        <td className="px-2 py-1 text-center" style={{ backgroundColor: columnTint(2, f.primaryKey ? 0.11 : 0.055) }}>{f.primaryKey ? <span className="text-[var(--caramel)]" title="Primary Key">✦</span> : ''}</td>
-                        <td className="px-2 py-1 text-[var(--coffee-muted)] truncate" style={{ backgroundColor: columnTint(3, f.primaryKey ? 0.11 : 0.055) }}>
-                          {f.collectionType === 1 ? 'List' : f.collectionType === 2 ? `Dict<${f.keyType || '?'}>` : ''}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-
             {/* Data grid */}
-            {dataLoaded && (
+            {(dataLoaded || loading || schemaLoading) && (
               <div className="flex-1 flex flex-col overflow-hidden min-h-0">
                 {/* Data toolbar */}
                 <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--cream-warm)] bg-white/20 flex-shrink-0 gap-2 flex-nowrap">
@@ -788,28 +790,48 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
                   </div>
                 </div>
 
+                <div className="h-7 flex items-center border-b border-[var(--cream-warm)] bg-white/35 text-[10px] flex-shrink-0">
+                  <div className="h-full flex items-center justify-center border-r border-[var(--cream-warm)] text-[var(--coffee-muted)] font-mono" style={{ width: ROW_NUMBER_WIDTH }}>
+                    {selectedCell ? pageSize * (page - 1) + selectedCell.rowIndex + 1 : '—'}
+                  </div>
+                  <div className="px-2 min-w-24 font-medium text-[var(--coffee-muted)] truncate">{selectedField?.name || '选择单元格'}</div>
+                  <div className="flex-1 min-w-0 px-2 font-mono text-[var(--coffee)] truncate border-l border-[var(--cream-warm)]" title={cellText(selectedValue)}>
+                    {selectedCell ? (cellText(selectedValue) || 'nil') : '方向键移动 · Ctrl+C 复制 · 双击列边界自动适应'}
+                  </div>
+                  {selectedCell && (
+                    <button className="h-full px-2 border-l border-[var(--cream-warm)] text-[var(--coffee-muted)] hover:text-[var(--caramel)]" onClick={copySelectedCell} title="复制当前单元格">
+                      {copiedCell ? <Check className="w-3 h-3 text-[var(--sage)]" /> : <Copy className="w-3 h-3" />}
+                    </button>
+                  )}
+                </div>
+
                 {/* Table */}
-                <div className="flex-1 overflow-auto overscroll-contain min-h-0" style={{ scrollbarGutter: 'stable both-edges' }}>
+                <div ref={gridRef} tabIndex={0} onKeyDown={handleGridKeyDown}
+                  className="flex-1 overflow-auto overscroll-contain min-h-0 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--caramel)]/50"
+                  style={{ scrollbarGutter: 'stable both-edges' }}>
                   {loading ? (
                     <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-[var(--caramel)] mr-2" /><span className="text-xs text-[var(--coffee-muted)]">正在从游戏端读取数据...</span></div>
                   ) : rows && rows.length > 0 ? (
                     <table className="text-xs border-collapse table-fixed" style={{ width: dataTableWidth, minWidth: '100%' }}>
                       <colgroup>
+                        <col style={{ width: ROW_NUMBER_WIDTH }} />
                         {schema?.fields?.map(f => (
                           <col key={f.name} style={{ width: getDataColWidth(f.name, f) }} />
                         ))}
                       </colgroup>
-                      <thead className="sticky top-0 bg-white/90 backdrop-blur-sm z-10">
+                      <thead className="sticky top-0 bg-white/95 backdrop-blur-sm z-20">
                         <tr>
-                          {schema?.fields?.map(f => (
+                          <th rowSpan={2} className="sticky left-0 z-30 border-r border-b border-[var(--cream-warm)] bg-[var(--cream-soft)] text-center text-[9px] font-medium text-[var(--coffee-muted)]">#</th>
+                          {schema?.fields?.map((f, colIdx) => (
                             <th
                               key={f.name}
-                              className="relative px-2 py-1.5 text-left text-[10px] font-medium text-[var(--coffee-muted)] border-b border-[var(--cream-warm)] cursor-pointer hover:text-[var(--coffee)] select-none whitespace-nowrap"
-                              style={{ backgroundColor: columnTint(schema.fields.indexOf(f), 0.14) }}
+                              className="relative px-2 pt-1.5 pb-0.5 text-left text-[10px] font-semibold text-[var(--coffee)] cursor-pointer hover:text-[var(--caramel)] select-none whitespace-nowrap"
+                              style={{ backgroundColor: columnTint(colIdx, 0.14) }}
                               onClick={() => handleSort(f.name)}
                             >
                               <span className="inline-flex items-center gap-0.5 max-w-full">
-                                <span className="truncate">{f.name}</span>
+                                {f.primaryKey && <KeyRound className="w-2.5 h-2.5 text-[var(--caramel)] shrink-0" />}
+                                <span className="truncate" title={f.name}>{f.name}</span>
                                 {sortField === f.name ? (
                                   sortDir === 'asc' ? <ArrowUp className="w-2.5 h-2.5 text-[var(--caramel)]" /> : <ArrowDown className="w-2.5 h-2.5 text-[var(--caramel)]" />
                                 ) : (
@@ -819,53 +841,42 @@ function TableViewer({ clients, selectedClient, broadcastMode, active }) {
                               <span
                                 className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-[var(--caramel)]/30"
                                 onMouseDown={(e) => handleColumnResizeStart(e, 'data', f.name, getDataColWidth(f.name, f))}
+                                onDoubleClick={(e) => { e.stopPropagation(); autoFitColumn(f, colIdx) }}
                                 onClick={(e) => e.stopPropagation()}
                               />
+                            </th>
+                          ))}
+                        </tr>
+                        <tr className="border-b border-[var(--cream-warm)]">
+                          {schema?.fields?.map((f, colIdx) => (
+                            <th key={f.name} className="px-2 pt-0 pb-1.5 text-left font-mono text-[9px] font-normal text-[var(--coffee-muted)] truncate"
+                              style={{ backgroundColor: columnTint(colIdx, 0.14) }} title={fieldTypeLabel(f)}>
+                              {fieldTypeLabel(f)}
                             </th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {rows.map((row, idx) => {
-                          const rowKey = schema?.fields?.find(f => f.primaryKey)?.name
-                          const key = rowKey ? row[rowKey] : idx
-                          const isExpanded = selectedRow === key
                           return (
-                            <Fragment key={key}>
-                              <tr
-                                className={`border-b border-[var(--cream-warm)]/30 cursor-pointer transition-colors ${isExpanded ? 'bg-[var(--caramel)]/5' : 'hover:bg-[var(--cream-warm)]/30'}`}
-                                onClick={() => setSelectedRow(isExpanded ? null : key)}
-                              >
+                              <tr key={schema?.fields?.find(f => f.primaryKey)?.name ? row[schema.fields.find(f => f.primaryKey).name] : idx}
+                                className="border-b border-[var(--cream-warm)]/30 hover:bg-[var(--cream-warm)]/20">
+                                <td className="sticky left-0 z-10 border-r border-[var(--cream-warm)] bg-[var(--cream-soft)] px-1 py-1 text-right font-mono text-[9px] text-[var(--coffee-muted)] select-none">
+                                  {pageSize * (page - 1) + idx + 1}
+                                </td>
                                 {schema?.fields?.map((f, colIdx) => (
                                   <td
                                     key={f.name}
-                                    className="px-2 py-1 truncate"
-                                    style={{ backgroundColor: columnTint(colIdx, isExpanded ? 0.105 : 0.055) }}
+                                    data-cell={`${idx}:${colIdx}`}
+                                    className={`relative px-2 py-1 truncate cursor-cell select-none ${selectedCell?.rowIndex === idx && selectedCell?.colIndex === colIdx ? 'ring-2 ring-inset ring-[var(--caramel)] z-[1]' : ''}`}
+                                    style={{ backgroundColor: columnTint(colIdx, selectedCell?.rowIndex === idx && selectedCell?.colIndex === colIdx ? 0.13 : 0.055) }}
                                     title={row[f.name] != null && typeof row[f.name] !== 'object' ? String(row[f.name]) : undefined}
+                                    onClick={() => selectCell(idx, colIdx)}
                                   >
                                     {renderCell(row[f.name], f)}
                                   </td>
                                 ))}
                               </tr>
-                              {isExpanded && (
-                                <tr>
-                                  <td colSpan={schema?.fields?.length || 1} className="p-0">
-                                    <div className="bg-[var(--cream-warm)]/20 border-y border-[var(--caramel)]/20 px-4 py-2">
-                                      <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-                                        {schema?.fields?.map(f => (
-                                          <div key={f.name} className="contents">
-                                            <span className="font-medium text-[var(--coffee-muted)] text-right select-all">{f.name}</span>
-                                            <span className="font-mono text-[var(--coffee)] break-all select-all">
-                                              {row[f.name] != null ? (typeof row[f.name] === 'object' ? JSON.stringify(row[f.name]) : String(row[f.name])) : <span className="text-[var(--coffee-muted)] opacity-40">nil</span>}
-                                            </span>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  </td>
-                                </tr>
-                              )}
-                            </Fragment>
                           )
                         })}
                       </tbody>

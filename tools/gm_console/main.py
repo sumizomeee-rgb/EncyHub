@@ -18,6 +18,7 @@ from .custom_gm import CustomGmManager
 from .inject_runtime_gm import build_inject_file_content, get_primary_target_relative_path
 from .proto_parser import ProtoParser, validate_haruroot, generate_lua_code, parse_log_file
 from .runtime_gm_code import build_runtime_gm_code, detect_local_lan_ip
+from .table_catalog import table_catalog
 
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
@@ -973,6 +974,13 @@ async def table_monitor_command(client_id: str, request: Request):
     action = body.pop("action", "")
     if not action:
         raise HTTPException(400, "Missing action")
+    haruroot = proto_parser.haruroot if proto_parser else ""
+    if action == "list_tables" and haruroot:
+        body["catalog"] = table_catalog.summaries(haruroot)
+    elif action in {"get_schema", "get_data"} and haruroot and body.get("tableName"):
+        entry = table_catalog.get(haruroot, str(body["tableName"]))
+        if entry:
+            body["catalogEntry"] = entry
     await server_mgr.send_table_monitor_request(client_id, action, body)
     return {"status": "requested"}
 
