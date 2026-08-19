@@ -15,8 +15,8 @@ REM    data/gm_console/haruroot_config.json  HaruRoot 路径（两机不同）
 REM    data/gm_console/proto_cache.json 可再生的 proto 解析缓存
 REM ============================================================
 
-set "SSH_CONFIG=E:/Such_Proj/Other/Haru-ssh-setup/ssh_config"
-set "TARGET=haru-public-linux"
+set "SSH_CONFIG=E:/Such_Proj/Other/Haru-ssh-setup/hosts/harucode-template/ssh_config"
+set "TARGET=harucode-template"
 set "LOCAL_ROOT=E:\Such_Proj\Other\EncyHub"
 set "REMOTE_ROOT=/home/harucode/EncyHub"
 

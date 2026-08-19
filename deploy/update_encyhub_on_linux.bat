@@ -1,8 +1,8 @@
 @echo off
 setlocal
 
-set "SSH_CONFIG=E:/Such_Proj/Other/Haru-ssh-setup/ssh_config"
-set "TARGET=haru-public-linux"
+set "SSH_CONFIG=E:/Such_Proj/Other/Haru-ssh-setup/hosts/harucode-template/ssh_config"
+set "TARGET=harucode-template"
 set "REMOTE_ROOT=/home/harucode/EncyHub"
 
 echo [1/1] 正在更新部署机上的 EncyHub ...
