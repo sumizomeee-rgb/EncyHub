@@ -21,6 +21,8 @@ const STATE_CONFIG = {
 const FALLBACK_STATE = { label: '未知', color: 'var(--coffee-muted)', bg: 'rgba(168,155,145,0.15)' }
 
 const ALL_STATES = new Set([1, 2, 3, 4, 5, 6])
+const DETAIL_LIST_MIN_WIDTH = 340
+const DETAIL_LIST_DEFAULT_WIDTH = 360
 
 const LS_KEYS = {
   viewMode:   'subpkg_monitor_view_mode',
@@ -34,6 +36,10 @@ function lsGet(key, fallback) {
   try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback } catch { return fallback }
 }
 function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)) } catch {} }
+function clampDetailListWidth(value) {
+  const width = Number(value)
+  return Math.min(Math.max(Number.isFinite(width) ? width : DETAIL_LIST_DEFAULT_WIDTH, DETAIL_LIST_MIN_WIDTH), 500)
+}
 
 // ============================================================================
 // Helpers
@@ -185,7 +191,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   const [copiedMissingRes, setCopiedMissingRes] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(() => lsGet(LS_KEYS.autoRefresh, true))
   const [refreshInterval, setRefreshInterval] = useState(() => lsGet(LS_KEYS.interval, 2))
-  const [leftWidth, setLeftWidth] = useState(() => lsGet(LS_KEYS.leftWidth, 300))
+  const [leftWidth, setLeftWidth] = useState(() => clampDetailListWidth(lsGet(LS_KEYS.leftWidth, DETAIL_LIST_DEFAULT_WIDTH)))
   const [highlightId, setHighlightId] = useState(null)
   const [wsConnected, setWsConnected] = useState(false)
 
@@ -536,20 +542,20 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     <div key={sub.id} data-id={sub.id} onClick={() => onSelect(sub.id)} className={cardCls(isSelected, extraClass, sub.id)}
       title={sub.missingResCount > 0 ? `缺失索引 ${sub.missingResCount} 个` : undefined}>
       <StateBadge state={sub.state} mini />
-      <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">S{sub.id}</span>
+      <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-11 flex-shrink-0">S{sub.id}</span>
       {sub.name && <span className={`text-[11px] truncate min-w-0 flex-1 ${sub.missingResCount > 0 ? 'font-medium text-[var(--terracotta)]' : 'text-[var(--coffee-light)]'}`}>{sub.name}</span>}
-      <div className="w-14 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-[90px] text-right flex-shrink-0 whitespace-nowrap">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
+      <div className="w-12 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
     </div>
   )
 
   const renderResCard = (res, isSelected, onSelect, extraClass = '') => (
     <div key={res.id} data-id={res.id} onClick={() => onSelect(res.id)} className={cardCls(isSelected, extraClass, res.id)}>
       <StateBadge state={res.state} mini />
-      <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-12 flex-shrink-0">R{res.id}</span>
+      <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-11 flex-shrink-0">R{res.id}</span>
       {!res.indexed && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap">无索引</span>}
-      <div className="w-14 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-[90px] text-right flex-shrink-0 whitespace-nowrap">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
+      <div className="w-12 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
       <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
     </div>
   )
@@ -624,7 +630,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
 
     return (
       <div className="flex h-full"
-        onMouseMove={e => { if (!isDragging.current) return; const r = e.currentTarget.getBoundingClientRect(); setLeftWidth(Math.min(Math.max(e.clientX - r.left, 200), 500)) }}
+        onMouseMove={e => { if (!isDragging.current) return; const r = e.currentTarget.getBoundingClientRect(); setLeftWidth(clampDetailListWidth(e.clientX - r.left)) }}
         onMouseUp={() => { isDragging.current = false }}
         onMouseLeave={() => { isDragging.current = false }}>
 
@@ -679,7 +685,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
 
               {/* Res table */}
               <div>
-                <div className="flex items-center gap-1.5 mb-2">
+                <div className="flex flex-wrap items-center gap-1.5 mb-2">
                   <h4 className="text-xs font-semibold text-[var(--coffee-deep)] whitespace-nowrap">
                     包含的 Resource ({selectedItem.resIds.length})
                   </h4>
