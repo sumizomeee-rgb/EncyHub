@@ -4774,7 +4774,7 @@ local function StartRuntimeGM()
         local templates = _spm_getSubpackageTemplates(agency)
         if not templates and not subDict then _spm_sendError("get_structure", "SubPackage templates and item dict are nil"); return end
 
-        -- 1) SubPackage.tab 完整配置。索引缺失只记为异常计数，不隐藏 Sub。
+        -- 1) SubPackage.tab 是 Sub 关系权威；运行态表外实例追加为孤儿，且不反推 Res 关系。
         local subs = {}
         if templates then
             for key, template in pairs(templates) do
@@ -4791,6 +4791,8 @@ local function StartRuntimeGM()
                 subs[tostring(subId)] = {
                     name = template.Name or ("Sub_" .. tostring(subId)),
                     resIds = resIds,
+                    configured = true,
+                    instantiated = subDict and subDict[subId] ~= nil or false,
                     configuredResCount = configuredResCount,
                     indexedResCount = indexedResCount,
                     missingResCount = configuredResCount - indexedResCount
@@ -4803,12 +4805,32 @@ local function StartRuntimeGM()
                 pcall(function() template = agency:GetSubpackageTemplate(subId) end)
                 subs[tostring(subId)] = {
                     name = (template and template.Name) or ("Sub_" .. tostring(subId)),
-                    resIds = (template and template.ResIds) or {}
+                    resIds = (template and template.ResIds) or {},
+                    configured = template ~= nil,
+                    instantiated = true
                 }
             end
         end
 
-        -- 2) Resource 取“配置并索引”的并集。配置有、索引无时保留并显示 0。
+        -- 只读字典，不调用 GetSubpackageItem，避免监控本身创建实例。
+        if subDict then
+            for subId, _ in pairs(subDict) do
+                local key = tostring(subId)
+                if not subs[key] then
+                    subs[key] = {
+                        name = "Sub_" .. key,
+                        resIds = {},
+                        configured = false,
+                        instantiated = true,
+                        configuredResCount = 0,
+                        indexedResCount = 0,
+                        missingResCount = 0
+                    }
+                end
+            end
+        end
+
+        -- 2) Resource 取“配置、索引、实例”并集；三种来源独立标记。
         local resources = {}
         for subId, sub in pairs(subs) do
             for _, resId in pairs(sub.resIds or {}) do
@@ -4819,7 +4841,8 @@ local function StartRuntimeGM()
                     if not resource then
                         resource = {
                             subIds = {}, fileCount = _spm_fileCount(fileDict),
-                            configured = true, indexed = fileDict ~= nil
+                            configured = true, indexed = fileDict ~= nil,
+                            instantiated = resDict and resDict[resId] ~= nil or false
                         }
                         resources[key] = resource
                     end
@@ -4835,7 +4858,25 @@ local function StartRuntimeGM()
                     pcall(function() subIds = agency._Model:GetSubpackageIdByResId(resId) or {} end)
                     resources[key] = {
                         subIds = subIds, fileCount = _spm_fileCount(fileDict),
-                        configured = false, indexed = true
+                        configured = false, indexed = true,
+                        instantiated = resDict and resDict[resId] ~= nil or false
+                    }
+                end
+            end
+        end
+        -- 只读字典，不调用 GetResourceItem，避免监控本身创建实例。
+        if resDict then
+            for resId, _ in pairs(resDict) do
+                local key = tostring(resId)
+                local resource = resources[key]
+                if resource then
+                    resource.instantiated = true
+                else
+                    local fileDict = subIndexInfo and subIndexInfo[resId]
+                    resources[key] = {
+                        subIds = {}, fileCount = _spm_fileCount(fileDict),
+                        configured = false, indexed = fileDict ~= nil,
+                        instantiated = true
                     }
                 end
             end
@@ -4912,14 +4953,8 @@ local function StartRuntimeGM()
         pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
         if not subDict and not resDict then _spm_sendError("get_status", "Item dicts are nil"); return end
 
+        -- 状态只返回真实实例；不要用未知状态预填配置项，否则前端无法识别“缺实例”。
         local subsStatus = {}
-        local templates = _spm_getSubpackageTemplates(agency)
-        if templates then
-            for key, template in pairs(templates) do
-                local subId = template.Id or key
-                subsStatus[tostring(subId)] = { state = -1, dlSize = 0, totalSize = 0, progress = 0 }
-            end
-        end
         if subDict then
             for subId, item in pairs(subDict) do
                 local e = {}
@@ -4936,17 +4971,6 @@ local function StartRuntimeGM()
         end
 
         local resStatus = {}
-        if templates then
-            for _, template in pairs(templates) do
-                for _, resId in pairs(template.ResIds or {}) do
-                    if type(resId) == "number" and resId > 0 then
-                        resStatus[tostring(resId)] = {
-                            state = -1, tgState = -1, dlSize = 0, totalSize = 0, progress = 0
-                        }
-                    end
-                end
-            end
-        end
         if resDict then
             for resId, item in pairs(resDict) do
                 local e = {}

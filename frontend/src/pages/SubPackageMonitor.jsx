@@ -296,6 +296,12 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
 
   const fetchResFiles = useCallback((resId) => {
     if (resFiles[resId]) return  // already loaded
+    const resource = structure?.resources?.[String(resId)]
+    if (!resource?.indexed) {
+      setResFilesLoading(prev => ({ ...prev, [resId]: false }))
+      setResFiles(prev => ({ ...prev, [resId]: { files: [], sharedFiles: {} } }))
+      return
+    }
     setResFilesLoading(prev => ({ ...prev, [resId]: true }))
     sendCmd('get_res_files', { resId }, (data) => {
       if (data?.resId) {
@@ -303,7 +309,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
         setResFiles(prev => ({ ...prev, [data.resId]: { files: data.files || [], sharedFiles: data.sharedFiles || {} } }))
       }
     })
-  }, [sendCmd, resFiles])
+  }, [sendCmd, resFiles, structure])
 
   // Initial fetch on tab activation (must wait for WS to be ready)
   useEffect(() => {
@@ -330,23 +336,41 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   // Computed data
   // ==========================================================================
   const subList = useMemo(() => {
-    if (!structure?.subs) return []
-    return Object.entries(structure.subs).map(([id, s]) => ({
-      id, name: s.name, resIds: (s.resIds || []).map(String),
-      configuredResCount: s.configuredResCount ?? (s.resIds || []).length,
-      indexedResCount: s.indexedResCount ?? (s.resIds || []).length,
-      missingResCount: s.missingResCount ?? 0,
-      ...(status?.subs?.[id] || { state: -1, dlSize: 0, totalSize: 0, progress: 0 })
-    }))
+    const configuredSubs = structure?.subs || {}
+    const runtimeSubs = status?.subs || {}
+    const ids = new Set([...Object.keys(configuredSubs), ...Object.keys(runtimeSubs)])
+    return [...ids].map(id => {
+      const s = configuredSubs[id] || {}
+      const runtime = runtimeSubs[id]
+      const configured = s.configured !== false && Boolean(configuredSubs[id])
+      const instantiated = status ? Boolean(runtime) : s.instantiated === true
+      const resIds = Array.isArray(s.resIds) ? s.resIds.map(String) : []
+      return {
+        id, name: s.name || `Sub_${id}`, resIds, configured, instantiated,
+        configuredResCount: s.configuredResCount ?? resIds.length,
+        indexedResCount: s.indexedResCount ?? resIds.length,
+        missingResCount: s.missingResCount ?? 0,
+        ...(runtime || { state: -1, dlSize: 0, totalSize: 0, progress: 0 })
+      }
+    }).filter(s => s.configured || s.instantiated)
+      .sort((a, b) => Number(b.configured) - Number(a.configured) || Number(a.id) - Number(b.id))
   }, [structure, status])
 
   const resList = useMemo(() => {
-    if (!structure?.resources) return []
-    return Object.entries(structure.resources).map(([id, r]) => ({
-      id, subIds: (r.subIds || []).map(String), fileCount: r.fileCount || 0,
-      configured: r.configured !== false, indexed: r.indexed !== false,
-      ...(status?.resources?.[id] || { state: -1, dlSize: 0, totalSize: 0, progress: 0, tgState: -1 })
-    }))
+    const structuredRes = structure?.resources || {}
+    const runtimeRes = status?.resources || {}
+    const ids = new Set([...Object.keys(structuredRes), ...Object.keys(runtimeRes)])
+    return [...ids].map(id => {
+      const r = structuredRes[id] || {}
+      const runtime = runtimeRes[id]
+      return {
+        id, subIds: Array.isArray(r.subIds) ? r.subIds.map(String) : [], fileCount: r.fileCount || 0,
+        configured: r.configured === true,
+        indexed: r.indexed === true,
+        instantiated: status ? Boolean(runtime) : r.instantiated === true,
+        ...(runtime || { state: -1, dlSize: 0, totalSize: 0, progress: 0, tgState: -1 })
+      }
+    })
   }, [structure, status])
 
   // ==========================================================================
@@ -543,6 +567,8 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       title={sub.missingResCount > 0 ? `缺失索引 ${sub.missingResCount} 个` : undefined}>
       <StateBadge state={sub.state} mini />
       <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-11 flex-shrink-0">S{sub.id}</span>
+      {!sub.configured && sub.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="存在 XSubpackage 实例，但不在 SubPackage.tab 中">孤儿</span>}
+      {sub.configured && !sub.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="SubPackage.tab 中存在，但没有 XSubpackage 实例">缺实例</span>}
       {sub.name && <span className={`text-[11px] truncate min-w-0 flex-1 ${sub.missingResCount > 0 ? 'font-medium text-[var(--terracotta)]' : 'text-[var(--coffee-light)]'}`}>{sub.name}</span>}
       <div className="w-12 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
       <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
@@ -553,6 +579,9 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     <div key={res.id} data-id={res.id} onClick={() => onSelect(res.id)} className={cardCls(isSelected, extraClass, res.id)}>
       <StateBadge state={res.state} mini />
       <span className="text-[11px] font-mono font-semibold text-[var(--coffee-deep)] w-11 flex-shrink-0">R{res.id}</span>
+      {!res.configured && res.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="存在 XResource 实例，但未被 SubPackage.tab 中任何 Sub 引用">孤儿</span>}
+      {res.configured && !res.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="SubPackage.tab 中存在配置引用，但没有 XResource 实例">缺实例</span>}
+      {!res.configured && !res.instantiated && res.indexed && <span className="text-[10px] font-semibold text-[var(--coffee-muted)] whitespace-nowrap" title="仅存在于资源索引中，没有配置引用和 XResource 实例">仅索引</span>}
       {!res.indexed && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap">无索引</span>}
       <div className="w-12 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
       <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
@@ -678,6 +707,8 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                 </h3>
                 <div className="flex items-center gap-3 mb-2">
                   <StateBadge state={selectedItem.state} />
+                  {!selectedItem.configured && selectedItem.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)]" title="存在 XSubpackage 实例，但不在 SubPackage.tab 中">孤儿</span>}
+                  {selectedItem.configured && !selectedItem.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)]">缺实例</span>}
                   <span className="text-xs text-[var(--coffee-muted)]">{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
                 </div>
                 <ProgressBar progress={selectedItem.progress} state={selectedItem.state} />
@@ -716,6 +747,11 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                   )}
                 </div>
                 <div className="space-y-1">
+                  {visibleSelectedResIds.length === 0 && (
+                    <div className="text-center text-xs text-[var(--coffee-muted)] py-4">
+                      {selectedItem.configured ? '该 Sub 未配置 Resource' : 'SubPackage.tab 中无此 Sub，无法获取配置 Resource'}
+                    </div>
+                  )}
                   {visibleSelectedResIds.map(rid => {
                     const res = resList.find(r => r.id === String(rid))
                     if (!res) return null
@@ -725,7 +761,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                       <div key={res.id}>
                         <div className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${
                           isExpanded ? 'bg-[var(--cream-warm)]' : 'hover:bg-white/40'
-                        }`} onClick={() => { setExpandedRes(prev => { const next = new Set(prev); if (next.has(res.id)) next.delete(res.id); else { next.add(res.id); fetchResFiles(res.id) } return next }) }}>
+                        }`} onClick={() => { setExpandedRes(prev => { const next = new Set(prev); if (next.has(res.id)) next.delete(res.id); else { next.add(res.id); if (res.indexed) fetchResFiles(res.id) } return next }) }}>
                           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                           <span className="text-xs font-mono font-semibold">Res {res.id}</span>
                           {isMissing
@@ -746,6 +782,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                             <div className="mb-1.5"><ProgressBar progress={res.progress} state={res.state} /></div>
                             {resFilesLoading[res.id]
                               ? <div className="text-center text-xs text-[var(--coffee-muted)] py-2"><RotateCw size={12} className="inline animate-spin mr-1" />加载文件列表...</div>
+                              : !res.indexed ? <div className="text-center text-xs text-[var(--coffee-muted)] py-2">无资源索引，无法获取文件列表</div>
                               : resFiles[res.id] ? renderFileTable(resFiles[res.id].files, true, resFiles[res.id].sharedFiles)
                               : <div className="text-center text-xs text-[var(--coffee-muted)] py-2">点击展开加载文件</div>
                             }
@@ -764,6 +801,10 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                 <h3 className="font-display font-bold text-base text-[var(--coffee-deep)] mb-1">Res {selectedItem.id}</h3>
                 <div className="flex items-center gap-3 mb-2">
                   <StateBadge state={selectedItem.state} />
+                  {!selectedItem.configured && selectedItem.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)]" title="存在 XResource 实例，但未被 SubPackage.tab 中任何 Sub 引用">孤儿</span>}
+                  {selectedItem.configured && !selectedItem.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)]">缺实例</span>}
+                  {!selectedItem.configured && !selectedItem.instantiated && selectedItem.indexed && <span className="text-[10px] font-semibold text-[var(--coffee-muted)]">仅索引</span>}
+                  {!selectedItem.indexed && <span className="text-[10px] font-semibold text-[var(--terracotta)]">无索引</span>}
                   {selectedItem.tgState > 0 && (
                     <span className="text-[10px] text-[var(--coffee-muted)]">TaskGroup: {selectedItem.tgState}</span>
                   )}
@@ -778,6 +819,9 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                   所属 SubPackage ({selectedItem.subIds.length})
                 </h4>
                 <div className="space-y-1">
+                  {selectedItem.subIds.length === 0 && (
+                    <div className="text-center text-xs text-[var(--coffee-muted)] py-4">SubPackage.tab 中无所属 Sub</div>
+                  )}
                   {selectedItem.subIds.map(sid => {
                     const sub = subList.find(s => s.id === String(sid))
                     if (!sub) return null
@@ -801,7 +845,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
               <div>
                 <h4 className="text-xs font-semibold text-[var(--coffee-deep)] mb-2 flex items-center gap-2">
                   文件列表 ({selectedItem.fileCount})
-                  {!resFiles[selectedItem.id] && !resFilesLoading[selectedItem.id] && (
+                  {selectedItem.indexed && !resFiles[selectedItem.id] && !resFilesLoading[selectedItem.id] && (
                     <button onClick={() => fetchResFiles(selectedItem.id)}
                       className="text-[10px] text-[var(--sky)] hover:underline">加载文件</button>
                   )}
@@ -814,6 +858,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                 </h4>
                 {resFilesLoading[selectedItem.id]
                   ? <div className="text-center text-xs text-[var(--coffee-muted)] py-4"><RotateCw size={14} className="inline animate-spin mr-1" />加载中...</div>
+                  : !selectedItem.indexed ? <div className="text-center text-xs text-[var(--coffee-muted)] py-4">无资源索引，无法获取文件列表</div>
                   : resFiles[selectedItem.id] ? renderFileTable(resFiles[selectedItem.id].files, false, resFiles[selectedItem.id].sharedFiles)
                   : <div className="text-center text-xs text-[var(--coffee-muted)] py-4">点击"加载文件"查看文件详情</div>
                 }
@@ -839,6 +884,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
 
     // Files by selected res (on-demand loaded)
     const colResData = colSelectedRes ? resFiles[colSelectedRes] : null
+    const colSelectedResItem = colSelectedRes ? resList.find(r => r.id === colSelectedRes) : null
     const colFiles = colResData?.files || []
     const colSharedFiles = colResData?.sharedFiles || {}
 
@@ -887,7 +933,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
               (id) => {
                 const next = id === colSelectedRes ? null : id
                 setColSelectedRes(next)
-                if (next) fetchResFiles(next)
+                if (next && res.indexed) fetchResFiles(next)
                 const r = resList.find(x => x.id === id)
                 if (r) { setColHighlightSubs(new Set(r.subIds.map(String))); setTimeout(() => setColHighlightSubs(new Set()), 800) }
               },
@@ -914,6 +960,8 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
           <div className="flex-1 overflow-y-auto p-2">
             {!colSelectedRes ? (
               <div className="text-center text-xs text-[var(--coffee-muted)] py-8">请选择一个 Resource 查看文件</div>
+            ) : !colSelectedResItem?.indexed ? (
+              <div className="text-center text-xs text-[var(--coffee-muted)] py-8">无资源索引，无法获取文件列表</div>
             ) : resFilesLoading[colSelectedRes] ? (
               <div className="text-center text-xs text-[var(--coffee-muted)] py-8"><RotateCw size={12} className="inline animate-spin mr-1" />加载中...</div>
             ) : colFiles.length === 0 && !colResData ? (

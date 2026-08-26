@@ -57,6 +57,10 @@ def test_subpackage_monitor_keeps_configured_resources_and_sanitizes_status():
     assert "debug.getupvalue(initFn, i)" in content
     assert "missingResCount = configuredResCount - indexedResCount" in content
     assert "configured = true, indexed = fileDict ~= nil" in content
+    assert "configured = false, indexed = fileDict ~= nil" in content
+    assert "instantiated = true" in content
+    assert 'name = "Sub_" .. key' in content
+    assert "状态只返回真实实例" in content
     assert "if not subIndexInfo or subIndexInfo[resId] then" not in content
     assert "e.progress = _spm_safeNumber(e.progress, 0)" in content
 
@@ -68,6 +72,10 @@ def test_subpackage_monitor_keeps_configured_resources_and_sanitizes_status():
     assert "复制缺失 ResId" in frontend
     assert "{!res.indexed &&" in frontend
     assert "无索引" in frontend
+    assert "存在 XSubpackage 实例，但不在 SubPackage.tab 中" in frontend
+    assert "存在 XResource 实例，但未被 SubPackage.tab 中任何 Sub 引用" in frontend
+    assert "SubPackage.tab 中无此 Sub，无法获取配置 Resource" in frontend
+    assert "无资源索引，无法获取文件列表" in frontend
 
 
 def test_runtime_gm_queries_svn_by_working_copy_and_reports_structured_fields():
