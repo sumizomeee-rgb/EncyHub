@@ -76,6 +76,10 @@ def test_subpackage_monitor_keeps_configured_resources_and_sanitizes_status():
     assert "存在 XResource 实例，但未被 SubPackage.tab 中任何 Sub 引用" in frontend
     assert "SubPackage.tab 中无此 Sub，无法获取配置 Resource" in frontend
     assert "无资源索引，无法获取文件列表" in frontend
+    assert "function formatExactBytes(bytes)" in frontend
+    assert "function sizeTooltip(dlSize, totalSize)" in frontend
+    assert "还差：${formatExactBytes(remaining)}" in frontend
+    assert "SubPackage.tab 中配置了该 Resource，但资源索引中不存在" in frontend
 
 
 def test_runtime_gm_queries_svn_by_working_copy_and_reports_structured_fields():

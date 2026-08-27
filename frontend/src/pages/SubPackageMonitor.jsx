@@ -53,6 +53,21 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
+function formatExactBytes(bytes) {
+  const value = Number(bytes)
+  if (!Number.isFinite(value) || value < 0) return '未知'
+  return `${Math.trunc(value).toLocaleString('en-US')} 字节`
+}
+
+function sizeTooltip(dlSize, totalSize) {
+  const downloaded = Number(dlSize)
+  const total = Number(totalSize)
+  const remaining = Number.isFinite(downloaded) && Number.isFinite(total)
+    ? Math.max(0, total - downloaded)
+    : null
+  return `已下载：${formatExactBytes(downloaded)}\n总大小：${formatExactBytes(total)}\n还差：${formatExactBytes(remaining)}`
+}
+
 function stateOf(s) { return STATE_CONFIG[s] || FALLBACK_STATE }
 
 function formatFilesText(files) {
@@ -550,7 +565,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       <span>Res <b className="text-[var(--coffee-deep)]">{stats.resTotal}</b></span>
       <span className="text-[var(--sage)]">完成 <b>{stats.subComplete}</b></span>
       <span className="text-[var(--sky)]">下载中 <b>{stats.subDownloading}</b></span>
-      <span className="ml-auto">{formatSize(stats.totalDl)} / {formatSize(stats.totalSize)}</span>
+      <span className="ml-auto" title={sizeTooltip(stats.totalDl, stats.totalSize)}>{formatSize(stats.totalDl)} / {formatSize(stats.totalSize)}</span>
     </div>
   )
 
@@ -571,7 +586,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       {sub.configured && !sub.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="SubPackage.tab 中存在，但没有 XSubpackage 实例">缺实例</span>}
       {sub.name && <span className={`text-[11px] truncate min-w-0 flex-1 ${sub.missingResCount > 0 ? 'font-medium text-[var(--terracotta)]' : 'text-[var(--coffee-light)]'}`}>{sub.name}</span>}
       <div className="w-12 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap">{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap" title={sizeTooltip(sub.dlSize, sub.totalSize)}>{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
     </div>
   )
 
@@ -584,7 +599,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       {!res.configured && !res.instantiated && res.indexed && <span className="text-[10px] font-semibold text-[var(--coffee-muted)] whitespace-nowrap" title="仅存在于资源索引中，没有配置引用和 XResource 实例">仅索引</span>}
       {!res.indexed && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap">无索引</span>}
       <div className="w-12 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap">{sizeText(res.dlSize, res.totalSize, res.state)}</span>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap" title={sizeTooltip(res.dlSize, res.totalSize)}>{sizeText(res.dlSize, res.totalSize, res.state)}</span>
       <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
     </div>
   )
@@ -618,7 +633,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                   onClick={() => { copyText(f.asset || f.name); setCopiedFile(f.asset || f.name); setTimeout(() => setCopiedFile(null), 800) }}>
                   {copiedFile === (f.asset || f.name) ? '已复制 ✓' : (() => { const p = f.asset || f.name; const idx = p.lastIndexOf('/'); return idx < 0 ? p : <><span className="text-[var(--coffee-muted)] opacity-50">…/</span><span style={{ color: 'var(--coffee-deep)' }}>{p.slice(idx + 1)}</span></> })()}
                 </td>
-                <td className="py-1 text-right text-[var(--coffee-muted)] whitespace-nowrap">{formatSize(f.size)}</td>
+                <td className="py-1 text-right text-[var(--coffee-muted)] whitespace-nowrap" title={formatExactBytes(f.size)}>{formatSize(f.size)}</td>
                 <td className={`py-1 font-mono truncate cursor-pointer transition-colors hover:text-[var(--sky)] overflow-hidden ${compact ? 'pl-1' : 'pl-2 max-w-[80px]'}`}
                   style={{ color: copiedSha1 === f.sha1 ? 'var(--sage)' : 'var(--coffee-muted)' }}
                   title={`${f.sha1}\n点击复制`}
@@ -709,7 +724,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                   <StateBadge state={selectedItem.state} />
                   {!selectedItem.configured && selectedItem.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)]" title="存在 XSubpackage 实例，但不在 SubPackage.tab 中">孤儿</span>}
                   {selectedItem.configured && !selectedItem.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)]">缺实例</span>}
-                  <span className="text-xs text-[var(--coffee-muted)]">{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
+                  <span className="text-xs text-[var(--coffee-muted)]" title={sizeTooltip(selectedItem.dlSize, selectedItem.totalSize)}>{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
                 </div>
                 <ProgressBar progress={selectedItem.progress} state={selectedItem.state} />
               </div>
@@ -765,10 +780,10 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                           <span className="text-xs font-mono font-semibold">Res {res.id}</span>
                           {isMissing
-                            ? <span className="px-1.5 py-0.5 rounded-full bg-[var(--terracotta)]/10 text-[10px] font-semibold text-[var(--terracotta)]">缺索引</span>
+                            ? <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-[var(--terracotta)]/25 bg-white/35 text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="SubPackage.tab 中配置了该 Resource，但资源索引中不存在">缺失</span>
                             : <StateBadge state={res.state} />}
                           <div className="flex-1" />
-                          {!isMissing && <span className="text-[10px] text-[var(--coffee-muted)]">{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>}
+                          {!isMissing && <span className="text-[10px] text-[var(--coffee-muted)]" title={sizeTooltip(res.dlSize, res.totalSize)}>{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>}
                           {resFiles[res.id]?.files?.length > 0 && (
                             <button onClick={e => { e.stopPropagation(); copyText(formatFilesText(resFiles[res.id].files)); setCopiedFile('res_' + res.id); setTimeout(() => setCopiedFile(null), 800) }}
                               className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] hover:text-[var(--sky)] transition-colors" title="复制文件列表">
@@ -808,7 +823,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                   {selectedItem.tgState > 0 && (
                     <span className="text-[10px] text-[var(--coffee-muted)]">TaskGroup: {selectedItem.tgState}</span>
                   )}
-                  <span className="text-xs text-[var(--coffee-muted)]">{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
+                  <span className="text-xs text-[var(--coffee-muted)]" title={sizeTooltip(selectedItem.dlSize, selectedItem.totalSize)}>{sizeText(selectedItem.dlSize, selectedItem.totalSize, selectedItem.state)}</span>
                 </div>
                 <ProgressBar progress={selectedItem.progress} state={selectedItem.state} />
               </div>
