@@ -21,6 +21,38 @@ function Dashboard() {
   const navigate = useNavigate()
   const toast = useToast()
 
+  // 重启请求发出后：先等旧进程退出（请求开始失败），再等新进程就绪（请求成功），
+  // 然后刷新页面。避免旧的"固定 3 秒后刷新"在重启窗口期刷到死页面。
+  const waitHubBackOnline = async () => {
+    const started = Date.now()
+    const deadline = started + 60000
+    // 阶段1：等旧进程退出。平台从退出到重新拉起至少需要约 4 秒
+    // （接口延迟 0.5 秒退出 + 启动脚本等待 3 秒），超时未断开也直接进入下一阶段
+    while (Date.now() - started < 4000 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 500))
+      try {
+        await fetch(`${API_BASE}/tools`, { cache: 'no-store' })
+      } catch {
+        break
+      }
+    }
+    // 阶段2：等新进程就绪
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 1000))
+      try {
+        const res = await fetch(`${API_BASE}/tools`, { cache: 'no-store' })
+        if (res.ok) {
+          window.location.reload()
+          return
+        }
+      } catch {
+        // 平台尚未恢复，继续等待
+      }
+    }
+    // 超时兜底：仍然刷新页面，由用户自行确认状态
+    window.location.reload()
+  }
+
   const handleRestartHub = async () => {
     if (!confirm('确定要重启整个平台吗？这会中断当前的连接。')) return
     setRestartLoading(true)
@@ -28,8 +60,8 @@ function Dashboard() {
       const res = await fetch(`${API_BASE}/restart-hub`, { method: 'POST' })
       const data = await res.json()
       if (data.success) {
-        toast.success('平台正在重启，请稍候刷新页面...')
-        setTimeout(() => window.location.reload(), 3000)
+        toast.success('平台正在重启，恢复后将自动刷新页面...')
+        waitHubBackOnline()
       } else {
         toast.error(data.message || '重启失败')
         setRestartLoading(false)

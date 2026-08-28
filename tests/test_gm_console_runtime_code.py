@@ -63,13 +63,19 @@ def test_subpackage_monitor_keeps_configured_resources_and_sanitizes_status():
     assert "状态只返回真实实例" in content
     assert "if not subIndexInfo or subIndexInfo[resId] then" not in content
     assert "e.progress = _spm_safeNumber(e.progress, 0)" in content
+    assert "agency:GetFileToResIds()" in content
+    assert "_spm_buildCrossSubFileCounts" in content
+    assert "遍历其他 Res 看哪些共享同名文件" not in content
 
     frontend = read_file(SUBPACKAGE_MONITOR_JSX)
     assert "索引 {selectedItem.indexedResCount}｜缺失 {selectedItem.missingResCount}" not in frontend
     assert "索引 {sub.indexedResCount}/{sub.configuredResCount}" not in frontend
-    assert "selectedMissingResIds.join(', ')" in frontend
+    assert "copyCollectionIds(selectedMissingResIds, 'missing_res')" in frontend
+    assert "copyCollectionIds(selectedCrossSubResIds, 'cross_sub_res')" in frontend
+    assert "copyText(ids.map(String).join(', '))" in frontend
+    assert "copyText(formatFilesText(files))" in frontend
+    assert "onContextMenu" in frontend
     assert "仅显示缺失 Resource" in frontend
-    assert "复制缺失 ResId" in frontend
     assert "{!res.indexed &&" in frontend
     assert "无索引" in frontend
     assert "存在 XSubpackage 实例，但不在 SubPackage.tab 中" in frontend
@@ -80,6 +86,12 @@ def test_subpackage_monitor_keeps_configured_resources_and_sanitizes_status():
     assert "function sizeTooltip(dlSize, totalSize)" in frontend
     assert "还差：${formatExactBytes(remaining)}" in frontend
     assert "SubPackage.tab 中配置了该 Resource，但资源索引中不存在" in frontend
+    assert "resListFilter === 'cross_sub_file'" in frontend
+    assert "跨Sub文件" in frontend
+    assert "跨Sub文件 {selectedCrossSubResIds.length}" in frontend
+    assert 'error label="缺失"' in frontend
+    assert "crossSubIds={crossSubIds}" in frontend
+    assert "onlyMissingRes" not in frontend
 
 
 def test_runtime_gm_queries_svn_by_working_copy_and_reports_structured_fields():

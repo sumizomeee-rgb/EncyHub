@@ -147,28 +147,38 @@ async def shutdown_hub():
 
 @router.post("/restart-hub")
 async def restart_hub():
-    """重启 EncyHub 平台"""
-    import subprocess
-    import sys
+    """重启 EncyHub 平台
+
+    不额外启动第二个 start.bat。历史缺陷：该接口会用 Popen 再开一个
+    start.bat，新旧两个启动脚本互相杀死对方占用 9524 端口的进程，
+    形成无限重启循环。
+
+    现在改为以约定的 RESTART_EXIT_CODE 退出，由唯一的外层启动脚本
+    （start.bat / start.sh，部署机上为 systemd 的 Restart=on-failure）
+    负责重新拉起。
+
+    工具子进程不在此处主动停止：registry 保留 pid/enabled，新进程启动时
+    由 cleanup_before_start 清理旧进程、startup_restore 按原状态恢复工具。
+    """
     import os
-    from .config import ROOT_DIR
+    from .config import RESTART_EXIT_CODE
 
-    start_bat = ROOT_DIR / "start.bat"
-    
-    # 延迟 1 秒后退出当前进程，给新进程清理时间
+    # 无启动脚本托管时拒绝重启，避免把平台直接停掉却无人拉起
+    if not (os.environ.get("ENCYHUB_SUPERVISOR") or os.environ.get("INVOCATION_ID")):
+        raise HTTPException(
+            400,
+            "当前进程未由启动脚本（start.bat / start.sh / systemd）托管，"
+            "无法自动重启，请手动重启",
+        )
+
+    # 延迟 0.5 秒退出，确保本响应先发送回前端
     async def delayed_exit():
-        await asyncio.sleep(1)
-        os._exit(0)
+        await asyncio.sleep(0.5)
+        print(f"[EncyHub] 收到重启请求，以退出码 {RESTART_EXIT_CODE} 退出，等待启动脚本重新拉起...")
+        os._exit(RESTART_EXIT_CODE)
 
-    try:
-        # 启动新的 CMD 窗口运行 start.bat
-        cmd = ["cmd", "/c", "start", str(start_bat)]
-        subprocess.Popen(cmd, shell=True)
-        
-        asyncio.create_task(delayed_exit())
-        return {"success": True, "message": "平台正在重启..."}
-    except Exception as e:
-        return {"success": False, "message": f"重启失败: {str(e)}"}
+    asyncio.create_task(delayed_exit())
+    return {"success": True, "message": "平台正在重启..."}
 
 
 # 代理路由 - 转发请求到工具子进程

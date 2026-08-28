@@ -4757,6 +4757,56 @@ local function StartRuntimeGM()
         ids[#ids + 1] = id
     end
 
+    local function _spm_buildCrossSubFileCounts(subs, subIndexInfo, fileToResIds)
+        local resToSubIds = {}
+        for subId, sub in pairs(subs) do
+            if sub.configured ~= false then
+                for _, resId in pairs(sub.resIds or {}) do
+                    local key = tonumber(resId) or resId
+                    resToSubIds[key] = resToSubIds[key] or {}
+                    resToSubIds[key][tostring(subId)] = true
+                end
+            end
+        end
+        for subId, sub in pairs(subs) do
+            local currentResSet = {}
+            for _, resId in pairs(sub.resIds or {}) do
+                currentResSet[tonumber(resId) or resId] = true
+            end
+
+            local counts = {}
+            for _, resId in pairs(sub.resIds or {}) do
+                local fileDict = subIndexInfo and subIndexInfo[tonumber(resId)]
+                local seenFiles = {}
+                local crossSubFileCount = 0
+                for _, info in pairs(fileDict or {}) do
+                    local fileName = info and info[1]
+                    if fileName and not seenFiles[fileName] then
+                        seenFiles[fileName] = true
+                        for _, ownerResId in ipairs(fileToResIds[fileName] or {}) do
+                            local ownerKey = tonumber(ownerResId) or ownerResId
+                            local belongsToOtherSub = false
+                            for ownerSubId in pairs(resToSubIds[ownerKey] or {}) do
+                                if ownerSubId ~= tostring(subId) then
+                                    belongsToOtherSub = true
+                                    break
+                                end
+                            end
+                            if not currentResSet[ownerKey] and belongsToOtherSub then
+                                crossSubFileCount = crossSubFileCount + 1
+                                break
+                            end
+                        end
+                    end
+                end
+                if crossSubFileCount > 0 then
+                    counts[tostring(resId)] = crossSubFileCount
+                end
+            end
+            sub.crossSubFileCounts = counts
+        end
+    end
+
     local function _spm_sendError(action, msg)
         RuntimeGMClient.Send({ type = "SUBPKG_MONITOR_RESP", action = action, error = msg })
     end
@@ -4771,6 +4821,7 @@ local function StartRuntimeGM()
         local subIndexInfo, resDict, subDict
         pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
         pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
+        local fileToResIds = agency:GetFileToResIds() or {}
         local templates = _spm_getSubpackageTemplates(agency)
         if not templates and not subDict then _spm_sendError("get_structure", "SubPackage templates and item dict are nil"); return end
 
@@ -4882,6 +4933,8 @@ local function StartRuntimeGM()
             end
         end
 
+        _spm_buildCrossSubFileCounts(subs, subIndexInfo, fileToResIds)
+
         RuntimeGMClient.Send({
             type = "SUBPKG_MONITOR_RESP", action = "get_structure",
             data = { subs = subs, resources = resources }
@@ -4894,6 +4947,7 @@ local function StartRuntimeGM()
         local subIndexInfo
         pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
         if not subIndexInfo then _spm_sendError("get_res_files", "SubIndexInfo is nil"); return end
+        local fileToResIds = agency:GetFileToResIds() or {}
 
         local fileDict = subIndexInfo[tonumber(resId)]
         local files = {}
@@ -4908,31 +4962,13 @@ local function StartRuntimeGM()
                     fileExists = CS.System.IO.File.Exists(savePath)
                 end)
                 files[#files + 1] = { asset = assetPath, name = fileName, sha1 = info[2], size = info[3], exists = fileExists }
-            end
-            -- 检查共享：遍历其他 Res 看哪些共享同名文件
-            for otherResId, otherDict in pairs(subIndexInfo) do
-                if otherResId ~= tonumber(resId) and otherDict then
-                    for _, info in pairs(otherDict) do
-                        local fn = info[1]
-                        if fn and not sharedFiles[fn] then
-                            -- 检查本 Res 是否也有这个文件
-                            for _, myInfo in pairs(fileDict) do
-                                if myInfo[1] == fn then
-                                    sharedFiles[fn] = sharedFiles[fn] or { tonumber(resId) }
-                                    -- 避免重复添加
-                                    local exists = false
-                                    for _, rid in ipairs(sharedFiles[fn]) do if rid == otherResId then exists = true; break end end
-                                    if not exists then table.insert(sharedFiles[fn], otherResId) end
-                                    break
-                                end
-                            end
-                        end
+                local ownerResIds = fileToResIds[fileName]
+                if ownerResIds and #ownerResIds > 1 then
+                    sharedFiles[fileName] = {}
+                    for _, ownerResId in ipairs(ownerResIds) do
+                        sharedFiles[fileName][#sharedFiles[fileName] + 1] = ownerResId
                     end
                 end
-            end
-            -- 只保留共享的 (>1 个 Res)
-            for fn, rids in pairs(sharedFiles) do
-                if #rids <= 1 then sharedFiles[fn] = nil end
             end
         end
 

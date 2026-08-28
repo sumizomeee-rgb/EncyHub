@@ -98,22 +98,33 @@ echo "  (Ctrl+C or Dashboard to stop)"
 echo "========================================"
 echo ""
 
-start_loop() {
-    .venv/bin/python main.py
-    EXIT_CODE=$?
+# 告知 Hub 进程它由本脚本托管；重启接口只会以约定退出码退出，不会启动第二个启动脚本
+export ENCYHUB_SUPERVISOR=start_sh
+
+while true; do
+    EXIT_CODE=0
+    # python 非零退出时不能让 set -e 直接终止脚本，要先拿到退出码再分发
+    .venv/bin/python main.py || EXIT_CODE=$?
 
     # Exit code 0 = normal shutdown (Ctrl+C / Dashboard), don't restart
-    if [ $EXIT_CODE -eq 0 ]; then
+    if [ "$EXIT_CODE" -eq 0 ]; then
         echo ""
         echo "[EncyHub] Stopped normally."
         exit 0
     fi
 
-    # Non-zero = killed externally, auto restart
-    echo ""
-    echo "[EncyHub] Process exited unexpectedly (code=$EXIT_CODE), restarting in 3s..."
-    sleep 3
-    start_loop
-}
+    # Exit code 42 = platform restart requested (Dashboard restart button),
+    # 由本脚本唯一负责重新拉起（与 hub_core/config.py 的 RESTART_EXIT_CODE 保持一致）
+    if [ "$EXIT_CODE" -eq 42 ]; then
+        echo ""
+        echo "[EncyHub] Restart requested, restarting in 3s..."
+        sleep 3
+        continue
+    fi
 
-start_loop
+    # 其他非零 = 异常退出 / 被外部杀死，不再自动重启，
+    # 避免与另一个启动脚本互相杀进程形成重启循环
+    echo ""
+    echo "[EncyHub] Process exited (code=$EXIT_CODE), not restarting."
+    exit "$EXIT_CODE"
+done

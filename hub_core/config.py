@@ -19,6 +19,11 @@ REGISTRY_FILE = DATA_DIR / "registry.json"
 HUB_HOST = "0.0.0.0"
 HUB_PORT = 9524
 
+# 约定的重启退出码：Hub 以此退出码退出时，由唯一的外层启动脚本负责重新拉起
+# （Windows: start.bat；Linux: start.sh 或 systemd Restart=on-failure）
+# start.bat / start.sh 中的退出码判断必须与此一致，见 tests/test_restart_hub.py 契约测试
+RESTART_EXIT_CODE = 42
+
 # 确保目录存在
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)

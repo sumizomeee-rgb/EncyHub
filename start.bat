@@ -77,6 +77,11 @@ echo.
 
 start "" "http://localhost:9524"
 
+:: Marks the Hub process as supervised by this script. The restart API then exits
+:: with RESTART_EXIT_CODE only and never spawns a second start.bat (prevents two
+:: supervisors from killing each other's process in an endless restart loop).
+set ENCYHUB_SUPERVISOR=start_bat
+
 :start_loop
 .venv\Scripts\python.exe main.py
 set EXIT_CODE=%ERRORLEVEL%
@@ -88,11 +93,21 @@ if %EXIT_CODE%==0 (
     goto end
 )
 
-:: Non-zero = killed externally, auto restart
+:: Exit code 42 = platform restart requested (Dashboard restart button).
+:: This script alone re-launches the hub (keep in sync with RESTART_EXIT_CODE
+:: in hub_core/config.py).
+if %EXIT_CODE%==42 (
+    echo.
+    echo [EncyHub] Restart requested, restarting in 3s...
+    timeout /t 3 /nobreak >nul
+    goto start_loop
+)
+
+:: Any other non-zero = crashed or killed externally: do NOT auto restart,
+:: so two supervisors can never fight over port 9524 again.
 echo.
-echo [EncyHub] Process exited unexpectedly (code=%EXIT_CODE%), restarting in 3s...
-timeout /t 3 /nobreak >nul
-goto start_loop
+echo [EncyHub] Process exited (code=%EXIT_CODE%), not restarting.
+goto end
 
 :end
 pause

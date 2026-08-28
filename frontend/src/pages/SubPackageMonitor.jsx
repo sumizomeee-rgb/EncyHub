@@ -78,6 +78,13 @@ function formatFilesText(files) {
   return rows.map(r => r.map((c, i) => c.padEnd(widths[i])).join('  ')).join('\n')
 }
 
+function getCrossSubFiles(files, sharedFiles, currentSubResIds) {
+  const currentSubResSet = new Set((currentSubResIds || []).map(String))
+  return (files || []).filter(file =>
+    (sharedFiles?.[file.name] || []).some(resId => !currentSubResSet.has(String(resId)))
+  )
+}
+
 // 智能尺寸显示：已完成只显示总大小，已卸载显示 "—"
 function sizeText(dlSize, totalSize, state) {
   if (state === 6) return '—'                                         // 已卸载
@@ -90,7 +97,7 @@ function sizeText(dlSize, totalSize, state) {
 // Sub-components
 // ============================================================================
 
-function StateBadge({ state, mini, error = false }) {
+function StateBadge({ state, mini, error = false, label }) {
   const cfg = error
     ? { ...stateOf(state), color: 'var(--terracotta)', bg: 'rgba(193,102,107,0.10)' }
     : stateOf(state)
@@ -99,7 +106,7 @@ function StateBadge({ state, mini, error = false }) {
       <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold flex-shrink-0 whitespace-nowrap"
         style={{ color: cfg.color }}>
         <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: cfg.color }} />
-        {cfg.label}
+        {label || cfg.label}
       </span>
     )
   }
@@ -107,8 +114,8 @@ function StateBadge({ state, mini, error = false }) {
     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
       style={{ background: cfg.bg, color: cfg.color }}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: cfg.color,
-        ...(state === 4 ? { boxShadow: '0 0 0 3px var(--info-soft)', animation: 'pulse-success 2s ease-in-out infinite' } : {}) }} />
-      {cfg.label}
+        ...(!error && state === 4 ? { boxShadow: '0 0 0 3px var(--info-soft)', animation: 'pulse-success 2s ease-in-out infinite' } : {}) }} />
+      {label || cfg.label}
     </span>
   )
 }
@@ -150,15 +157,18 @@ function ProgressBar({ progress, state, mini }) {
   )
 }
 
-function SharedPopover({ ids, type, onJump, onClose }) {
+function SharedPopover({ ids, type, onJump, onClose, crossSubIds = [] }) {
+  const crossSubSet = new Set(crossSubIds.map(String))
+  const hasCrossSub = crossSubSet.size > 0
   return (
-    <div className="absolute z-50 mt-1 p-2 rounded-lg border border-[var(--glass-border)] bg-[var(--cream-soft)] shadow-lg min-w-[140px]"
+    <div className="absolute right-0 z-50 mt-1 p-2 rounded-lg border border-[var(--glass-border)] bg-[var(--cream-soft)] shadow-lg min-w-[140px] max-h-56 overflow-y-auto"
       onClick={e => e.stopPropagation()}>
-      <div className="text-[10px] text-[var(--coffee-muted)] mb-1 font-semibold">共享此项的 {type}</div>
+      <div className="text-[10px] text-[var(--coffee-muted)] mb-1 font-semibold">{hasCrossSub ? '跨 Sub 共享此文件' : `共享此项的 ${type}`}</div>
       {ids.map(id => (
         <button key={id} onClick={() => { onJump(String(id)); onClose() }}
           className="flex items-center gap-1 w-full px-1.5 py-1 rounded text-xs hover:bg-[var(--cream-warm)] text-[var(--coffee-deep)] transition-colors">
           <span className="font-mono font-semibold">{type} {id}</span>
+          {crossSubSet.has(String(id)) && <span className="text-[9px] font-semibold text-[var(--caramel)]">跨Sub</span>}
           <ExternalLink size={10} className="ml-auto text-[var(--sky)]" />
         </button>
       ))}
@@ -166,18 +176,47 @@ function SharedPopover({ ids, type, onJump, onClose }) {
   )
 }
 
-function SharedBadge({ count, type, ids, onJump }) {
-  if (!count || count <= 1) return null
+function SharedBadge({ count, type, ids, onJump, crossSubIds = [] }) {
   const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const containerRef = useRef(null)
+  const hasCrossSub = crossSubIds.length > 0
+
+  useEffect(() => {
+    if (!open || !count || count <= 1) return
+
+    const handlePointerDown = (event) => {
+      if (!containerRef.current?.contains(event.target)) setOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [open, count])
+
+  if (!count || count <= 1) return null
+
   return (
-    <div className="relative inline-block">
+    <div ref={containerRef} className="relative inline-block">
       <button onClick={(e) => { e.stopPropagation(); setOpen(v => !v) }}
-        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors
-          bg-[var(--info-soft)] text-[var(--sky)] hover:bg-[var(--sky)] hover:text-white cursor-pointer">
+        onContextMenu={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          copyText((ids || []).map(String).join(', '))
+          setCopied(true)
+          setTimeout(() => setCopied(false), 800)
+        }}
+        title={hasCrossSub ? '跨Sub文件：被当前 Sub 之外的 Res 共用' : undefined}
+        className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors cursor-pointer ${
+          copied
+            ? 'bg-[var(--success-soft)] text-[var(--sage)] ring-1 ring-[var(--sage)]/50'
+            : hasCrossSub
+            ? 'bg-[var(--warning-soft)] text-[var(--caramel)] hover:bg-[var(--caramel)] hover:text-white'
+            : 'bg-[var(--info-soft)] text-[var(--sky)] hover:bg-[var(--sky)] hover:text-white'
+        }`}>
         ×{count} {type}
         <ExternalLink size={9} />
       </button>
-      {open && <SharedPopover ids={ids || []} type={type} onJump={onJump} onClose={() => setOpen(false)} />}
+      {open && <SharedPopover ids={ids || []} type={type} onJump={onJump} onClose={() => setOpen(false)} crossSubIds={crossSubIds} />}
     </div>
   )
 }
@@ -202,8 +241,9 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   const [onlyShared, setOnlyShared] = useState(false)
   const [copiedSha1, setCopiedSha1] = useState(null)
   const [copiedFile, setCopiedFile] = useState(null)
-  const [onlyMissingRes, setOnlyMissingRes] = useState(false)
-  const [copiedMissingRes, setCopiedMissingRes] = useState(false)
+  const [resListFilter, setResListFilter] = useState('all')
+  const [copiedCollection, setCopiedCollection] = useState(null)
+  const [crossSubFileFilterRes, setCrossSubFileFilterRes] = useState(() => new Set())
   const [autoRefresh, setAutoRefresh] = useState(() => lsGet(LS_KEYS.autoRefresh, true))
   const [refreshInterval, setRefreshInterval] = useState(() => lsGet(LS_KEYS.interval, 2))
   const [leftWidth, setLeftWidth] = useState(() => clampDetailListWidth(lsGet(LS_KEYS.leftWidth, DETAIL_LIST_DEFAULT_WIDTH)))
@@ -222,6 +262,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   const isDragging = useRef(false)
   const searchTimer = useRef(null)
   const highlightTimer = useRef(null)
+  const pendingCrossSubCopyRef = useRef(null)
   const [debouncedQuery, setDebouncedQuery] = useState('')
 
   // --- Persist UI state ---
@@ -234,8 +275,9 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   // --- 切换选中项时收起所有展开的 Res ---
   useEffect(() => {
     setExpandedRes(new Set())
-    setOnlyMissingRes(false)
-    setCopiedMissingRes(false)
+    setResListFilter('all')
+    setCopiedCollection(null)
+    setCrossSubFileFilterRes(new Set())
   }, [selectedId])
 
   // --- Debounced search ---
@@ -326,6 +368,18 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     })
   }, [sendCmd, resFiles, structure])
 
+  useEffect(() => {
+    const pending = pendingCrossSubCopyRef.current
+    if (!pending || !resFiles[pending.resId]) return
+
+    const data = resFiles[pending.resId]
+    const files = getCrossSubFiles(data.files, data.sharedFiles, pending.currentSubResIds)
+    copyText(formatFilesText(files))
+    setCopiedCollection(`cross_sub_files_${pending.resId}`)
+    setTimeout(() => setCopiedCollection(null), 800)
+    pendingCrossSubCopyRef.current = null
+  }, [resFiles])
+
   // Initial fetch on tab activation (must wait for WS to be ready)
   useEffect(() => {
     if (!active || !selectedClient || !wsConnected) return
@@ -362,6 +416,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       const resIds = Array.isArray(s.resIds) ? s.resIds.map(String) : []
       return {
         id, name: s.name || `Sub_${id}`, resIds, configured, instantiated,
+        crossSubFileCounts: s.crossSubFileCounts || {},
         configuredResCount: s.configuredResCount ?? resIds.length,
         indexedResCount: s.indexedResCount ?? resIds.length,
         missingResCount: s.missingResCount ?? 0,
@@ -607,7 +662,9 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   // ==========================================================================
   // Render: File table
   // ==========================================================================
-  const renderFileTable = (files, compact = false, fileSharedMap = {}) => (
+  const renderFileTable = (files, compact = false, fileSharedMap = {}, currentSubResIds = null) => {
+    const currentSubResSet = currentSubResIds ? new Set(currentSubResIds.map(String)) : null
+    return (
     <div className={`${compact ? '' : 'mt-2'}`}>
       <table className={`w-full text-xs ${compact ? 'table-fixed' : ''}`}>
         <thead>
@@ -621,7 +678,9 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
         </thead>
         <tbody>
           {files.map((f, i) => {
-            const refCount = fileSharedMap[f.name]?.length || 0
+            const sharedResIds = fileSharedMap[f.name] || []
+            const crossSubIds = currentSubResSet ? sharedResIds.filter(id => !currentSubResSet.has(String(id))) : []
+            const refCount = sharedResIds.length
             return (
               <tr key={i} className="border-t border-[var(--glass-border)]/50 hover:bg-white/30">
                 <td className="py-1 text-center cursor-pointer" title={`${f.exists ? '已存在' : '未下载'}\n点击复制该行信息`}
@@ -641,7 +700,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                   {copiedSha1 === f.sha1 ? '已复制 ✓' : (compact ? f.sha1?.substring(0, 6) : `${f.sha1?.substring(0, 8)}...`)}
                 </td>
                 <td className="py-1 text-center">
-                  <SharedBadge count={refCount} type="Res" ids={fileSharedMap[f.name]} onJump={jumpToRes} />
+                  <SharedBadge count={refCount} type="Res" ids={sharedResIds} onJump={jumpToRes} crossSubIds={crossSubIds} />
                 </td>
               </tr>
             )
@@ -650,6 +709,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       </table>
     </div>
   )
+  }
 
   // ==========================================================================
   // Mode A: Detail View
@@ -663,13 +723,34 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     const selectedMissingResIds = isSub && selectedItem
       ? selectedItem.resIds.filter(rid => resList.find(r => r.id === String(rid))?.indexed === false)
       : []
-    const visibleSelectedResIds = onlyMissingRes ? selectedMissingResIds : (selectedItem?.resIds || [])
+    const selectedCrossSubResIds = isSub && selectedItem
+      ? selectedItem.resIds.filter(rid => Number(selectedItem.crossSubFileCounts?.[String(rid)] || 0) > 0)
+      : []
+    const visibleSelectedResIds = resListFilter === 'missing'
+      ? selectedMissingResIds
+      : resListFilter === 'cross_sub_file'
+        ? selectedCrossSubResIds
+        : (selectedItem?.resIds || [])
 
-    const copyMissingResIds = () => {
-      if (selectedMissingResIds.length === 0) return
-      copyText(selectedMissingResIds.join(', '))
-      setCopiedMissingRes(true)
-      setTimeout(() => setCopiedMissingRes(false), 900)
+    const copyCollectionIds = (ids, key) => {
+      if (ids.length === 0) return
+      copyText(ids.map(String).join(', '))
+      setCopiedCollection(key)
+      setTimeout(() => setCopiedCollection(null), 800)
+    }
+
+    const copyCrossSubFiles = (resId) => {
+      const data = resFiles[resId]
+      if (!data) {
+        pendingCrossSubCopyRef.current = { resId, currentSubResIds: selectedItem.resIds }
+        fetchResFiles(resId)
+        return
+      }
+
+      const files = getCrossSubFiles(data.files, data.sharedFiles, selectedItem.resIds)
+      copyText(formatFilesText(files))
+      setCopiedCollection(`cross_sub_files_${resId}`)
+      setTimeout(() => setCopiedCollection(null), 800)
     }
 
     return (
@@ -736,42 +817,65 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                     包含的 Resource ({selectedItem.resIds.length})
                   </h4>
                   {selectedMissingResIds.length > 0 && (
-                    <>
-                      <button
-                        onClick={() => setOnlyMissingRes(v => !v)}
-                        className={`inline-flex flex-shrink-0 items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap transition-colors ${
-                          onlyMissingRes
+                    <button
+                      onClick={() => setResListFilter(current => current === 'missing' ? 'all' : 'missing')}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        copyCollectionIds(selectedMissingResIds, 'missing_res')
+                      }}
+                      className={`inline-flex flex-shrink-0 items-center px-1.5 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap transition-colors ${
+                        copiedCollection === 'missing_res'
+                          ? 'border-[var(--sage)]/50 bg-[var(--success-soft)] text-[var(--sage)]'
+                          : resListFilter === 'missing'
                             ? 'border-[var(--terracotta)]/45 bg-[var(--terracotta)]/12 text-[var(--terracotta)]'
                             : 'border-[var(--terracotta)]/25 bg-white/35 text-[var(--terracotta)]/80 hover:bg-[var(--terracotta)]/8 hover:border-[var(--terracotta)]/40'
-                        }`}
-                        title={onlyMissingRes ? '显示全部 Resource' : '仅显示缺失 Resource'}
-                      >
-                        <Filter size={9} />
-                        缺失 {selectedMissingResIds.length}
-                        {onlyMissingRes && <X size={9} />}
-                      </button>
-                      <button
-                        onClick={copyMissingResIds}
-                        className="p-1 rounded text-[var(--coffee-muted)] hover:text-[var(--terracotta)] hover:bg-[var(--terracotta)]/8 transition-colors"
-                        title={`复制 ${selectedMissingResIds.length} 个缺失 ResId`}
-                        aria-label="复制缺失 ResId"
-                      >
-                        {copiedMissingRes ? <span className="text-[10px] font-semibold text-[var(--sage)]">✓</span> : <Copy size={10} />}
-                      </button>
-                    </>
+                      }`}
+                      title={resListFilter === 'missing' ? '显示全部 Resource' : '仅显示缺失 Resource'}
+                    >
+                      缺失 {selectedMissingResIds.length}
+                    </button>
+                  )}
+                  {selectedCrossSubResIds.length > 0 && (
+                    <button
+                      onClick={() => setResListFilter(current => current === 'cross_sub_file' ? 'all' : 'cross_sub_file')}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        copyCollectionIds(selectedCrossSubResIds, 'cross_sub_res')
+                      }}
+                      className={`inline-flex flex-shrink-0 items-center px-1.5 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap transition-colors ${
+                        copiedCollection === 'cross_sub_res'
+                          ? 'border-[var(--sage)]/50 bg-[var(--success-soft)] text-[var(--sage)]'
+                          : resListFilter === 'cross_sub_file'
+                            ? 'border-[var(--caramel)]/50 bg-[var(--warning-soft)] text-[var(--caramel)]'
+                            : 'border-[var(--caramel)]/25 bg-white/35 text-[var(--caramel)]/85 hover:bg-[var(--warning-soft)] hover:border-[var(--caramel)]/40'
+                      }`}
+                      title={`${selectedCrossSubResIds.length} 个 Resource 包含跨 Sub 文件`}
+                    >
+                      跨Sub文件 {selectedCrossSubResIds.length}
+                    </button>
                   )}
                 </div>
                 <div className="space-y-1">
                   {visibleSelectedResIds.length === 0 && (
                     <div className="text-center text-xs text-[var(--coffee-muted)] py-4">
-                      {selectedItem.configured ? '该 Sub 未配置 Resource' : 'SubPackage.tab 中无此 Sub，无法获取配置 Resource'}
+                      {resListFilter === 'all'
+                        ? (selectedItem.configured ? '该 Sub 未配置 Resource' : 'SubPackage.tab 中无此 Sub，无法获取配置 Resource')
+                        : '没有匹配的 Resource'}
                     </div>
                   )}
                   {visibleSelectedResIds.map(rid => {
                     const res = resList.find(r => r.id === String(rid))
                     if (!res) return null
                     const isMissing = !res.indexed
+                    const crossSubFileCount = Number(selectedItem.crossSubFileCounts?.[res.id] || 0)
                     const isExpanded = expandedRes.has(res.id)
+                    const onlyCrossSubFiles = crossSubFileFilterRes.has(res.id)
+                    const resFileData = resFiles[res.id]
+                    const visibleResFiles = onlyCrossSubFiles && resFileData
+                      ? getCrossSubFiles(resFileData.files, resFileData.sharedFiles, selectedItem.resIds)
+                      : resFileData?.files
                     return (
                       <div key={res.id}>
                         <div className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${
@@ -780,16 +884,40 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                           <span className="text-xs font-mono font-semibold">Res {res.id}</span>
                           {isMissing
-                            ? <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-[var(--terracotta)]/25 bg-white/35 text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="SubPackage.tab 中配置了该 Resource，但资源索引中不存在">缺失</span>
+                            ? <span title="SubPackage.tab 中配置了该 Resource，但资源索引中不存在"><StateBadge state={res.state} error label="缺失" /></span>
                             : <StateBadge state={res.state} />}
-                          <div className="flex-1" />
-                          {!isMissing && <span className="text-[10px] text-[var(--coffee-muted)]" title={sizeTooltip(res.dlSize, res.totalSize)}>{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>}
-                          {resFiles[res.id]?.files?.length > 0 && (
-                            <button onClick={e => { e.stopPropagation(); copyText(formatFilesText(resFiles[res.id].files)); setCopiedFile('res_' + res.id); setTimeout(() => setCopiedFile(null), 800) }}
-                              className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] hover:text-[var(--sky)] transition-colors" title="复制文件列表">
-                              {copiedFile === 'res_' + res.id ? <span className="text-[10px] text-[var(--sage)]">✓</span> : <Copy size={10} />}
+                          {crossSubFileCount > 0 && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setExpandedRes(prev => new Set(prev).add(res.id))
+                                setCrossSubFileFilterRes(prev => {
+                                  const next = new Set(prev)
+                                  if (next.has(res.id)) next.delete(res.id)
+                                  else next.add(res.id)
+                                  return next
+                                })
+                                if (res.indexed) fetchResFiles(res.id)
+                              }}
+                              onContextMenu={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                copyCrossSubFiles(res.id)
+                              }}
+                              className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap transition-colors ${
+                                copiedCollection === `cross_sub_files_${res.id}`
+                                  ? 'border-[var(--sage)]/50 bg-[var(--success-soft)] text-[var(--sage)]'
+                                  : onlyCrossSubFiles
+                                    ? 'border-[var(--caramel)]/50 bg-[var(--warning-soft)] text-[var(--caramel)]'
+                                    : 'border-[var(--caramel)]/25 bg-white/35 text-[var(--caramel)]/85 hover:bg-[var(--warning-soft)] hover:border-[var(--caramel)]/40'
+                              }`}
+                              title={`${crossSubFileCount} 个文件被当前 Sub 之外的 Res 共用`}
+                            >
+                              跨Sub文件 {crossSubFileCount}
                             </button>
                           )}
+                          <div className="flex-1" />
+                          {!isMissing && <span className="text-[10px] text-[var(--coffee-muted)]" title={sizeTooltip(res.dlSize, res.totalSize)}>{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>}
                           <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
                         </div>
                         {isExpanded && (
@@ -798,7 +926,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                             {resFilesLoading[res.id]
                               ? <div className="text-center text-xs text-[var(--coffee-muted)] py-2"><RotateCw size={12} className="inline animate-spin mr-1" />加载文件列表...</div>
                               : !res.indexed ? <div className="text-center text-xs text-[var(--coffee-muted)] py-2">无资源索引，无法获取文件列表</div>
-                              : resFiles[res.id] ? renderFileTable(resFiles[res.id].files, true, resFiles[res.id].sharedFiles)
+                              : resFileData ? renderFileTable(visibleResFiles, true, resFileData.sharedFiles, selectedItem.resIds)
                               : <div className="text-center text-xs text-[var(--coffee-muted)] py-2">点击展开加载文件</div>
                             }
                           </div>
