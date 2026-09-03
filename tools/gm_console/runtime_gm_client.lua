@@ -5710,7 +5710,6 @@ local function StartRuntimeGM()
     LuaTableMonitor._perfMonitorReady = false
     LuaTableMonitor._perfAgent = nil
     LuaTableMonitor._viewerLoadedTables = {}
-    LuaTableMonitor._externalCatalog = {}
 
     function LuaTableMonitor.Init()
         pcall(function()
@@ -5748,91 +5747,50 @@ local function StartRuntimeGM()
         RuntimeGMClient.Send(pkt)
     end
 
-    local function _tm_applyCatalogEntry(entry)
-        if type(entry) ~= "table" or not entry.name then return end
-        LuaTableMonitor._externalCatalog[entry.name] = entry
-        if entry.path then
-            LuaTableMonitor._pathCache = LuaTableMonitor._pathCache or {}
-            LuaTableMonitor._pathCache[entry.name] = entry.path
-        end
-        if type(entry.fields) == "table" then
-            XTable[entry.name] = entry.fields
-        end
-    end
-
-    local function _tm_applyCatalog(catalog)
-        if type(catalog) ~= "table" then return end
-        for _, entry in ipairs(catalog) do _tm_applyCatalogEntry(entry) end
-    end
-
     function LuaTableMonitor._buildPathCache()
         if LuaTableMonitor._pathCache then return end
         LuaTableMonitor._pathCache = {}
 
-        -- 通过 GetFullPath 获取当前表根目录，再用文件系统扫描 .tab 文件建立逻辑路径映射。
-        -- 读取时传给 XTableManager 的仍是 Share/Client 下的逻辑路径，具体 Tab/Bytes/Pack 由 Haru router 决定。
-        local rootFull
-        pcall(function() rootFull = CS.XTableManager.GetFullPath("Share") end)
-        if not rootFull then
-            origin_print("[RuntimeGM] TableMonitor: GetFullPath failed, path cache empty")
-            return
-        end
-
-        rootFull = tostring(rootFull):gsub("\\", "/"):gsub("/+$", "")
-        local tableRoot = rootFull:match("^(.*)/Share$")
-        if not tableRoot then
-            origin_print("[RuntimeGM] TableMonitor: cannot resolve table root from: " .. tostring(rootFull))
-            return
-        end
-        tableRoot = tableRoot:gsub("/+$", "")
-
-        local IO = CS.System.IO
-        local Directory = IO.Directory
-        local SearchOption = IO.SearchOption
-        local dirs = { "Share", "Client" }
-
-        local roots = {}
-        local function addRoot(root)
-            if root and root ~= "" then
-                root = tostring(root):gsub("\\", "/"):gsub("/+$", "")
-                for _, existing in ipairs(roots) do
-                    if existing == root then return end
-                end
-                roots[#roots + 1] = root
+        -- Bytes/Pack 模式下 XMain 会刻意保留空 XTable；Table Viewer 需要按需加载客户端自带的 Schema。
+        if type(XTable) ~= "table" or not next(XTable) then
+            local ok, err = pcall(require, "XCommon/XTable")
+            if not ok then
+                origin_print("[RuntimeGM] TableMonitor: load runtime XTable failed: " .. tostring(err))
+                return
             end
         end
-        addRoot(tableRoot)
-        addRoot(tableRoot:gsub("/Table$", "/Bytes"))
-        addRoot(tableRoot:gsub("/Bytes$", "/Table"))
 
+        -- 直接从客户端运行时路由器枚举当前可用的表。
+        -- GetPaths 已经统一了 Tab/Bytes/Pack 及热更路径，不依赖 EncyHub 本地 HaruRoot。
         local candidates = {}
-        local function addCandidate(tableName, relPath, absPath)
+        local function addCandidate(tableName, relPath)
             if not candidates[tableName] then candidates[tableName] = {} end
             for _, item in ipairs(candidates[tableName]) do
                 if item.path == relPath then return end
             end
-            candidates[tableName][#candidates[tableName] + 1] = { path = relPath, absPath = absPath }
+            candidates[tableName][#candidates[tableName] + 1] = { path = relPath }
         end
 
-        local function addPath(relPath, absPath)
-            relPath = relPath:gsub("\\", "/")
-            if relPath:sub(-4) ~= ".tab" then return end
+        local function addPath(relPath)
+            relPath = tostring(relPath):gsub("\\", "/"):gsub("^%s+", ""):gsub("%s+$", "")
+            if string.lower(relPath:sub(-4)) ~= ".tab" then return end
             local fileName = relPath:match("([^/]+)%.tab$")
             if not fileName then return end
             local candidateNames = { "XTable" .. fileName, fileName }
             for _, candidate in ipairs(candidateNames) do
                 if XTable[candidate] then
-                    addCandidate(candidate, relPath, absPath)
+                    addCandidate(candidate, relPath)
                 end
             end
         end
 
         local function scoreCandidate(item, xTableDef)
-            if not item or not item.absPath or not xTableDef then return 0 end
+            if not item or not item.path or not xTableDef then return 0 end
 
             local header
             local ok = pcall(function()
-                local sr = IO.File.OpenText(item.absPath)
+                local fullPath = CS.XTableManager.GetFullPath(item.path)
+                local sr = CS.System.IO.File.OpenText(fullPath)
                 header = sr:ReadLine()
                 sr:Close()
             end)
@@ -5872,43 +5830,16 @@ local function StartRuntimeGM()
             return best.path
         end
 
-        for _, root in ipairs(roots) do
-            for _, dir in ipairs(dirs) do
-                local dirPath = root .. "/" .. dir
-                local exists = false
-                pcall(function() exists = Directory.Exists(dirPath) end)
-                if exists then
-                    local ok, files = pcall(function()
-                        return Directory.GetFiles(dirPath, "*.tab", SearchOption.AllDirectories)
-                    end)
-                    if ok and files then
-                        local prefix = dirPath:gsub("\\", "/"):gsub("/+$", "") .. "/"
-                        for i = 0, files.Length - 1 do
-                            local absPath = files[i]:gsub("\\", "/")
-                            if absPath:sub(1, #prefix) == prefix then
-                                addPath(dir .. "/" .. absPath:sub(#prefix + 1), absPath)
-                            end
-                        end
-                    end
+        for _, scope in ipairs({ "Share", "Client" }) do
+            local ok, paths = pcall(function() return CS.XTableManager.GetPaths(scope) end)
+            if ok and paths then
+                local count = 0
+                pcall(function() count = paths.Count or paths.Length or 0 end)
+                for i = 0, count - 1 do
+                    addPath(paths[i])
                 end
-            end
-        end
-
-        if not next(LuaTableMonitor._pathCache) then
-            for _, dir in ipairs(dirs) do
-                local dirPath = tableRoot .. "/" .. dir
-                local ok, files = pcall(function()
-                    return Directory.GetFiles(dirPath, "*.tab", SearchOption.AllDirectories)
-                end)
-                if ok and files then
-                    for i = 0, files.Length - 1 do
-                        local absPath = files[i]:gsub("\\", "/")
-                        local relStart = absPath:find("/" .. dir .. "/", 1, true)
-                        if relStart then
-                            addPath(absPath:sub(relStart + 1), absPath)
-                        end
-                    end
-                end
+            else
+                origin_print("[RuntimeGM] TableMonitor: GetPaths failed for " .. scope .. ": " .. tostring(paths))
             end
         end
 
@@ -5932,11 +5863,10 @@ local function StartRuntimeGM()
     end
 
     function LuaTableMonitor.HandleListTables(packet)
-        _tm_applyCatalog(packet and packet.catalog)
+        LuaTableMonitor._pathCache = nil
         LuaTableMonitor._buildPathCache()
 
         local tables = {}
-        local seen = {}
         for name, def in pairs(XTable) do
             local path = LuaTableMonitor._pathCache and LuaTableMonitor._pathCache[name] or nil
             if path then
@@ -5952,20 +5882,6 @@ local function StartRuntimeGM()
                     pkField = pkField,
                     pkIsString = pkIsString or false,
                 }
-                seen[name] = true
-            end
-        end
-        for name, entry in pairs(LuaTableMonitor._externalCatalog) do
-            if not seen[name] and entry.path then
-                tables[#tables + 1] = {
-                    name = name,
-                    path = entry.path,
-                    pathFound = true,
-                    fieldCount = entry.fieldCount or 0,
-                    hasPK = entry.hasPK or false,
-                    pkField = entry.pkField,
-                    pkIsString = entry.pkIsString or false,
-                }
             end
         end
         table.sort(tables, function(a, b) return a.name < b.name end)
@@ -5977,8 +5893,7 @@ local function StartRuntimeGM()
         _tm_sendResp("list_tables", { tables = tables, stats = stats })
     end
 
-    function LuaTableMonitor.HandleGetSchema(tableName, catalogEntry)
-        _tm_applyCatalogEntry(catalogEntry)
+    function LuaTableMonitor.HandleGetSchema(tableName)
         if not tableName then _tm_sendResp("get_schema", nil, "missing tableName"); return end
         local xTableDef = XTable[tableName]
         if not xTableDef then _tm_sendResp("get_schema", nil, "table not found: " .. tostring(tableName)); return end
@@ -6036,7 +5951,6 @@ local function StartRuntimeGM()
     end
 
     function LuaTableMonitor.HandleGetData(packet)
-        _tm_applyCatalogEntry(packet.catalogEntry)
         local tableName = packet.tableName
         local page = packet.page or 1
         local pageSize = packet.pageSize or 50
@@ -6145,9 +6059,23 @@ local function StartRuntimeGM()
                 if not rowA or not rowB then return false end
                 local ok1, va = pcall(function() return rowA[sortField] end)
                 local ok2, vb = pcall(function() return rowB[sortField] end)
-                if not ok1 or va == nil then return sortDir ~= "desc" and false or true end
-                if not ok2 or vb == nil then return sortDir ~= "desc" and true or false end
-                if sortDir == "desc" then return va > vb else return va < vb end
+                if not ok1 then va = nil end
+                if not ok2 then vb = nil end
+                if va == nil and vb == nil then return tostring(a) < tostring(b) end
+                if va == nil then return sortDir == "desc" end
+                if vb == nil then return sortDir ~= "desc" end
+
+                local typeA, typeB = type(va), type(vb)
+                local compareA, compareB
+                if typeA == typeB and (typeA == "number" or typeA == "string") then
+                    compareA, compareB = va, vb
+                elseif typeA == "boolean" and typeB == "boolean" then
+                    compareA, compareB = va and 1 or 0, vb and 1 or 0
+                else
+                    compareA, compareB = tostring(va), tostring(vb)
+                end
+                if compareA == compareB then return tostring(a) < tostring(b) end
+                if sortDir == "desc" then return compareA > compareB else return compareA < compareB end
             end)
             keys = sortKeys
         end
@@ -6258,7 +6186,7 @@ local function StartRuntimeGM()
         if action == "list_tables" then
             LuaTableMonitor.HandleListTables(packet)
         elseif action == "get_schema" then
-            LuaTableMonitor.HandleGetSchema(packet.tableName, packet.catalogEntry)
+            LuaTableMonitor.HandleGetSchema(packet.tableName)
         elseif action == "get_data" then
             LuaTableMonitor.HandleGetData(packet)
         else
@@ -6787,6 +6715,7 @@ local function StartRuntimeGM()
             local ok, err = pcall(LuaTableMonitor.HandleCommand, packet)
             if not ok then
                 origin_print("[RuntimeGM] TABLE_MONITOR command error: " .. tostring(err))
+                _tm_sendResp(packet.action or "unknown", nil, "command failed: " .. tostring(err))
             end
         elseif type == "GAME_LOG" then
             local ok, err = pcall(LuaGameLogTail.HandleCommand, packet)
