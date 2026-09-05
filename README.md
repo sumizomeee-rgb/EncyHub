@@ -134,7 +134,7 @@ EncyHub/
 │   ├── src/pages/          # 页面组件
 │   └── ...
 ├── config/                 # 可共享的配置模板
-├── docs/history/           # 历史需求、设计与调查文档
+├── docs/                   # 当前架构、部署与功能说明
 ├── deploy/                 # 通用部署脚本与目标配置模板
 └── .local/                 # 本机数据、日志、缓存与部署目标（不入 Git）
 ```
@@ -151,7 +151,7 @@ EncyHub/
 2. **注册**：在 `hub_core/registry.py` 中注册该工具的元数据（ID、名称、端口）。
 3. **前端**：在 `frontend/src/pages/` 下创建对应页面组件，并在路由中配置。
 
-详情请参考 `docs/dev_guide.md`（计划中）。
+文档索引见 `docs/README.md`。
 
 ---
 

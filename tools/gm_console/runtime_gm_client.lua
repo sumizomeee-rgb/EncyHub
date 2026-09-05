@@ -4382,7 +4382,7 @@ local function StartRuntimeGM()
     end
 
     -- ========== LuaUiInspector.Search: 跨 UI / 跨节点 / C# 文本穿透的高级搜索 ==========
-    -- 详见 docs/history/31_设计方案书_LuaUiInspector_AdvancedSearch.md
+    -- 详见 docs/gm-console/lua-ui-inspector.md
     --
     -- 查询语法：
     --   Id=55              kv 精确

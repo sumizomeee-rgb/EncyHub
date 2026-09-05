@@ -21,7 +21,17 @@ def test_deploy_targets_are_machine_local():
     deploy_source = (ROOT / "deploy" / "encyhub.ps1").read_text(encoding="utf-8-sig")
     assert '".local/deploy/targets.json"' in deploy_source
     assert "harucode-template" not in deploy_source
+    assert '"gm_console/custom_gm.json"' in deploy_source
+    assert '"adb_master/config.json"' not in deploy_source
+    assert '"ios_master/config.json"' not in deploy_source
     assert (ROOT / "deploy" / "targets.example.json").is_file()
+
+
+def test_flowsvn_scheduler_cli_uses_shared_local_data_dir():
+    cli_source = (ROOT / "tools" / "flow_svn" / "cli.py").read_text(encoding="utf-8")
+    assert "from hub_core.config import DATA_DIR" in cli_source
+    assert 'data_dir = DATA_DIR / "flow_svn"' in cli_source
+    assert 'PROJECT_ROOT / "data" / "flow_svn"' not in cli_source
 
 
 def test_legacy_migration_merges_existing_directories(tmp_path):

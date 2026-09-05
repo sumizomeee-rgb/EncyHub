@@ -12,12 +12,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.flow_svn.config_manager import ConfigManager
 from tools.flow_svn.task_runner import run_task_by_id as run_configured_task
+from hub_core.config import DATA_DIR
 
 
 def run_task_by_id(task_id: str):
     """通过任务 ID 执行任务"""
     # 设置 DATA_DIR
-    data_dir = PROJECT_ROOT / "data" / "flow_svn"
+    data_dir = DATA_DIR / "flow_svn"
     os.makedirs(data_dir, exist_ok=True)
     config_path = data_dir / "config.json"
 

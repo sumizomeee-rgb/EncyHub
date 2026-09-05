@@ -4,7 +4,7 @@ import { Search, X, Loader2, Crosshair, AlertTriangle, CornerDownRight } from 'l
 import CopyButton from './CopyButton'
 
 // 高级搜索弹窗（v2 风格统一版）：跨 UI / 跨节点 / C# 文本穿透 / 类型搜
-// 详见 docs/history/31_设计方案书_LuaUiInspector_AdvancedSearch.md
+// 详见 docs/gm-console/lua-ui-inspector.md
 //
 // 交互：
 //   - 整行 click 不触发跳转（避免误触 + 文本可选中复制）

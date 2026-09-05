@@ -67,11 +67,9 @@ $quotedRoot = "'$remoteRoot'"
 
 if ($Action -eq "sync-data") {
     $files = @(
-        "gm_console/custom_gm.json",
-        "adb_master/config.json",
-        "ios_master/config.json"
+        "gm_console/custom_gm.json"
     )
-    Invoke-Ssh "set -eu; mkdir -p $quotedRoot/.local/data/gm_console $quotedRoot/.local/data/adb_master $quotedRoot/.local/data/ios_master"
+    Invoke-Ssh "set -eu; mkdir -p $quotedRoot/.local/data/gm_console"
     foreach ($relativePath in $files) {
         $localPath = Join-Path $repoRoot ".local/data/$relativePath"
         if (Test-Path -LiteralPath $localPath) {
