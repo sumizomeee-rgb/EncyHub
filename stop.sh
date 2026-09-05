@@ -10,10 +10,14 @@ echo ""
 
 HUB_PORT=9524
 KILLED=0
+REGISTRY_FILE=".local/data/registry.json"
+if [ ! -f "$REGISTRY_FILE" ] && [ -f "data/registry.json" ]; then
+    REGISTRY_FILE="data/registry.json"
+fi
 
 # 1. Kill tool subprocesses from registry.json
 echo "[1/3] Stopping tool subprocesses..."
-if [ -f "data/registry.json" ]; then
+if [ -f "$REGISTRY_FILE" ]; then
     while IFS= read -r PID; do
         PID=$(echo "$PID" | tr -d ', ')
         if [ -n "$PID" ] && [ "$PID" -gt 0 ] 2>/dev/null; then
@@ -22,7 +26,7 @@ if [ -f "data/registry.json" ]; then
                 KILLED=1
             fi
         fi
-    done < <(grep -oP '"pid":\s*\K[0-9]+' data/registry.json 2>/dev/null || true)
+    done < <(grep -oP '"pid":\s*\K[0-9]+' "$REGISTRY_FILE" 2>/dev/null || true)
 fi
 if [ $KILLED -eq 0 ]; then
     echo "      No tool processes found"
@@ -49,7 +53,7 @@ echo "[3/3] Cleaning up registry..."
 if [ -f ".venv/bin/python" ]; then
     .venv/bin/python -c "
 import json, pathlib
-p = pathlib.Path('data/registry.json')
+p = pathlib.Path('$REGISTRY_FILE')
 if p.exists():
     d = json.loads(p.read_text('utf-8'))
     for t in d.values():

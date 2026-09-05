@@ -375,6 +375,7 @@ def test_lua_ui_inspector_tracks_same_name_instances_by_uuid():
     assert "tostring(xui.UUID) == targetId" in runtime
     assert "id = tostring(xui.UUID)" in runtime
     assert "sortingOrder = tonumber(xui.SortingOrder) or 0" in runtime
+    assert "return a.sortingOrder < b.sortingOrder" in runtime
     assert "seen[uiName]" not in runtime
     assert "packet.uiId" in runtime
     assert "const [selectedUiId, setSelectedUiId] = useState(null)" in frontend

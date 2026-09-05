@@ -8,7 +8,7 @@
 
 **Tech Stack:** C# (Unity Editor IMGUI), Lua (XMain.lua TCP extension), Python (FastAPI + asyncio), React 18 + Tailwind CSS 4
 
-**Spec:** `E:\Such_Proj\Other\EncyHub\doc\20_施工方案书_AnimatorViewer_运行时动画状态查看器.md`
+**Spec:** `E:\Such_Proj\Other\EncyHub\docs\history\20_施工方案书_AnimatorViewer_运行时动画状态查看器.md`
 
 ---
 

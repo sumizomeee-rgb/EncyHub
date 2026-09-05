@@ -10,7 +10,7 @@ import websockets
 
 from .registry import registry
 from .process_manager import process_manager
-from .config import LOGS_DIR
+from .config import LOGS_DIR, ROOT_DIR
 
 router = APIRouter(prefix="/api/hub")
 
@@ -107,7 +107,7 @@ async def build_frontend():
     import subprocess
     import sys
 
-    frontend_dir = str(LOGS_DIR.parent / "frontend")
+    frontend_dir = str(ROOT_DIR / "frontend")
     try:
         result = subprocess.run(
             ["npm", "run", "build"],

@@ -3962,10 +3962,10 @@ local function StartRuntimeGM()
             return { error = "Failed to get UI list: " .. tostring(allList) }
         end
 
-        -- 顶层 UI 优先；同一 sortingOrder 下新创建的实例优先。
+        -- 按视觉堆栈从下到上排列：最顶层 UI 显示在列表最下面。
         table.sort(result, function(a, b)
-            if a.sortingOrder ~= b.sortingOrder then return a.sortingOrder > b.sortingOrder end
-            return a.order > b.order
+            if a.sortingOrder ~= b.sortingOrder then return a.sortingOrder < b.sortingOrder end
+            return a.order < b.order
         end)
         for i, info in ipairs(result) do info.order = i end
 
@@ -4382,7 +4382,7 @@ local function StartRuntimeGM()
     end
 
     -- ========== LuaUiInspector.Search: 跨 UI / 跨节点 / C# 文本穿透的高级搜索 ==========
-    -- 详见 doc/31_设计方案书_LuaUiInspector_AdvancedSearch.md
+    -- 详见 docs/history/31_设计方案书_LuaUiInspector_AdvancedSearch.md
     --
     -- 查询语法：
     --   Id=55              kv 精确

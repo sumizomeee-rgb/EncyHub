@@ -114,4 +114,4 @@ end
 - `5e909ee` — 单端口多路复用核心实现
 - `b02b36e` — 修复 Unity Editor 连接、SVN 延迟、平台图标、截图
 
-`doc/32_设计方案书_GmConsole_单端口多路复用_会话标识改造.md` 有完整设计文档。
+`docs/history/32_设计方案书_GmConsole_单端口多路复用_会话标识改造.md` 有完整设计文档。

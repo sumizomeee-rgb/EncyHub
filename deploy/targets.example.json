@@ -1,0 +1,10 @@
+{
+  "default": "example-server",
+  "targets": {
+    "example-server": {
+      "ssh_config": "C:/path/to/ssh_config",
+      "ssh_target": "example-server",
+      "remote_root": "/home/example/EncyHub"
+    }
+  }
+}

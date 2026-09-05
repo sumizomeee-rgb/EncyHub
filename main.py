@@ -6,6 +6,7 @@ import json
 import signal
 import sys
 import time
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,7 +19,11 @@ import uvicorn
 
 # !! 在导入 hub_core 之前，先读取 registry 中的旧 PID !!
 # 因为 hub_core 导入时 Registry._load() 会清除 pid/port 并回写文件
-_REGISTRY_PATH = Path(__file__).resolve().parent / "data" / "registry.json"
+_ROOT_PATH = Path(__file__).resolve().parent
+_LOCAL_PATH = Path(os.environ.get("ENCYHUB_LOCAL_DIR", _ROOT_PATH / ".local"))
+_REGISTRY_PATH = _LOCAL_PATH / "data" / "registry.json"
+if not _REGISTRY_PATH.exists():
+    _REGISTRY_PATH = _ROOT_PATH / "data" / "registry.json"
 _OLD_PIDS: dict[str, int] = {}
 if _REGISTRY_PATH.exists():
     try:

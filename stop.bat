@@ -11,10 +11,13 @@ echo.
 set HUB_PORT=9524
 set KILLED=0
 
+set "REGISTRY_FILE=.local\data\registry.json"
+if not exist "%REGISTRY_FILE%" if exist "data\registry.json" set "REGISTRY_FILE=data\registry.json"
+
 :: 1. Kill tool subprocesses from registry.json
 echo [1/3] Stopping tool subprocesses...
-if exist "data\registry.json" (
-    for /f "tokens=*" %%a in ('findstr /r "\"pid\": [0-9]" data\registry.json') do (
+if exist "%REGISTRY_FILE%" (
+    for /f "tokens=*" %%a in ('findstr /r "\"pid\": [0-9]" "%REGISTRY_FILE%"') do (
         for /f "tokens=2 delims=: " %%p in ("%%a") do (
             set "PID=%%p"
             set "PID=!PID:,=!"
@@ -48,7 +51,7 @@ if %KILLED_HUB%==0 echo       Hub not running
 echo.
 echo [3/3] Cleaning up registry...
 if exist ".venv\Scripts\python.exe" (
-    .venv\Scripts\python.exe -c "import json,pathlib;p=pathlib.Path('data/registry.json');d=json.loads(p.read_text('utf-8')) if p.exists() else {};[t.update(pid=None,port=None) for t in d.values()];p.write_text(json.dumps(d,indent=2,ensure_ascii=False),'utf-8') if d else None" 2>nul
+    .venv\Scripts\python.exe -c "import json,pathlib;p=pathlib.Path(r'%REGISTRY_FILE%');d=json.loads(p.read_text('utf-8')) if p.exists() else {};[t.update(pid=None,port=None) for t in d.values()];p.write_text(json.dumps(d,indent=2,ensure_ascii=False),'utf-8') if d else None" 2>nul
     echo       Registry cleaned
 ) else (
     echo       Skipped (venv not found)

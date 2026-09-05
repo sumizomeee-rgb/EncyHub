@@ -21,7 +21,7 @@ from .config_manager import ConfigManager
 
 PORT = int(os.environ.get("PORT", 8001))
 HOST = os.environ.get("HOST", "0.0.0.0")
-DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "../../data/ios_master"))
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "../../.local/data/ios_master"))
 
 ios_mgr: Optional[iOSDeviceManager] = None
 config_mgr: Optional[ConfigManager] = None

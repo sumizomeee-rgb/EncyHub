@@ -22,7 +22,7 @@ from .runtime_gm_code import build_runtime_gm_code, detect_local_lan_ip
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
 HOST = os.environ.get("HOST", "0.0.0.0")
-DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "../../data/gm_console"))
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "../../.local/data/gm_console"))
 
 # 默认 TCP 监听端口
 DEFAULT_TCP_PORT = 12581

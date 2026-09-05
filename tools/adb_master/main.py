@@ -24,7 +24,7 @@ from .scrcpy_web_manager import ScrcpyWebManager
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
 HOST = os.environ.get("HOST", "0.0.0.0")
-DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "../../data/adb_master"))
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "../../.local/data/adb_master"))
 
 # 全局实例
 adb_mgr: Optional[AdbManager] = None

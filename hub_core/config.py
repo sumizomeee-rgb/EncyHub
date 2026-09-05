@@ -2,14 +2,17 @@
 EncyHub 全局配置
 """
 from pathlib import Path
+import os
+import shutil
 import socket
 
 # 路径配置
 ROOT_DIR = Path(__file__).resolve().parent.parent
 TOOLS_DIR = ROOT_DIR / "tools"
-DATA_DIR = ROOT_DIR / "data"
+LOCAL_DIR = Path(os.environ.get("ENCYHUB_LOCAL_DIR", ROOT_DIR / ".local"))
+DATA_DIR = LOCAL_DIR / "data"
 ASSETS_DIR = ROOT_DIR / "assets"
-LOGS_DIR = ROOT_DIR / "logs"
+LOGS_DIR = LOCAL_DIR / "logs"
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
 
 # 注册表文件
@@ -23,6 +26,31 @@ HUB_PORT = 9524
 # （Windows: start.bat；Linux: start.sh 或 systemd Restart=on-failure）
 # start.bat / start.sh 中的退出码判断必须与此一致，见 tests/test_restart_hub.py 契约测试
 RESTART_EXIT_CODE = 42
+
+# 一次性兼容迁移：旧版本把本机运行状态放在仓库根目录的 data/、logs/。
+def _migrate_legacy_dir(legacy_dir: Path, target_dir: Path) -> None:
+    if not legacy_dir.exists() or legacy_dir == target_dir:
+        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source in legacy_dir.iterdir():
+        target = target_dir / source.name
+        if target.exists():
+            if source.is_dir() and target.is_dir():
+                _migrate_legacy_dir(source, target)
+                try:
+                    source.rmdir()
+                except OSError:
+                    pass
+            continue
+        try:
+            shutil.move(str(source), str(target))
+        except OSError:
+            # 迁移失败不阻止 Hub 启动；旧文件仍保留，可人工处理。
+            pass
+
+
+_migrate_legacy_dir(ROOT_DIR / "data", DATA_DIR)
+_migrate_legacy_dir(ROOT_DIR / "logs", LOGS_DIR)
 
 # 确保目录存在
 DATA_DIR.mkdir(parents=True, exist_ok=True)
