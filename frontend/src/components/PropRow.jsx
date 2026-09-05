@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { ChevronRight, ChevronDown, Crosshair, Loader2, Palette, ShieldAlert } from 'lucide-react'
-import { parseNumericDraft } from '../utils/numericInput'
+import { parseNumericDraft, stepNumericValue } from '../utils/numericInput'
 
 // 复用：Hierarchy / 未来其它反射面板共用的属性单行组件
 // 接收 prop 对象：{ name, value, valueType, typeName, editable, count?, collectionKind? }
@@ -36,22 +36,79 @@ function FieldDecorations({ p, children }) {
 
 function NumericInput({ value, valueType = 'float', onCommit, className }) {
     const [draft, setDraft] = useState(null)
+    const inputRef = useRef(null)
+    const draftRef = useRef(null)
+    const valueRef = useRef(value)
+    const valueTypeRef = useRef(valueType)
+    const onCommitRef = useRef(onCommit)
+    const wheelCommitTimerRef = useRef(null)
+    const pendingWheelValueRef = useRef(null)
+    const lastWheelCommitRef = useRef(null)
     const isEditing = draft !== null
+
+    useEffect(() => { draftRef.current = draft }, [draft])
+    useEffect(() => { valueRef.current = value }, [value])
+    useEffect(() => { valueTypeRef.current = valueType }, [valueType])
+    useEffect(() => { onCommitRef.current = onCommit }, [onCommit])
 
     const finishEdit = () => {
         if (!isEditing) return
+        if (wheelCommitTimerRef.current) clearTimeout(wheelCommitTimerRef.current)
+        wheelCommitTimerRef.current = null
+        pendingWheelValueRef.current = null
         const parsed = parseNumericDraft(draft, valueType)
         setDraft(null)
-        if (parsed !== null && parsed !== value) onCommit(parsed)
+        if (parsed !== null && parsed !== value && parsed !== lastWheelCommitRef.current) onCommit(parsed)
+        lastWheelCommitRef.current = null
     }
+
+    useEffect(() => () => {
+        if (wheelCommitTimerRef.current) clearTimeout(wheelCommitTimerRef.current)
+    }, [])
+
+    useEffect(() => {
+        const input = inputRef.current
+        if (!input) return
+        const handleWheel = event => {
+            if (document.activeElement !== input || event.deltaY === 0) return
+            event.preventDefault()
+            event.stopPropagation()
+            const baseValue = pendingWheelValueRef.current ?? draftRef.current ?? valueRef.current ?? 0
+            const next = stepNumericValue(baseValue, valueTypeRef.current, event.deltaY < 0 ? 1 : -1)
+            if (next === null) return
+            const nextText = String(next)
+            draftRef.current = nextText
+            setDraft(nextText)
+            pendingWheelValueRef.current = next
+            if (wheelCommitTimerRef.current) clearTimeout(wheelCommitTimerRef.current)
+            wheelCommitTimerRef.current = setTimeout(() => {
+                const pending = pendingWheelValueRef.current
+                wheelCommitTimerRef.current = null
+                pendingWheelValueRef.current = null
+                if (pending == null) return
+                lastWheelCommitRef.current = pending
+                onCommitRef.current(pending)
+            }, 140)
+        }
+        input.addEventListener('wheel', handleWheel, { passive: false })
+        return () => input.removeEventListener('wheel', handleWheel)
+    }, [])
 
     return (
         <input
+            ref={inputRef}
             type="text"
             inputMode={valueType === 'int' ? 'numeric' : 'decimal'}
             value={isEditing ? draft : String(value ?? 0)}
-            onFocus={() => setDraft(String(value ?? 0))}
-            onChange={e => setDraft(e.target.value)}
+            onFocus={() => {
+                const nextDraft = String(value ?? 0)
+                draftRef.current = nextDraft
+                setDraft(nextDraft)
+            }}
+            onChange={e => {
+                draftRef.current = e.target.value
+                setDraft(e.target.value)
+            }}
             onBlur={finishEdit}
             onKeyDown={e => {
                 if (e.key === 'Enter') e.currentTarget.blur()

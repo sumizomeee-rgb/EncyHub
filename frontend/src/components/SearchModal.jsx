@@ -71,12 +71,16 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
         const q = query.trim()
         if (!q) { setError('请输入搜索内容'); return }
         const budget = SCAN_BUDGETS[scanBudget] || SCAN_BUDGETS.standard
+        const scopedUi = scope === 'all'
+            ? null
+            : uiList?.find(ui => String(ui.id || ui.name) === String(scope))
         setLoading(true)
         setError(null)
         setResult(null)
         onSearch({
             query: q,
-            scope,
+            scope: scopedUi?.name || scope,
+            scopeId: scopedUi?.id,
             depth: Math.min(Math.max(parseInt(depth) || 20, 1), 30),
             probeComponentText: probeText,
             maxFields: budget.maxFields,
@@ -85,7 +89,7 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
             if (!data || data.error) { setError(data?.error || '搜索失败'); return }
             setResult({ ...data, appliedBudget: budget })
         })
-    }, [query, scope, depth, probeText, scanBudget, onSearch])
+    }, [query, scope, depth, probeText, scanBudget, onSearch, uiList])
 
     useEffect(() => {
         const onMove = (e) => {
@@ -161,7 +165,11 @@ export default function SearchModal({ open, onClose, uiList, onSearch, onJumpToH
                             <select value={scope} onChange={e => setScope(e.target.value)}
                                 className="!w-auto !min-w-[160px] !px-2 !py-1 !text-xs !rounded-md !border !border-[var(--glass-border)] !bg-white/70">
                                 <option value="all">全部打开的 UI</option>
-                                {uiList?.map(u => <option key={u.name} value={u.name}>{u.name}</option>)}
+                                {uiList?.map(u => (
+                                    <option key={u.id || u.name} value={u.id || u.name}>
+                                        {u.name}{u.id ? ` · #${u.id}` : ''}
+                                    </option>
+                                ))}
                             </select>
                         </label>
                         <label className="flex items-center gap-2 whitespace-nowrap">
@@ -328,9 +336,10 @@ function UiCell({ w, hit, hovered, onJump }) {
         <div style={{ width: w, padding: '6px 10px' }}
             className={`${cellBase} cursor-pointer group/ui hover:bg-[var(--caramel)]/15`}
             onClick={() => onJump(hit)}
-            title={`跳转到 ${hit.uiName} → ${hit.luaPath || '(根)'}`}>
+            title={`跳转到 ${hit.uiName}${hit.uiId ? ` #${hit.uiId}` : ''} → ${hit.luaPath || '(根)'}`}>
             <CornerDownRight size={11} className={`flex-shrink-0 transition-opacity ${hovered ? 'text-[var(--caramel)] opacity-100' : 'text-[var(--coffee-muted)] opacity-30'}`} />
             <span className="font-medium text-[var(--coffee-deep)] truncate">{hit.uiName}</span>
+            {hit.uiId && <span className="font-mono text-[9px] text-[var(--coffee-muted)]">#{hit.uiId}</span>}
         </div>
     )
 }

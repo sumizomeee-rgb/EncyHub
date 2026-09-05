@@ -365,3 +365,42 @@ def test_lua_ui_root_locate_falls_back_to_common_root_go_fields():
     assert 'local keys = { "GameObject", "Transform", "Obj", "gameObject", "transform" }' in content
     assert "go = tryResolveGo(target)" in content
     assert 'packet.path = "GameObject"' in content
+
+
+def test_lua_ui_inspector_tracks_same_name_instances_by_uuid():
+    runtime = read_file(RUNTIME_GM_LUA)
+    frontend = read_file(LUA_UI_INSPECTOR_JSX)
+
+    assert "local function inspectorGetLuaUi(uiName, uiId)" in runtime
+    assert "tostring(xui.UUID) == targetId" in runtime
+    assert "id = tostring(xui.UUID)" in runtime
+    assert "sortingOrder = tonumber(xui.SortingOrder) or 0" in runtime
+    assert "seen[uiName]" not in runtime
+    assert "packet.uiId" in runtime
+    assert "const [selectedUiId, setSelectedUiId] = useState(null)" in frontend
+    assert "key={ui.id || ui.name}" in frontend
+    assert "uiId: selectedUiId" in frontend
+    assert "requestId = `${Date.now()}-${++requestSeqRef.current}`" in frontend
+    assert "requestId = packet.requestId" in runtime
+
+
+def test_hierarchy_supports_safe_runtime_reparent_and_ui_highlight():
+    content = read_file(RUNTIME_GM_LUA)
+    hierarchy = read_file(HIERARCHY_JSX)
+
+    assert 'function LuaHierarchy.Reparent(packet)' in content
+    assert 'Cannot parent GameObject to its descendant' in content
+    assert 'sourceTransform:SetParent(targetTransform, true)' in content
+    assert 'result.oldParentChildCount = oldParent.childCount' in content
+    assert 'function LuaHierarchy.HighlightUi(packet)' in content
+    assert 'function LuaHierarchy.HighlightUi(packet)' in content
+    assert 'hierCreateUiMarker(go, rectTransform)' in content
+    assert 'hierCreateWorldMarker(go)' in content
+    assert 'bar.tag = "Untagged"' in content
+    assert 'bar.layer = layer' in content
+    assert 'image.raycastTarget = false' in content
+    assert 'function LuaHierarchy.ClearHighlights()' in content
+    assert 'pcall(LuaHierarchy.ClearHighlights)' in content
+    assert "request('reparent'" in hierarchy
+    assert "request('highlight_ui'" in hierarchy
+    assert 'onAuxClick' in hierarchy

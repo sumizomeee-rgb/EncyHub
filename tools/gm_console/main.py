@@ -328,6 +328,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(broadcast_inspector_event({
             "type": pkt.get("action", "unknown"),
             "client_id": client_id,
+            "request_id": pkt.get("requestId"),
             "data": pkt.get("data", {})
         }))
 

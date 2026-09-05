@@ -20,6 +20,7 @@ function saveExpandedCategories(set) {
 // ============================================================================
 function useInspectorWs(selectedClient, active) {
     const listenersRef = useRef({})
+    const requestSeqRef = useRef(0)
     const wsRef = useRef(null)
     const [wsConnected, setWsConnected] = useState(false)
     const reconnectTimer = useRef(null)
@@ -51,8 +52,13 @@ function useInspectorWs(selectedClient, active) {
                 try {
                     const msg = JSON.parse(event.data)
                     if (msg.client_id !== selectedClient?.id) return
-                    const cb = listenersRef.current[msg.type]
-                    if (cb) cb(msg.data)
+                    const listenerKey = msg.request_id || msg.type
+                    const cb = listenersRef.current[listenerKey]
+                    if (cb) {
+                        if (msg.request_id) delete listenersRef.current[listenerKey]
+                        if (listenersRef.current[msg.type] === cb) delete listenersRef.current[msg.type]
+                        cb(msg.data)
+                    }
                 } catch (e) {
                     console.error('[Inspector WS] parse error:', e)
                 }
@@ -82,17 +88,23 @@ function useInspectorWs(selectedClient, active) {
 
     const request = useCallback((action, params, onResponse) => {
         if (!selectedClient) return
-        listenersRef.current[action] = onResponse
+        const requestId = `${Date.now()}-${++requestSeqRef.current}`
+        listenersRef.current[requestId] = onResponse
+        listenersRef.current[action] = onResponse // 兼容尚未重启、不会回传 requestId 的旧客户端
         fetch(`/api/gm_console/inspector/${encodeURIComponent(selectedClient.id)}/command`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action, ...params })
+            body: JSON.stringify({ action, requestId, ...params })
         }).then(resp => {
             if (!resp.ok) {
+                delete listenersRef.current[requestId]
+                if (listenersRef.current[action] === onResponse) delete listenersRef.current[action]
                 console.error(`[Inspector] HTTP ${resp.status} for ${action}`)
                 onResponse({ error: `HTTP ${resp.status}` })
             }
         }).catch(err => {
+            delete listenersRef.current[requestId]
+            if (listenersRef.current[action] === onResponse) delete listenersRef.current[action]
             console.error('[Inspector] request failed:', err)
             onResponse({ error: String(err) })
         })
@@ -135,6 +147,7 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
 
     // --- 选中状态 ---
     const [selectedUi, setSelectedUi] = useState(null)
+    const [selectedUiId, setSelectedUiId] = useState(null)
     const [selectedPath, setSelectedPath] = useState('')
     const [breadcrumb, setBreadcrumb] = useState([])
 
@@ -176,6 +189,19 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
     // --- 通信 ---
     const { request, wsConnected } = useInspectorWs(selectedClient, active)
 
+    useEffect(() => {
+        setUiList([])
+        setSelectedUi(null)
+        setSelectedUiId(null)
+        setSelectedPath('')
+        setBreadcrumb([])
+        setUiTree(null)
+        setNodeData(null)
+        setExpandedNodes(new Set())
+        setExpandedFields(new Set())
+        setAutoRefresh(false)
+    }, [selectedClient?.id])
+
     // --- 请求 UI 列表 ---
     const refreshUiList = useCallback(() => {
         setLastError(null)
@@ -184,12 +210,25 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
             setLoadingList(false)
             if (data.error) { setLastError('ui_list: ' + data.error); return }
             setUiList(data)
+            if (selectedUiId && !data.some(ui => String(ui.id) === String(selectedUiId))) {
+                setSelectedUi(null)
+                setSelectedUiId(null)
+                setSelectedPath('')
+                setBreadcrumb([])
+                setUiTree(null)
+                setNodeData(null)
+                setExpandedNodes(new Set())
+                setExpandedFields(new Set())
+            }
         })
-    }, [request])
+    }, [request, selectedUiId])
 
     // --- 请求 UI 树 ---
-    const loadUiTree = useCallback((uiName) => {
+    const loadUiTree = useCallback((ui) => {
+        const uiName = ui.name
+        const uiId = ui.id
         setSelectedUi(uiName)
+        setSelectedUiId(uiId)
         setSelectedPath('')
         setBreadcrumb([{ name: uiName, path: '' }])
         setNodeData(null)
@@ -199,13 +238,13 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
         setLoadingNode(true)
         let pending = 2
         const done = () => { if (--pending <= 0) setLoadingNode(false) }
-        request('ui_tree', { uiName }, (data) => {
+        request('ui_tree', { uiName, uiId }, (data) => {
             done()
             if (data.error) { setUiTree(null); setLastError('ui_tree: ' + data.error); return }
             setUiTree(data)
         })
         // 同时请求根节点数据
-        request('node_data', { uiName, path: '', depth }, (data) => {
+        request('node_data', { uiName, uiId, path: '', depth }, (data) => {
             done()
             if (data.error) { setLastError('node_data: ' + data.error); return }
             setNodeData(data)
@@ -213,7 +252,7 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
     }, [request, depth])
 
     // --- 请求节点数据 ---
-    const loadNodeData = useCallback((uiName, path, nodeName) => {
+    const loadNodeData = useCallback((uiName, uiId, path, nodeName) => {
         setSelectedPath(path)
         setExpandedFields(new Set())
         setLastError(null)
@@ -231,7 +270,7 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
             setBreadcrumb(crumbs)
         }
         setLoadingNode(true)
-        request('node_data', { uiName, path, depth }, (data) => {
+        request('node_data', { uiName, uiId, path, depth }, (data) => {
             setLoadingNode(false)
             if (data.error) {
                 setNodeData(null)
@@ -249,55 +288,55 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
     useEffect(() => {
         if (!autoRefresh || !active || !selectedUi || refreshInterval <= 0 || searchOpen) return
         const timer = setInterval(() => {
-            request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (data) => {
+            request('node_data', { uiName: selectedUi, uiId: selectedUiId, path: selectedPath, depth }, (data) => {
                 if (data.error) { setAutoRefresh(false); return }
                 setNodeData(data)
             })
         }, refreshInterval * 1000)
         return () => clearInterval(timer)
-    }, [autoRefresh, active, refreshInterval, selectedUi, selectedPath, depth, request, searchOpen])
+    }, [autoRefresh, active, refreshInterval, selectedUi, selectedUiId, selectedPath, depth, request, searchOpen])
 
     // --- 修改值 ---
     const setValue = useCallback((path, value, valueType) => {
-        request('set_value', { uiName: selectedUi, path, value, valueType }, (data) => {
+        request('set_value', { uiName: selectedUi, uiId: selectedUiId, path, value, valueType }, (data) => {
             if (data.success) {
                 // 刷新当前节点
-                request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (d) => {
+                request('node_data', { uiName: selectedUi, uiId: selectedUiId, path: selectedPath, depth }, (d) => {
                     if (!d.error) setNodeData(d)
                 })
             }
         })
-    }, [request, selectedUi, selectedPath, depth])
+    }, [request, selectedUi, selectedUiId, selectedPath, depth])
 
     // --- 还原 ---
     const revertValue = useCallback((path) => {
-        request('revert', { uiName: selectedUi, path }, (data) => {
+        request('revert', { uiName: selectedUi, uiId: selectedUiId, path }, (data) => {
             if (data.success) {
-                request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (d) => {
+                request('node_data', { uiName: selectedUi, uiId: selectedUiId, path: selectedPath, depth }, (d) => {
                     if (!d.error) setNodeData(d)
                 })
             }
         })
-    }, [request, selectedUi, selectedPath, depth])
+    }, [request, selectedUi, selectedUiId, selectedPath, depth])
 
     const revertAll = useCallback(() => {
         if (!selectedUi) return
-        request('revert_all', { uiName: selectedUi }, (data) => {
+        request('revert_all', { uiName: selectedUi, uiId: selectedUiId }, (data) => {
             if (data.success) {
-                request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (d) => {
+                request('node_data', { uiName: selectedUi, uiId: selectedUiId, path: selectedPath, depth }, (d) => {
                     if (!d.error) setNodeData(d)
                 })
             }
         })
-    }, [request, selectedUi, selectedPath, depth])
+    }, [request, selectedUi, selectedUiId, selectedPath, depth])
 
     // --- 调用方法 ---
     const callMethod = useCallback((methodName, onResult) => {
         if (!selectedUi) return
-        request('call_method', { uiName: selectedUi, path: selectedPath, methodName }, (data) => {
+        request('call_method', { uiName: selectedUi, uiId: selectedUiId, path: selectedPath, methodName }, (data) => {
             if (onResult) onResult(data)
         })
-    }, [request, selectedUi, selectedPath])
+    }, [request, selectedUi, selectedUiId, selectedPath])
 
     // --- 高级搜索：透传给 SearchModal 的 onSearch 回调 ---
     const handleSearch = useCallback((params, cb) => {
@@ -308,6 +347,7 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
     const handleJumpToHit = useCallback((hit) => {
         const targetPath = hit.luaPath || ''
         setSelectedUi(hit.uiName)
+        setSelectedUiId(hit.uiId || null)
         setSelectedPath(targetPath)
         // 面包屑
         if (!targetPath) {
@@ -328,11 +368,11 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
         setLoadingNode(true)
         let pending = 2
         const done = () => { if (--pending <= 0) setLoadingNode(false) }
-        request('ui_tree', { uiName: hit.uiName }, (data) => {
+        request('ui_tree', { uiName: hit.uiName, uiId: hit.uiId }, (data) => {
             done()
             if (!data.error) setUiTree(data)
         })
-        request('node_data', { uiName: hit.uiName, path: targetPath, depth }, (data) => {
+        request('node_data', { uiName: hit.uiName, uiId: hit.uiId, path: targetPath, depth }, (data) => {
             done()
             if (data.error) { setLastError('node_data: ' + data.error); return }
             setNodeData(data)
@@ -345,6 +385,11 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
     const filteredUiList = leftFilter
         ? uiList.filter(ui => ui.name.toLowerCase().includes(leftFilter.toLowerCase()))
         : uiList
+    const consoleBoundToSelected = !!selectedUi && (
+        typeof luaUiContext === 'object'
+            ? String(luaUiContext?.id || '') === String(selectedUiId || '')
+            : luaUiContext === selectedUi && !selectedUiId
+    )
 
     return (
         <div
@@ -372,7 +417,7 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--caramel)] disabled:opacity-30 disabled:pointer-events-none transition-colors mr-1" title="跨 UI 高级搜索 (字段值 / 类型 / C# 文本)">
                                 <Search size={13} />
                             </button>
-                            <button onClick={() => { refreshUiList(); if (selectedUi) loadNodeData(selectedUi, selectedPath) }}
+                            <button onClick={() => { refreshUiList(); if (selectedUi) loadNodeData(selectedUi, selectedUiId, selectedPath) }}
                                 disabled={loadingList || !selectedClient}
                                 className="p-0.5 rounded hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] disabled:opacity-30 disabled:pointer-events-none transition-colors" title="刷新">
                                 <RotateCw size={13} className={loadingList ? 'animate-spin' : ''} />
@@ -404,14 +449,14 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
                     )}
                     {filteredUiList.map(ui => (
                         <UiTreeItem
-                            key={ui.name}
+                            key={ui.id || ui.name}
                             ui={ui}
-                            isSelected={selectedUi === ui.name}
+                            isSelected={selectedUi === ui.name && String(selectedUiId || '') === String(ui.id || '')}
                             selectedPath={selectedPath}
-                            tree={selectedUi === ui.name ? uiTree : null}
+                            tree={selectedUi === ui.name && String(selectedUiId || '') === String(ui.id || '') ? uiTree : null}
                             expandedNodes={expandedNodes}
-                            onSelectUi={() => loadUiTree(ui.name)}
-                            onSelectNode={(path, name) => loadNodeData(ui.name, path, name)}
+                            onSelectUi={() => loadUiTree(ui)}
+                            onSelectNode={(path, name) => loadNodeData(ui.name, ui.id, path, name)}
                             onToggleNode={(path) => {
                                 setExpandedNodes(prev => {
                                     const next = new Set(prev)
@@ -441,7 +486,7 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
                             <span key={crumb.path} className="flex items-center gap-1">
                                 {i > 0 && <ChevronRight size={10} />}
                                 <button
-                                    onClick={() => loadNodeData(selectedUi, crumb.path, crumb.name)}
+                                    onClick={() => loadNodeData(selectedUi, selectedUiId, crumb.path, crumb.name)}
                                     className={`hover:text-[var(--coffee-deep)] hover:underline ${
                                         crumb.path === selectedPath ? 'text-[var(--coffee-deep)] font-medium' : ''
                                     }`}
@@ -452,15 +497,15 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
                         ))}
                         {selectedUi && onBindConsole && (
                             <button
-                                onClick={() => onBindConsole(luaUiContext === selectedUi ? null : selectedUi)}
+                                onClick={() => onBindConsole(consoleBoundToSelected ? null : { name: selectedUi, id: selectedUiId })}
                                 className={`ml-auto px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors flex items-center gap-1 ${
-                                    luaUiContext === selectedUi
+                                    consoleBoundToSelected
                                         ? 'bg-[var(--caramel)]/20 text-[var(--caramel)]'
                                         : 'bg-black/5 text-[var(--coffee-muted)] hover:bg-[var(--caramel)]/10 hover:text-[var(--caramel)]'
                                 }`}
-                                title={luaUiContext === selectedUi ? '点击解除绑定' : `将右侧 Console 的 self 绑定到 ${selectedUi}`}
+                                title={consoleBoundToSelected ? '点击解除绑定' : `将右侧 Console 的 self 绑定到 ${selectedUi}${selectedUiId ? ` #${selectedUiId}` : ''}`}
                             >
-                                🔗 {luaUiContext === selectedUi ? `已绑定` : `绑定 Console`}
+                                🔗 {consoleBoundToSelected ? `已绑定` : `绑定 Console`}
                             </button>
                         )}
                     </div>
@@ -549,22 +594,22 @@ function LuaUiInspector({ clients, selectedClient, broadcastMode, luaUiContext, 
                                 }}
                                 onSetValue={setValue}
                                 onRevert={revertValue}
-                                onNavigate={(path, name) => loadNodeData(selectedUi, path, name)}
+                                onNavigate={(path, name) => loadNodeData(selectedUi, selectedUiId, path, name)}
                                 onCallMethod={callMethod}
                                 onGoAction={(action, path, extraParams, callback) => {
-                                    const params = { uiName: selectedUi, path, ...extraParams }
+                                    const params = { uiName: selectedUi, uiId: selectedUiId, path, ...extraParams }
                                     request(action, params, (data) => {
                                         if (callback) callback(data)
                                         // 对修改操作自动刷新
                                         if (['toggle_go_visible', 'set_text', 'destroy_go', 'set_component_prop'].includes(action)) {
-                                            request('node_data', { uiName: selectedUi, path: selectedPath, depth }, (d) => {
+                                            request('node_data', { uiName: selectedUi, uiId: selectedUiId, path: selectedPath, depth }, (d) => {
                                                 if (!d.error) setNodeData(d)
                                             })
                                         }
                                     })
                                 }}
                                 onPinToMonitor={onPinToMonitor ? (fieldPath, compIndex, typeName) => {
-                                    onPinToMonitor({ uiName: selectedUi, path: fieldPath, compIndex, typeName })
+                                    onPinToMonitor({ uiName: selectedUi, uiId: selectedUiId, path: fieldPath, compIndex, typeName })
                                 } : null}
                             />
                             {nodeData.truncated && (
@@ -616,6 +661,11 @@ function UiTreeItem({ ui, isSelected, selectedPath, tree, expandedNodes, onSelec
             >
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${ui.active ? 'bg-[var(--sage)]' : 'bg-[var(--coffee-muted)]/40'}`} />
                 <span className="truncate font-medium">{ui.name}</span>
+                {ui.id && (
+                    <span className="ml-auto flex-shrink-0 font-mono text-[9px] text-[var(--coffee-muted)] opacity-70" title={`实例 UUID ${ui.id} · SortingOrder ${ui.sortingOrder ?? 0}`}>
+                        #{ui.id}
+                    </span>
+                )}
             </button>
 
             {/* 展开的组件树 */}

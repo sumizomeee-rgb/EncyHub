@@ -7,6 +7,7 @@ import PropRow from '../components/PropRow'
 import HierarchySearchModal from '../components/HierarchySearchModal'
 
 const GO_SEARCH_MAX_OBJECTS = 20000
+const HIERARCHY_DRAG_HOLD_MS = 180
 
 function waitForNextPaint() {
     return new Promise(resolve => {
@@ -33,6 +34,17 @@ function patchNodeListActive(list, instanceId, active, activeInHierarchy) {
         const patched = patchNodeActive(node, instanceId, active, activeInHierarchy)
         if (patched !== node) changed = true
         return patched
+    })
+    return changed ? next : list
+}
+
+function patchNodeListChildCount(list, instanceId, childCount) {
+    if (!Array.isArray(list) || !instanceId || childCount == null) return list
+    let changed = false
+    const next = list.map(node => {
+        if (node.instanceId !== instanceId) return node
+        changed = true
+        return { ...node, childCount }
     })
     return changed ? next : list
 }
@@ -115,6 +127,12 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
     const [goDetail, setGoDetail] = useState(null)
     const [loadingDetail, setLoadingDetail] = useState(false)
     const [highlightCompIndex, setHighlightCompIndex] = useState(null)
+    const [draggedNode, setDraggedNode] = useState(null)
+    const [dropTarget, setDropTarget] = useState(null)
+    const [mutationError, setMutationError] = useState('')
+    const [uiHighlightFeedback, setUiHighlightFeedback] = useState(null)
+    const suppressTreeClickUntilRef = useRef(0)
+    const uiHighlightFeedbackTimerRef = useRef(null)
 
     // --- GO 搜索（普通搜索只负责按 GO 名/路径定位，Component/字段/类型交给高级搜索） ---
     const [filterText, setFilterText] = useState('')
@@ -324,10 +342,40 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
 
     // --- 选中节点 ---
     const selectNode = useCallback((id) => {
+        if (Date.now() < suppressTreeClickUntilRef.current) return
         setSelectedId(id)
         setHighlightCompIndex(null)
         loadDetail(id)
     }, [loadDetail])
+
+    const startNodeDrag = useCallback((node) => {
+        setMutationError('')
+        suppressTreeClickUntilRef.current = Date.now() + 500
+        setDraggedNode(node)
+        setDropTarget(null)
+    }, [])
+
+    const cancelNodeDrag = useCallback(() => {
+        setDraggedNode(null)
+        setDropTarget(null)
+    }, [])
+
+    useEffect(() => {
+        if (!draggedNode) return
+        const previousCursor = document.body.style.cursor
+        document.body.style.cursor = 'grabbing'
+        const cancel = () => cancelNodeDrag()
+        const onKeyDown = event => { if (event.key === 'Escape') cancel() }
+        window.addEventListener('pointerup', cancel)
+        window.addEventListener('pointercancel', cancel)
+        window.addEventListener('keydown', onKeyDown)
+        return () => {
+            document.body.style.cursor = previousCursor
+            window.removeEventListener('pointerup', cancel)
+            window.removeEventListener('pointercancel', cancel)
+            window.removeEventListener('keydown', onKeyDown)
+        }
+    }, [draggedNode, cancelNodeDrag])
 
     // --- 修改属性 ---
     const setProp = useCallback((compIndex, propName, value, valueType) => {
@@ -554,6 +602,96 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
         })
     }, [tree, request, locateAndSelect, flashHighlight])
 
+    const highlightUi = useCallback((instanceId) => {
+        if (!instanceId) return
+        suppressTreeClickUntilRef.current = Date.now() + 250
+        setMutationError('')
+        if (uiHighlightFeedbackTimerRef.current) clearTimeout(uiHighlightFeedbackTimerRef.current)
+        setUiHighlightFeedback({ instanceId, status: 'pending', message: '正在发送高亮...' })
+        request('highlight_ui', { instanceId }, data => {
+            const feedback = data?.error
+                ? { instanceId, status: 'error', message: data.error }
+                : { instanceId, status: 'success', message: data?.mode === 'ui_rect' ? '已定位 UI 边界' : data?.mode === 'bounds' ? '已定位 3D Bounds' : '已定位 Transform' }
+            setUiHighlightFeedback(feedback)
+            uiHighlightFeedbackTimerRef.current = setTimeout(() => {
+                setUiHighlightFeedback(current => current?.instanceId === instanceId ? null : current)
+                uiHighlightFeedbackTimerRef.current = null
+            }, data?.error ? 2200 : 1100)
+        })
+    }, [request])
+
+    useEffect(() => () => {
+        if (uiHighlightFeedbackTimerRef.current) clearTimeout(uiHighlightFeedbackTimerRef.current)
+    }, [])
+
+    const finishNodeDrop = useCallback((target) => {
+        if (!draggedNode || !target) return
+        suppressTreeClickUntilRef.current = Date.now() + 250
+        const sourceInstanceId = draggedNode.instanceId
+        const params = target.kind === 'scene'
+            ? { sourceInstanceId, mode: 'scene_root', sceneName: target.sceneName || '', dontDestroy: !!target.dontDestroy }
+            : { sourceInstanceId, targetInstanceId: target.instanceId, mode: target.mode }
+        cancelNodeDrag()
+        setMutationError('')
+        request('reparent', params, data => {
+            if (data?.error) {
+                setMutationError(`移动失败：${data.error}`)
+                return
+            }
+            const oldParentId = data?.oldParentInstanceId || null
+            const newParentId = data?.parentInstanceId || null
+            const counts = new Map()
+            if (oldParentId && data?.oldParentChildCount != null) counts.set(oldParentId, data.oldParentChildCount)
+            if (newParentId && data?.parentChildCount != null) counts.set(newParentId, data.parentChildCount)
+            if (counts.size > 0) {
+                setTree(prev => prev ? {
+                    ...prev,
+                    scenes: (prev.scenes || []).map(scene => ({
+                        ...scene,
+                        roots: [...counts].reduce((list, [id, count]) => patchNodeListChildCount(list, id, count), scene.roots),
+                    })),
+                    dontDestroy: [...counts].reduce((list, [id, count]) => patchNodeListChildCount(list, id, count), prev.dontDestroy),
+                } : prev)
+                setChildrenMap(prev => {
+                    const next = {}
+                    let changed = false
+                    for (const [key, list] of Object.entries(prev)) {
+                        const patched = [...counts].reduce((items, [id, count]) => patchNodeListChildCount(items, id, count), list)
+                        next[key] = patched
+                        if (patched !== list) changed = true
+                    }
+                    if (changed) childrenMapRef.current = next
+                    return changed ? next : prev
+                })
+            }
+
+            const refreshAffected = async () => {
+                // 同一 action 的响应监听器只有一个槽位，children 必须串行，避免两个父节点互相覆盖回调。
+                for (const parentId of new Set([oldParentId, newParentId].filter(Boolean))) {
+                    if (parentId === newParentId || Object.prototype.hasOwnProperty.call(childrenMapRef.current, parentId)) {
+                        await requestChildren(parentId, { dropOnError: true })
+                    }
+                }
+                if (!oldParentId || !newParentId) await new Promise(resolve => {
+                    request('scene_roots', {}, roots => {
+                        if (roots?.error) setMutationError(`刷新失败：${roots.error}`)
+                        else setTree(roots || { scenes: [], dontDestroy: [] })
+                        resolve()
+                    })
+                })
+                loadDetail(sourceInstanceId)
+            }
+            if (newParentId) {
+                setExpanded(prev => {
+                    const next = new Set(prev).add(newParentId)
+                    expandedRef.current = next
+                    return next
+                })
+            }
+            refreshAffected()
+        })
+    }, [draggedNode, request, cancelNodeDrag, requestChildren, loadDetail])
+
     // --- 接收 pendingLocate（来自 LuaUiInspector 的"Locate in Hierarchy"） ---
     useEffect(() => {
         if (!pendingLocate || !wsConnected) return
@@ -599,15 +737,24 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
     // --- 渲染：树根列表（按 Scene 分组 + DontDestroyOnLoad） ---
     const sceneSections = useMemo(() => {
         if (!tree) return []
-        const sections = (tree.scenes || []).map(s => ({ key: `scene:${s.name}`, label: `Scene: ${s.name}`, roots: s.roots || [] }))
+        const sections = (tree.scenes || []).map(s => ({ key: `scene:${s.name}`, label: `Scene: ${s.name}`, sceneName: s.name, roots: s.roots || [] }))
         if (tree.dontDestroy && tree.dontDestroy.length > 0) {
-            sections.push({ key: 'ddol', label: 'DontDestroyOnLoad', roots: tree.dontDestroy, isDdol: true })
+            sections.push({ key: 'ddol', label: 'DontDestroyOnLoad', sceneName: '', roots: tree.dontDestroy, isDdol: true })
         }
         return sections
     }, [tree])
 
     return (
         <div className="relative flex h-full" style={{ minHeight: '500px' }}
+            onPointerDownCapture={event => {
+                if (event.button === 1) event.preventDefault()
+            }}
+            onMouseDownCapture={event => {
+                if (event.button === 1) event.preventDefault()
+            }}
+            onAuxClickCapture={event => {
+                if (event.button === 1) event.preventDefault()
+            }}
             onMouseMove={e => { if (!isDragging.current) return; const r = e.currentTarget.getBoundingClientRect(); setLeftWidth(Math.min(Math.max(e.clientX - r.left, 200), 520)) }}
             onMouseUp={() => { isDragging.current = false }}
             onMouseLeave={() => { isDragging.current = false }}>
@@ -658,6 +805,7 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                 <div className="flex-1 overflow-y-auto p-2 text-xs">
                     {loadingTree && <div className="flex items-center justify-center gap-1.5 py-4 text-[var(--coffee-muted)]"><Loader2 size={14} className="animate-spin" /><span>加载场景...</span></div>}
                     {!loadingTree && tree?.error && <div className="px-2 py-1.5 mb-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-xs">{tree.error}</div>}
+                    {mutationError && <div className="px-2 py-1.5 mb-1 rounded bg-[var(--terracotta)]/10 text-[var(--terracotta)] text-[10px]">{mutationError}</div>}
 
                     {goSearchQuery.trim() && (
                         <GoSearchResults
@@ -684,6 +832,13 @@ function Hierarchy({ clients, selectedClient, pendingLocate, onPendingLocateCons
                             onToggle={toggleExpand}
                             onSelect={selectNode}
                             onSetActive={setGoActiveById}
+                            draggedNode={draggedNode}
+                            dropTarget={dropTarget}
+                            onDragStart={startNodeDrag}
+                            onDropTargetChange={setDropTarget}
+                            onDrop={finishNodeDrop}
+                            onHighlightUi={highlightUi}
+                            uiHighlightFeedback={uiHighlightFeedback}
                         />
                     ))}
                 </div>
@@ -835,14 +990,24 @@ function GoSearchResults({ query, results, info, loading, onLocate, onSetActive,
 // ============================================================================
 // 左侧场景分段 + 递归节点
 // ============================================================================
-function SceneSection({ section, selectedId, expanded, childrenMap, loadingChildren, filterText, onToggle, onSelect, onSetActive }) {
+function SceneSection({ section, selectedId, expanded, childrenMap, loadingChildren, filterText, onToggle, onSelect, onSetActive, draggedNode, dropTarget, onDragStart, onDropTargetChange, onDrop, onHighlightUi, uiHighlightFeedback }) {
     const [open, setOpen] = useState(true)
     const filterLower = filterText.toLowerCase()
+    const isSceneDrop = dropTarget?.kind === 'scene' && dropTarget?.key === section.key
 
     return (
         <div className="mb-1">
-            <button onClick={() => setOpen(!open)}
-                className="w-full flex items-center gap-1 px-1 py-0.5 rounded hover:bg-[var(--cream-warm)]/40 text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide">
+            <button onClick={() => { if (!draggedNode) setOpen(!open) }}
+                onPointerEnter={() => {
+                    if (draggedNode) onDropTargetChange({ kind: 'scene', key: section.key, sceneName: section.sceneName, dontDestroy: !!section.isDdol })
+                }}
+                onPointerUp={event => {
+                    if (!draggedNode || !isSceneDrop) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onDrop(dropTarget)
+                }}
+                className={`w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-semibold text-[var(--coffee-muted)] uppercase tracking-wide ${isSceneDrop ? 'bg-[var(--caramel)]/20 ring-1 ring-[var(--caramel)]' : 'hover:bg-[var(--cream-warm)]/40'}`}>
                 {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
                 <span>{section.label}</span>
                 <span className="ml-auto opacity-40">{section.roots.length}</span>
@@ -857,14 +1022,25 @@ function SceneSection({ section, selectedId, expanded, childrenMap, loadingChild
                     onToggle={onToggle}
                     onSelect={onSelect}
                     onSetActive={onSetActive}
+                    draggedNode={draggedNode}
+                    dropTarget={dropTarget}
+                    onDragStart={onDragStart}
+                    onDropTargetChange={onDropTargetChange}
+                    onDrop={onDrop}
+                    onHighlightUi={onHighlightUi}
+                    uiHighlightFeedback={uiHighlightFeedback}
                 />
             ))}
         </div>
     )
 }
 
-function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChildren, filterLower, onToggle, onSelect, onSetActive }) {
+function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChildren, filterLower, onToggle, onSelect, onSetActive, draggedNode, dropTarget, onDragStart, onDropTargetChange, onDrop, onHighlightUi, uiHighlightFeedback }) {
     const rowRef = useRef(null)
+    const holdTimerRef = useRef(null)
+    const hoverExpandTimerRef = useRef(null)
+    const pointerStartRef = useRef(null)
+    const dragStartedRef = useRef(false)
     const isExpanded = expanded.has(node.instanceId)
     const hasChildren = (node.childCount ?? 0) > 0
     const children = childrenMap[node.instanceId]
@@ -884,18 +1060,116 @@ function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChild
         return () => clearTimeout(timer)
     }, [isSelected, filterLower])
 
+    useEffect(() => () => {
+        if (holdTimerRef.current) clearTimeout(holdTimerRef.current)
+        if (hoverExpandTimerRef.current) clearTimeout(hoverExpandTimerRef.current)
+    }, [])
+
+    const clearHoldTimer = () => {
+        if (holdTimerRef.current) clearTimeout(holdTimerRef.current)
+        holdTimerRef.current = null
+    }
+
+    const updateNodeDropTarget = event => {
+        if (!draggedNode || draggedNode.instanceId === node.instanceId) return
+        event.stopPropagation()
+        const rect = event.currentTarget.getBoundingClientRect()
+        const ratio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5
+        // 同层排序是默认操作：整行上/下半区分别代表前插/后插。
+        // 只有明确移动到最右侧的“子级”热区才改变父节点，避免窄行中误判成 child。
+        const childZoneLeft = Math.max(rect.left + 80, rect.right - 56)
+        const mode = event.clientX >= childZoneLeft ? 'child' : ratio < 0.5 ? 'before' : 'after'
+        if (mode === 'child' && hasChildren && !isExpanded && !hoverExpandTimerRef.current) {
+            hoverExpandTimerRef.current = setTimeout(() => {
+                hoverExpandTimerRef.current = null
+                onToggle(node)
+            }, 600)
+        } else if (mode !== 'child' && hoverExpandTimerRef.current) {
+            clearTimeout(hoverExpandTimerRef.current)
+            hoverExpandTimerRef.current = null
+        }
+        onDropTargetChange(prev => (
+            prev?.kind === 'node' && prev.instanceId === node.instanceId && prev.mode === mode
+                ? prev
+                : { kind: 'node', instanceId: node.instanceId, mode }
+        ))
+    }
+
+    const isDropBefore = dropTarget?.kind === 'node' && dropTarget.instanceId === node.instanceId && dropTarget.mode === 'before'
+    const isDropAfter = dropTarget?.kind === 'node' && dropTarget.instanceId === node.instanceId && dropTarget.mode === 'after'
+    const isDropChild = dropTarget?.kind === 'node' && dropTarget.instanceId === node.instanceId && dropTarget.mode === 'child'
+    const isDragged = draggedNode?.instanceId === node.instanceId
+    const highlightFeedback = uiHighlightFeedback?.instanceId === node.instanceId ? uiHighlightFeedback : null
+
     if (filterLower && !matchSelf && (!filteredChildren || filteredChildren.length === 0)) {
         return null
     }
 
     return (
         <div>
-            <div className={`group/tree-node flex items-center gap-1 py-0.5 pr-1 rounded text-xs cursor-pointer select-none ${
-                isSelected ? 'bg-[var(--caramel)]/20 text-[var(--coffee-deep)]' : 'hover:bg-[var(--cream-warm)]/50 text-[var(--coffee-deep)]'
-            }`}
+            <div className={`relative group/tree-node flex items-center gap-1 py-0.5 pr-1 rounded text-xs cursor-pointer select-none ${
+                isDropChild ? 'bg-[var(--caramel)]/25 ring-1 ring-inset ring-[var(--caramel)]' : isSelected ? 'bg-[var(--caramel)]/20 text-[var(--coffee-deep)]' : 'hover:bg-[var(--cream-warm)]/50 text-[var(--coffee-deep)]'
+            } ${isDragged ? 'opacity-45' : ''} ${highlightFeedback?.status === 'success' ? 'ring-1 ring-inset ring-[var(--sage)] bg-[var(--sage-soft)]/35' : ''} ${highlightFeedback?.status === 'error' ? 'ring-1 ring-inset ring-[var(--terracotta)] bg-[var(--terracotta)]/10' : ''}`}
                 ref={rowRef}
                 style={{ paddingLeft: 4 + depth * 12 }}
-                onClick={() => onSelect(node.instanceId)}>
+                onClick={() => onSelect(node.instanceId)}
+                onMouseDown={event => {
+                    if (event.button === 1) {
+                        event.preventDefault()
+                        event.stopPropagation()
+                    }
+                }}
+                onAuxClick={event => {
+                    if (event.button !== 1) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onHighlightUi(node.instanceId)
+                }}
+                onPointerDown={event => {
+                    if (event.button === 1) {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        return
+                    }
+                    if (event.button !== 0 || event.target.closest('button')) return
+                    pointerStartRef.current = { x: event.clientX, y: event.clientY }
+                    dragStartedRef.current = false
+                    clearHoldTimer()
+                    holdTimerRef.current = setTimeout(() => {
+                        holdTimerRef.current = null
+                        dragStartedRef.current = true
+                        onDragStart(node)
+                    }, HIERARCHY_DRAG_HOLD_MS)
+                }}
+                onPointerMove={event => {
+                    if (holdTimerRef.current && pointerStartRef.current) {
+                        const dx = event.clientX - pointerStartRef.current.x
+                        const dy = event.clientY - pointerStartRef.current.y
+                        if (Math.hypot(dx, dy) > 6) clearHoldTimer()
+                    }
+                    updateNodeDropTarget(event)
+                }}
+                onPointerEnter={updateNodeDropTarget}
+                onPointerUp={event => {
+                    clearHoldTimer()
+                    pointerStartRef.current = null
+                    if (!draggedNode || !dropTarget || isDragged) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onDrop(dropTarget)
+                }}
+                onPointerLeave={() => {
+                    if (!dragStartedRef.current) clearHoldTimer()
+                    if (hoverExpandTimerRef.current) clearTimeout(hoverExpandTimerRef.current)
+                    hoverExpandTimerRef.current = null
+                }}>
+                {isDropBefore && <span className="absolute left-0 right-0 top-0 h-0.5 bg-[var(--caramel)] rounded-full pointer-events-none" />}
+                {isDropAfter && <span className="absolute left-0 right-0 bottom-0 h-0.5 bg-[var(--caramel)] rounded-full pointer-events-none" />}
+                {draggedNode && !isDragged && (
+                    <span className={`absolute right-0 top-0 bottom-0 z-10 w-14 flex items-center justify-center rounded-r text-[8px] font-semibold pointer-events-none transition-colors ${isDropChild ? 'bg-[var(--caramel)] text-white' : 'bg-[var(--cream-warm)]/90 text-[var(--coffee-muted)]/70'}`}>
+                        子级
+                    </span>
+                )}
                 {hasChildren ? (
                     <button onClick={(e) => { e.stopPropagation(); onToggle(node) }} className="flex-shrink-0 p-0 text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]">
                         {isLoading ? <Loader2 size={10} className="animate-spin" /> : (isExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />)}
@@ -903,9 +1177,14 @@ function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChild
                 ) : (
                     <span className="w-2.5 flex-shrink-0" />
                 )}
-                <span className={`truncate ${node.activeInHierarchy === false ? 'opacity-40' : ''}`} title={`#${node.instanceId} ${node.name}`}>
+                <span className={`truncate ${node.activeInHierarchy === false ? 'opacity-40' : ''}`} title={`#${node.instanceId} ${node.name} · 长按拖拽 · 中键在游戏中高亮`}>
                     {node.name}
                 </span>
+                {highlightFeedback && (
+                    <span className={`absolute right-6 top-1/2 -translate-y-1/2 z-10 inline-flex items-center justify-center w-4 h-4 rounded-full bg-white/90 shadow-sm ${highlightFeedback.status === 'success' ? 'text-[var(--sage)]' : highlightFeedback.status === 'error' ? 'text-[var(--terracotta)]' : 'text-[var(--caramel)]'}`} title={highlightFeedback.message}>
+                        {highlightFeedback.status === 'pending' ? <Loader2 size={9} className="animate-spin" /> : highlightFeedback.status === 'success' ? <Check size={9} /> : <AlertCircle size={9} />}
+                    </span>
+                )}
                 <button
                     type="button"
                     onClick={e => {
@@ -931,6 +1210,13 @@ function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChild
                             onToggle={onToggle}
                             onSelect={onSelect}
                             onSetActive={onSetActive}
+                            draggedNode={draggedNode}
+                            dropTarget={dropTarget}
+                            onDragStart={onDragStart}
+                            onDropTargetChange={onDropTargetChange}
+                            onDrop={onDrop}
+                            onHighlightUi={onHighlightUi}
+                            uiHighlightFeedback={uiHighlightFeedback}
                         />
                     ))}
                 </>

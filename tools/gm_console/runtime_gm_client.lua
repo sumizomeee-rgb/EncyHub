@@ -1918,6 +1918,7 @@ local function StartRuntimeGM()
     local LuaHierarchy = {}
     LuaHierarchy._goCache = setmetatable({}, { __mode = "v" })  -- instanceId(number) → GameObject (弱引用，GO 销毁后自动回收)
     LuaHierarchy._materialRefs = setmetatable({}, { __mode = "v" }) -- instanceId(number) → Material
+    LuaHierarchy._highlights = {} -- instanceId(number) → { outline, expiresAt, nextToggleAt, visible }
 
     origin_print("[RuntimeGM] LuaHierarchy module initialized")
 
@@ -1953,6 +1954,9 @@ local function StartRuntimeGM()
 
     local function hierNodeOf(go)
         if not go then return nil end
+        local goName = ""
+        pcall(function() goName = tostring(go.name) end)
+        if goName:find("^___EncyHub.*Highlight___") then return nil end
         hierCacheGo(go)
         local n = { instanceId = go:GetInstanceID(), name = go.name }
         pcall(function() n.active = go.activeSelf end)
@@ -2217,7 +2221,22 @@ local function StartRuntimeGM()
             go = hierFindGo(packet.goInstanceId)
         elseif packet.uiName and packet.uiName ~= "" then
             local luaUi
-            pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(packet.uiName) end)
+            if packet.uiId ~= nil and tostring(packet.uiId) ~= "" then
+                local targetId = tostring(packet.uiId)
+                pcall(function()
+                    local allList = CS.XUiManager.Instance:GetAllList()
+                    for i = 0, allList.Count - 1 do
+                        local xui = allList[i]
+                        if xui and tostring(xui.UUID) == targetId
+                            and tostring(xui.UiData.UiName) == tostring(packet.uiName) then
+                            luaUi = xui.UiProxy and xui.UiProxy.UiLuaTable
+                            break
+                        end
+                    end
+                end)
+            else
+                pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(packet.uiName) end)
+            end
             if not luaUi then return { error = "UI not found: " .. tostring(packet.uiName) } end
             local target = luaUi
             local path = packet.path or ""
@@ -2988,6 +3007,7 @@ local function StartRuntimeGM()
         if query == "" then return { error = "查询为空" } end
 
         local scope = packet.scope or "all"
+        local scopeId = packet.scopeId
         local includeInactive = packet.includeInactive ~= false
         local maxObjects = math.max(1, math.min(tonumber(packet.maxObjects) or HIERARCHY_SEARCH_HARD_MAX_OBJECTS, HIERARCHY_SEARCH_HARD_MAX_OBJECTS))
         local qLower = string.lower(query)
@@ -3144,6 +3164,309 @@ local function StartRuntimeGM()
         local actual = enabled
         pcall(function() actual = comp.enabled end)
         return { success = true, compIndex = compIndex, enabled = actual }
+    end
+
+    local function hierDestroyHighlight(instanceId, record)
+        record = record or LuaHierarchy._highlights[instanceId]
+        LuaHierarchy._highlights[instanceId] = nil
+        if not record then return end
+        for _, renderer in ipairs(record.renderers or {}) do
+            if renderer then pcall(function() renderer.enabled = false end) end
+        end
+        for _, helper in ipairs(record.helpers or {}) do
+            if helper then pcall(function() CS.UnityEngine.Object.Destroy(helper) end) end
+        end
+        for _, material in ipairs(record.materials or {}) do
+            if material then pcall(function() CS.UnityEngine.Object.Destroy(material) end) end
+        end
+    end
+
+    function LuaHierarchy.ClearHighlights()
+        local pending = LuaHierarchy._highlights
+        LuaHierarchy._highlights = {}
+        for instanceId, record in pairs(pending) do hierDestroyHighlight(instanceId, record) end
+    end
+
+    local function hierCreateUiBar(canvasTransform, layer)
+        local bar = CS.UnityEngine.GameObject("___EncyHubUiHighlight___", typeof(CS.UnityEngine.RectTransform))
+        bar.hideFlags = CS.UnityEngine.HideFlags.HideAndDontSave
+        bar.tag = "Untagged"
+        bar.layer = layer
+        local rect = bar:GetComponent(typeof(CS.UnityEngine.RectTransform))
+        rect:SetParent(canvasTransform, false)
+        rect.anchorMin = CS.UnityEngine.Vector2(0.5, 0.5)
+        rect.anchorMax = CS.UnityEngine.Vector2(0.5, 0.5)
+        rect.pivot = CS.UnityEngine.Vector2(0.5, 0.5)
+        rect:SetAsLastSibling()
+        local image = bar:AddComponent(typeof(CS.UnityEngine.UI.Image))
+        image.color = CS.UnityEngine.Color(1.0, 0.68, 0.12, 0.95)
+        image.raycastTarget = false
+        pcall(function() image.maskable = false end)
+        return bar, rect, image
+    end
+
+    local function hierPositionUiBars(record)
+        local corners = CS.System.Array.CreateInstance(typeof(CS.UnityEngine.Vector3), 4)
+        record.targetRect:GetWorldCorners(corners)
+        local localCorners = {}
+        for i = 0, 3 do localCorners[i + 1] = record.canvasRect:InverseTransformPoint(corners[i]) end
+        for i = 1, 4 do
+            local a = localCorners[i]
+            local b = localCorners[(i % 4) + 1]
+            local dx, dy = b.x - a.x, b.y - a.y
+            local rect = record.uiRects[i]
+            rect.anchoredPosition = CS.UnityEngine.Vector2((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
+            rect.sizeDelta = CS.UnityEngine.Vector2(math.sqrt(dx * dx + dy * dy), 3.0)
+            rect.localRotation = CS.UnityEngine.Quaternion.Euler(0, 0, CS.UnityEngine.Mathf.Atan2(dy, dx) * CS.UnityEngine.Mathf.Rad2Deg)
+        end
+    end
+
+    local function hierSetLineBounds(line, bounds)
+        local min, max = bounds.min, bounds.max
+        local p = {
+            CS.UnityEngine.Vector3(min.x, min.y, min.z), CS.UnityEngine.Vector3(max.x, min.y, min.z),
+            CS.UnityEngine.Vector3(max.x, max.y, min.z), CS.UnityEngine.Vector3(min.x, max.y, min.z),
+            CS.UnityEngine.Vector3(min.x, min.y, min.z), CS.UnityEngine.Vector3(min.x, min.y, max.z),
+            CS.UnityEngine.Vector3(max.x, min.y, max.z), CS.UnityEngine.Vector3(max.x, min.y, min.z),
+            CS.UnityEngine.Vector3(max.x, min.y, max.z), CS.UnityEngine.Vector3(max.x, max.y, max.z),
+            CS.UnityEngine.Vector3(max.x, max.y, min.z), CS.UnityEngine.Vector3(max.x, max.y, max.z),
+            CS.UnityEngine.Vector3(min.x, max.y, max.z), CS.UnityEngine.Vector3(min.x, max.y, min.z),
+            CS.UnityEngine.Vector3(min.x, max.y, max.z), CS.UnityEngine.Vector3(min.x, min.y, max.z),
+        }
+        line.positionCount = #p
+        for i = 1, #p do line:SetPosition(i - 1, p[i]) end
+        local width = math.max(0.01, math.min(0.08, bounds.size.magnitude * 0.006))
+        line.startWidth, line.endWidth = width, width
+    end
+
+    local function hierReadWorldBounds(go)
+        local renderers
+        pcall(function() renderers = go:GetComponentsInChildren(typeof(CS.UnityEngine.Renderer), false) end)
+        local bounds, found
+        if renderers then
+            for i = 0, renderers.Length - 1 do
+                local renderer = renderers[i]
+                local visible = false
+                pcall(function() visible = renderer.enabled and renderer.gameObject.activeInHierarchy end)
+                if visible then
+                    if not found then bounds = renderer.bounds; found = true else bounds:Encapsulate(renderer.bounds) end
+                end
+            end
+        end
+        if not found then bounds = CS.UnityEngine.Bounds(go.transform.position, CS.UnityEngine.Vector3(0.22, 0.22, 0.22)) end
+        return bounds, found
+    end
+
+    local function hierCreateWorldMarker(go)
+        local helper = CS.UnityEngine.GameObject("___EncyHubWorldHighlight___")
+        helper.hideFlags = CS.UnityEngine.HideFlags.HideAndDontSave
+        helper.tag = "Untagged"
+        helper.layer = go.layer
+        local line = helper:AddComponent(typeof(CS.UnityEngine.LineRenderer))
+        line.useWorldSpace = true
+        line.loop = false
+        line.startColor = CS.UnityEngine.Color(1.0, 0.68, 0.12, 0.98)
+        line.endColor = line.startColor
+        line.shadowCastingMode = CS.UnityEngine.Rendering.ShadowCastingMode.Off
+        line.receiveShadows = false
+        local shader = CS.UnityEngine.Shader.Find("Sprites/Default") or CS.UnityEngine.Shader.Find("UI/Default")
+        if not shader then error("Highlight line shader not found") end
+        local material = CS.UnityEngine.Material(shader)
+        material.color = line.startColor
+        line.material = material
+        local record = { target = go, helpers = { helper }, renderers = { line }, materials = { material }, mode = "bounds" }
+        record.update = function()
+            local bounds, hasRenderer = hierReadWorldBounds(go)
+            record.mode = hasRenderer and "bounds" or "transform"
+            hierSetLineBounds(line, bounds)
+        end
+        record.update()
+        return record
+    end
+
+    local function hierCreateUiMarker(go, targetRect)
+        local canvas = go:GetComponentInParent(typeof(CS.UnityEngine.Canvas))
+        if not canvas then error("UI Canvas not found") end
+        local canvasRect = canvas:GetComponent(typeof(CS.UnityEngine.RectTransform))
+        if not canvasRect then error("Canvas has no RectTransform") end
+        local record = { target = go, targetRect = targetRect, canvasRect = canvasRect, helpers = {}, renderers = {}, materials = {}, uiRects = {}, mode = "ui_rect" }
+        for i = 1, 4 do
+            local helper, rect, image = hierCreateUiBar(canvasRect, go.layer)
+            record.helpers[i] = helper
+            record.uiRects[i] = rect
+            record.renderers[i] = image
+        end
+        record.update = function() hierPositionUiBars(record) end
+        record.update()
+        return record
+    end
+
+    function LuaHierarchy.UpdateHighlights()
+        if not next(LuaHierarchy._highlights) then return end
+        local now = 0
+        pcall(function() now = CS.UnityEngine.Time.realtimeSinceStartup end)
+        local expired = {}
+        for instanceId, record in pairs(LuaHierarchy._highlights) do
+            local alive = false
+            local ok = pcall(function()
+                local _ = record.target.name
+                record.update()
+                alive = true
+            end)
+            if not ok or not alive or now >= (record.expiresAt or 0) then
+                expired[#expired + 1] = { instanceId, record }
+            elseif now >= (record.nextToggleAt or 0) then
+                record.visible = not record.visible
+                record.nextToggleAt = now + 0.14
+                for _, renderer in ipairs(record.renderers or {}) do
+                    if renderer then pcall(function() renderer.enabled = record.visible end) end
+                end
+            end
+        end
+        for _, item in ipairs(expired) do hierDestroyHighlight(item[1], item[2]) end
+    end
+
+    function LuaHierarchy.HighlightUi(packet)
+        local go = hierFindGo(packet.instanceId or packet.goInstanceId)
+        if not go then return { error = "GameObject not found" } end
+        local instanceId = go:GetInstanceID()
+        local now = 0
+        pcall(function() now = CS.UnityEngine.Time.realtimeSinceStartup end)
+        local existing = LuaHierarchy._highlights[instanceId]
+        if existing then
+            local alive = pcall(function() existing.update() end)
+            if alive then
+                existing.visible = true
+                existing.expiresAt = now + 1.25
+                existing.nextToggleAt = now + 0.14
+                for _, renderer in ipairs(existing.renderers or {}) do
+                    if renderer then pcall(function() renderer.enabled = true end) end
+                end
+                return { success = true, instanceId = instanceId, refreshed = true, mode = existing.mode }
+            end
+            hierDestroyHighlight(instanceId, existing)
+        end
+
+        local rectTransform
+        pcall(function() rectTransform = go:GetComponent(typeof(CS.UnityEngine.RectTransform)) end)
+        local record
+        local ok, err = pcall(function()
+            if rectTransform then record = hierCreateUiMarker(go, rectTransform)
+            else record = hierCreateWorldMarker(go) end
+        end)
+        if not ok or not record then
+            if record then hierDestroyHighlight(instanceId, record) end
+            return { error = "Failed to create locator: " .. tostring(err) }
+        end
+        record.expiresAt = now + 1.25
+        record.nextToggleAt = now + 0.14
+        record.visible = true
+        LuaHierarchy._highlights[instanceId] = record
+        return { success = true, instanceId = instanceId, mode = record.mode }
+    end
+
+    function LuaHierarchy.Reparent(packet)
+        local source = hierFindGo(packet.sourceInstanceId or packet.instanceId)
+        if not source then return { error = "Source GameObject not found" } end
+        local sourceTransform = source.transform
+        local mode = tostring(packet.mode or "child")
+        local target
+        local targetTransform
+        local destinationScene
+        if mode ~= "scene_root" then
+            target = hierFindGo(packet.targetInstanceId)
+            if not target then return { error = "Target GameObject not found" } end
+            if target:GetInstanceID() == source:GetInstanceID() then return { error = "Cannot parent GameObject to itself" } end
+            targetTransform = target.transform
+            local cursor = targetTransform
+            while cursor do
+                if cursor == sourceTransform then return { error = "Cannot parent GameObject to its descendant" } end
+                cursor = cursor.parent
+            end
+        elseif packet.dontDestroy ~= true then
+            local sceneName = tostring(packet.sceneName or "")
+            local valid = false
+            pcall(function()
+                destinationScene = CS.UnityEngine.SceneManagement.SceneManager.GetSceneByName(sceneName)
+                valid = destinationScene:IsValid() and destinationScene.isLoaded
+            end)
+            if not valid then return { error = "Scene not found or not loaded: " .. sceneName } end
+        end
+
+        local oldParent
+        local oldScene
+        local oldParentInstanceId
+        local oldSiblingIndex = 0
+        pcall(function()
+            oldParent = sourceTransform.parent
+            oldScene = source.scene
+            oldSiblingIndex = sourceTransform:GetSiblingIndex()
+            if oldParent then oldParentInstanceId = oldParent.gameObject:GetInstanceID() end
+        end)
+
+        local ok, err = pcall(function()
+            if mode == "child" then
+                sourceTransform:SetParent(targetTransform, true)
+                sourceTransform:SetAsLastSibling()
+            elseif mode == "before" or mode == "after" then
+                local parent = targetTransform.parent
+                local sourceParent = sourceTransform.parent
+                local sourceIndex = sourceTransform:GetSiblingIndex()
+                local targetIndex = targetTransform:GetSiblingIndex()
+                local sameParent = sourceParent == parent
+                local desiredIndex = targetIndex
+                if mode == "before" and sameParent and sourceIndex < targetIndex then
+                    desiredIndex = targetIndex - 1
+                elseif mode == "after" then
+                    desiredIndex = targetIndex + 1
+                    if sameParent and sourceIndex < targetIndex then desiredIndex = targetIndex end
+                end
+                sourceTransform:SetParent(parent, true)
+                if not parent and tostring(source.scene.name) ~= tostring(target.scene.name) then
+                    if tostring(target.scene.name) == "DontDestroyOnLoad" then
+                        CS.UnityEngine.Object.DontDestroyOnLoad(source)
+                    else
+                        CS.UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(source, target.scene)
+                    end
+                end
+                sourceTransform:SetSiblingIndex(desiredIndex)
+            elseif mode == "scene_root" then
+                sourceTransform:SetParent(nil, true)
+                if packet.dontDestroy == true then
+                    CS.UnityEngine.Object.DontDestroyOnLoad(source)
+                else
+                    CS.UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(source, destinationScene)
+                end
+                sourceTransform:SetAsLastSibling()
+            else
+                error("Unsupported reparent mode: " .. mode)
+            end
+        end)
+        if not ok then
+            pcall(function()
+                sourceTransform:SetParent(oldParent, true)
+                if not oldParent and oldScene and oldScene:IsValid() and oldScene.isLoaded then
+                    CS.UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(source, oldScene)
+                end
+                sourceTransform:SetSiblingIndex(oldSiblingIndex)
+            end)
+            return { error = tostring(err) }
+        end
+
+        local result = LuaHierarchy.Locate({ instanceId = source:GetInstanceID() })
+        result.success = true
+        result.oldParentInstanceId = oldParentInstanceId
+        result.oldSiblingIndex = oldSiblingIndex
+        pcall(function()
+            result.siblingIndex = sourceTransform:GetSiblingIndex()
+            if oldParent then result.oldParentChildCount = oldParent.childCount end
+            if sourceTransform.parent then
+                result.parentInstanceId = sourceTransform.parent.gameObject:GetInstanceID()
+                result.parentChildCount = sourceTransform.parent.childCount
+            end
+            result.sceneName = tostring(source.scene.name)
+        end)
+        return result
     end
 
     function LuaHierarchy.Search(packet)
@@ -3450,6 +3773,10 @@ local function StartRuntimeGM()
             result = LuaHierarchy.SetGameObjectActive(packet)
         elseif action == "set_component_enabled" then
             result = LuaHierarchy.SetComponentEnabled(packet)
+        elseif action == "highlight_ui" then
+            result = LuaHierarchy.HighlightUi(packet)
+        elseif action == "reparent" then
+            result = LuaHierarchy.Reparent(packet)
         elseif action == "search" then
             result = LuaHierarchy.Search(packet)
         else
@@ -3579,80 +3906,83 @@ local function StartRuntimeGM()
 
     origin_print("[RuntimeGM] LuaUiInspector module initialized")
 
+    local function inspectorGetLuaUi(uiName, uiId)
+        local targetId = uiId ~= nil and tostring(uiId) or nil
+        if targetId and targetId ~= "" then
+            local ok, allList = pcall(function() return CS.XUiManager.Instance:GetAllList() end)
+            if ok and allList then
+                for i = 0, allList.Count - 1 do
+                    local matched, luaUi = false, nil
+                    pcall(function()
+                        local xui = allList[i]
+                        matched = xui
+                            and tostring(xui.UUID) == targetId
+                            and (not uiName or uiName == "" or tostring(xui.UiData.UiName) == tostring(uiName))
+                        if matched and xui.UiProxy then luaUi = xui.UiProxy.UiLuaTable end
+                    end)
+                    if matched then return luaUi, allList[i] end
+                end
+            end
+            return nil, nil
+        end
+
+        local luaUi = nil
+        pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(uiName) end)
+        return luaUi, nil
+    end
+
+    local function inspectorUiKey(uiName, uiId)
+        if uiId ~= nil and tostring(uiId) ~= "" then return "#" .. tostring(uiId) end
+        return tostring(uiName or "")
+    end
+
     function LuaUiInspector.GetOpenUiList()
         local result = {}
-        local seen = {}
-        local activeMap = {}
 
         local allOk, allList = pcall(function() return CS.XUiManager.Instance:GetAllList() end)
         if allOk and allList then
             for i = 0, allList.Count - 1 do
                 pcall(function()
                     local xui = allList[i]
-                    local uiName = tostring(xui.UiData.UiName)
-                    activeMap[uiName] = xui.IsEnable
+                    local luaUi = xui and xui.UiProxy and xui.UiProxy.UiLuaTable
+                    if luaUi and xui.UiData then
+                        result[#result + 1] = {
+                            id = tostring(xui.UUID),
+                            name = tostring(xui.UiData.UiName),
+                            active = xui.IsEnable == true,
+                            sortingOrder = tonumber(xui.SortingOrder) or 0,
+                            order = i + 1,
+                        }
+                    end
                 end)
             end
         end
 
-        local function pushUi(uiName)
-            uiName = tostring(uiName or "")
-            if uiName == "" or seen[uiName] then return end
-            seen[uiName] = true
-            local luaUi = nil
-            pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(uiName) end)
-            if not luaUi then return end
-            result[#result + 1] = {
-                name = uiName,
-                active = activeMap[uiName] ~= false,
-            }
+        if not allOk or not allList then
+            return { error = "Failed to get UI list: " .. tostring(allList) }
         end
 
-        local stackOk, stack = pcall(function() return XLuaUiManager:GetUiStack() end)
-        if stackOk and stack then
-            for i = 0, stack.Count - 1 do
-                pcall(function()
-                    local item = stack[i]
-                    if item and item.Name then pushUi(item.Name) end
-                end)
-            end
-        end
-
-        if #result == 0 then
-            if not allOk or not allList then
-                return { error = "Failed to get UI list: " .. tostring(allList) }
-            end
-            for i = 0, allList.Count - 1 do
-                pcall(function()
-                    local xui = allList[i]
-                    if xui and xui.UiData then pushUi(xui.UiData.UiName) end
-                end)
-            end
-        end
-
-        -- 兜底补齐：保留 GetUiStack 的真实栈顺序，同时追加栈里缺失但仍打开的 UI。
-        if allOk and allList then
-            for i = 0, allList.Count - 1 do
-                pcall(function()
-                    local xui = allList[i]
-                    if xui and xui.UiData then pushUi(xui.UiData.UiName) end
-                end)
-            end
-        end
-
+        -- 顶层 UI 优先；同一 sortingOrder 下新创建的实例优先。
+        table.sort(result, function(a, b)
+            if a.sortingOrder ~= b.sortingOrder then return a.sortingOrder > b.sortingOrder end
+            return a.order > b.order
+        end)
         for i, info in ipairs(result) do info.order = i end
 
         -- 清理已关闭 UI 的 _OriginalValues
-        local validNames = {}
-        for _, info in ipairs(result) do validNames[info.name] = true end
-        for uiName in pairs(LuaUiInspector._OriginalValues) do
-            if not validNames[uiName] then LuaUiInspector._OriginalValues[uiName] = nil end
+        local validKeys = {}
+        for _, info in ipairs(result) do
+            validKeys[inspectorUiKey(info.name, info.id)] = true
+            validKeys[info.name] = true -- 兼容未携带 uiId 的旧前端
+        end
+        for uiKey in pairs(LuaUiInspector._OriginalValues) do
+            if not validKeys[uiKey] then LuaUiInspector._OriginalValues[uiKey] = nil end
         end
         return result
     end
 
-    function LuaUiInspector.GetUiTree(uiName)
-        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+    function LuaUiInspector.GetUiTree(uiName, uiId)
+        local luaUi = inspectorGetLuaUi(uiName, uiId)
         if not luaUi then return { error = "UI not found: " .. tostring(uiName) } end
 
         local function buildChildren(node, basePath)
@@ -3675,11 +4005,11 @@ local function StartRuntimeGM()
             return children
         end
 
-        return { name = uiName, children = buildChildren(luaUi, "") }
+        return { name = uiName, id = uiId, children = buildChildren(luaUi, "") }
     end
 
-    function LuaUiInspector.GetNodeData(uiName, path, depth)
-        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+    function LuaUiInspector.GetNodeData(uiName, path, depth, uiId)
+        local luaUi = inspectorGetLuaUi(uiName, uiId)
         if not luaUi then return { error = "UI not found" } end
         depth = depth or 3
         local target = luaUi
@@ -3695,7 +4025,7 @@ local function StartRuntimeGM()
         end
         local fields = {}
         local visited = { [target] = true }
-        local originals = LuaUiInspector._OriginalValues[uiName] or {}
+        local originals = LuaUiInspector._OriginalValues[inspectorUiKey(uiName, uiId)] or {}
         local instanceKeys = {}
         local allKeys = inspectorGetSortedKeys(target)
         local totalKeys = #allKeys
@@ -3743,8 +4073,8 @@ local function StartRuntimeGM()
         return result
     end
 
-    function LuaUiInspector.SetValue(uiName, path, value, valueType)
-        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+    function LuaUiInspector.SetValue(uiName, path, value, valueType, uiId)
+        local luaUi = inspectorGetLuaUi(uiName, uiId)
         if not luaUi then return { success = false, error = "UI not found" } end
         if not path or path == "" then return { success = false, error = "Path is empty" } end
         local typedValue = value
@@ -3760,18 +4090,20 @@ local function StartRuntimeGM()
         end
         local parent, lastKey, oldValue = inspectorResolvePath(luaUi, path)
         if not parent or not lastKey then return { success = false, error = "Path not found" } end
-        LuaUiInspector._OriginalValues[uiName] = LuaUiInspector._OriginalValues[uiName] or {}
-        if LuaUiInspector._OriginalValues[uiName][path] == nil then
-            LuaUiInspector._OriginalValues[uiName][path] = oldValue
+        local uiKey = inspectorUiKey(uiName, uiId)
+        LuaUiInspector._OriginalValues[uiKey] = LuaUiInspector._OriginalValues[uiKey] or {}
+        if LuaUiInspector._OriginalValues[uiKey][path] == nil then
+            LuaUiInspector._OriginalValues[uiKey][path] = oldValue
         end
         parent[lastKey] = typedValue
         return { success = true, path = path, oldValue = oldValue, newValue = typedValue }
     end
 
-    function LuaUiInspector.RevertValue(uiName, path)
-        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+    function LuaUiInspector.RevertValue(uiName, path, uiId)
+        local luaUi = inspectorGetLuaUi(uiName, uiId)
         if not luaUi then return { success = false, error = "UI not found" } end
-        local originals = LuaUiInspector._OriginalValues[uiName]
+        local uiKey = inspectorUiKey(uiName, uiId)
+        local originals = LuaUiInspector._OriginalValues[uiKey]
         if not originals or originals[path] == nil then
             return { success = false, error = "No original value for: " .. path }
         end
@@ -3780,26 +4112,27 @@ local function StartRuntimeGM()
         local originalValue = originals[path]
         parent[lastKey] = originalValue
         originals[path] = nil
-        if next(originals) == nil then LuaUiInspector._OriginalValues[uiName] = nil end
+        if next(originals) == nil then LuaUiInspector._OriginalValues[uiKey] = nil end
         return { success = true, path = path, revertedTo = originalValue }
     end
 
-    function LuaUiInspector.RevertAll(uiName)
-        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+    function LuaUiInspector.RevertAll(uiName, uiId)
+        local luaUi = inspectorGetLuaUi(uiName, uiId)
         if not luaUi then return { success = false, error = "UI not found" } end
-        local originals = LuaUiInspector._OriginalValues[uiName]
+        local uiKey = inspectorUiKey(uiName, uiId)
+        local originals = LuaUiInspector._OriginalValues[uiKey]
         if not originals then return { success = true, count = 0 } end
         local count = 0
         for path, originalValue in pairs(originals) do
             local parent, lastKey = inspectorResolvePath(luaUi, path)
             if parent and lastKey then parent[lastKey] = originalValue; count = count + 1 end
         end
-        LuaUiInspector._OriginalValues[uiName] = nil
+        LuaUiInspector._OriginalValues[uiKey] = nil
         return { success = true, count = count }
     end
 
-    function LuaUiInspector.CallMethod(uiName, path, methodName)
-        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+    function LuaUiInspector.CallMethod(uiName, path, methodName, uiId)
+        local luaUi = inspectorGetLuaUi(uiName, uiId)
         if not luaUi then return { error = "UI not found" } end
         -- 定位到目标节点
         local target = luaUi
@@ -3840,8 +4173,8 @@ local function StartRuntimeGM()
     end
 
     -- 辅助：沿路径获取 userdata 值及其 GameObject
-    local function inspectorGetGoFromPath(uiName, path)
-        local luaUi = XLuaUiManager.GetTopLuaUi(uiName)
+    local function inspectorGetGoFromPath(uiName, path, uiId)
+        local luaUi = inspectorGetLuaUi(uiName, uiId)
         if not luaUi then return nil, nil end
         local _, _, value = inspectorResolvePath(luaUi, path)
         if not value or type(value) ~= "userdata" then return nil, nil end
@@ -3855,24 +4188,24 @@ local function StartRuntimeGM()
         return value, go
     end
 
-    function LuaUiInspector.ToggleGoVisible(uiName, path)
-        local _, go = inspectorGetGoFromPath(uiName, path)
+    function LuaUiInspector.ToggleGoVisible(uiName, path, uiId)
+        local _, go = inspectorGetGoFromPath(uiName, path, uiId)
         if not go then return { error = "GameObject not found" } end
         local ok, err = pcall(function() go:SetActive(not go.activeSelf) end)
         if not ok then return { error = tostring(err) } end
         return { success = true, activeSelf = go.activeSelf }
     end
 
-    function LuaUiInspector.SetGoText(uiName, path, text)
-        local value, _ = inspectorGetGoFromPath(uiName, path)
+    function LuaUiInspector.SetGoText(uiName, path, text, uiId)
+        local value, _ = inspectorGetGoFromPath(uiName, path, uiId)
         if not value then return { error = "Component not found" } end
         local ok, err = pcall(function() value.text = text end)
         if not ok then return { error = tostring(err) } end
         return { success = true }
     end
 
-    function LuaUiInspector.DestroyGo(uiName, path)
-        local _, go = inspectorGetGoFromPath(uiName, path)
+    function LuaUiInspector.DestroyGo(uiName, path, uiId)
+        local _, go = inspectorGetGoFromPath(uiName, path, uiId)
         if not go then return { error = "GameObject not found" } end
         local ok, err = pcall(function() CS.UnityEngine.Object.Destroy(go) end)
         if not ok then return { error = tostring(err) } end
@@ -3880,8 +4213,8 @@ local function StartRuntimeGM()
     end
 
     -- 获取 GO 上所有组件名称列表（Level 1，无反射，极快）
-    function LuaUiInspector.GetComponents(uiName, path)
-        local _, go = inspectorGetGoFromPath(uiName, path)
+    function LuaUiInspector.GetComponents(uiName, path, uiId)
+        local _, go = inspectorGetGoFromPath(uiName, path, uiId)
         if not go then return { error = "GameObject not found" } end
         local comps = {}
         local ok, err = pcall(function()
@@ -4004,8 +4337,8 @@ local function StartRuntimeGM()
     end
 
     -- 获取单个组件的属性 + 方法（Level 2，复用 readComponentDetail）
-    function LuaUiInspector.GetComponentDetail(uiName, path, compIndex)
-        local _, go = inspectorGetGoFromPath(uiName, path)
+    function LuaUiInspector.GetComponentDetail(uiName, path, compIndex, uiId)
+        local _, go = inspectorGetGoFromPath(uiName, path, uiId)
         if not go then return { error = "GameObject not found" } end
         local ok, result = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
@@ -4021,8 +4354,8 @@ local function StartRuntimeGM()
     end
 
     -- 设置组件属性
-    function LuaUiInspector.SetComponentProp(uiName, path, compIndex, propName, value, valueType)
-        local _, go = inspectorGetGoFromPath(uiName, path)
+    function LuaUiInspector.SetComponentProp(uiName, path, compIndex, propName, value, valueType, uiId)
+        local _, go = inspectorGetGoFromPath(uiName, path, uiId)
         if not go then return { error = "GO not found" } end
         local ok, err = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
@@ -4034,8 +4367,8 @@ local function StartRuntimeGM()
     end
 
     -- 调用组件方法
-    function LuaUiInspector.CallComponentMethod(uiName, path, compIndex, methodName)
-        local _, go = inspectorGetGoFromPath(uiName, path)
+    function LuaUiInspector.CallComponentMethod(uiName, path, compIndex, methodName, uiId)
+        local _, go = inspectorGetGoFromPath(uiName, path, uiId)
         if not go then return { error = "GO not found" } end
         local ok, ret = pcall(function()
             local all = go:GetComponents(typeof(CS.UnityEngine.Component))
@@ -4321,19 +4654,27 @@ local function StartRuntimeGM()
         local maxHits = math.max(0, tonumber(packet.maxHits) or 0)
 
         -- 决定要遍历的 UI 列表
-        local uiNames = {}
+        local uiTargets = {}
         if scope == "all" or scope == nil or scope == "" then
-            local ok, list = pcall(function() return XLuaUiManager:GetUiStack() end)
-            if ok and list then
-                for i = 0, list.Count - 1 do
-                    pcall(function()
-                        local item = list[i]
-                        if item and item.Name then uiNames[#uiNames + 1] = tostring(item.Name) end
-                    end)
+            local list = LuaUiInspector.GetOpenUiList()
+            if not list.error then
+                for _, info in ipairs(list) do
+                    uiTargets[#uiTargets + 1] = { name = info.name, id = info.id }
                 end
             end
         else
-            uiNames[1] = tostring(scope)
+            if scopeId ~= nil and tostring(scopeId) ~= "" then
+                uiTargets[1] = { name = tostring(scope), id = scopeId }
+            else
+                local list = LuaUiInspector.GetOpenUiList()
+                if not list.error then
+                    for _, info in ipairs(list) do
+                        if info.name == tostring(scope) then
+                            uiTargets[#uiTargets + 1] = { name = info.name, id = info.id }
+                        end
+                    end
+                end
+            end
         end
 
         local hits = {}
@@ -4362,6 +4703,7 @@ local function StartRuntimeGM()
                         local goId, goPath = searchExtractGoPath(node, v)
                         local entry = {
                             uiName = path.uiName,
+                            uiId = path.uiId,
                             luaPath = path.lua,
                             key = tostring(k),
                             valueDisplay = hit.valueDisplay,
@@ -4379,18 +4721,17 @@ local function StartRuntimeGM()
                     -- 递归 table
                     if type(v) == "table" and d > 0 then
                         local nextLua = path.lua == "" and tostring(k) or (path.lua .. "." .. tostring(k))
-                        recurse(v, node, { uiName = path.uiName, lua = nextLua }, d - 1)
+                        recurse(v, node, { uiName = path.uiName, uiId = path.uiId, lua = nextLua }, d - 1)
                     end
                 end
             end
         end
 
-        for _, uiName in ipairs(uiNames) do
+        for _, target in ipairs(uiTargets) do
             if truncated then break end
-            local luaUi
-            pcall(function() luaUi = XLuaUiManager.GetTopLuaUi(uiName) end)
+            local luaUi = inspectorGetLuaUi(target.name, target.id)
             if luaUi then
-                recurse(luaUi, nil, { uiName = uiName, lua = "" }, depth)
+                recurse(luaUi, nil, { uiName = target.name, uiId = target.id, lua = "" }, depth)
             end
         end
 
@@ -4404,7 +4745,7 @@ local function StartRuntimeGM()
             truncated = truncated,
             totalScanned = totalScanned,
             elapsedMs = elapsedMs,
-            uiCount = #uiNames,
+            uiCount = #uiTargets,
             maxFields = maxFields,
         }
     end
@@ -4415,37 +4756,37 @@ local function StartRuntimeGM()
         if action == "ui_list" then
             result = LuaUiInspector.GetOpenUiList()
         elseif action == "ui_tree" then
-            result = LuaUiInspector.GetUiTree(packet.uiName)
+            result = LuaUiInspector.GetUiTree(packet.uiName, packet.uiId)
         elseif action == "node_data" then
-            result = LuaUiInspector.GetNodeData(packet.uiName, packet.path, packet.depth)
+            result = LuaUiInspector.GetNodeData(packet.uiName, packet.path, packet.depth, packet.uiId)
         elseif action == "set_value" then
-            result = LuaUiInspector.SetValue(packet.uiName, packet.path, packet.value, packet.valueType)
+            result = LuaUiInspector.SetValue(packet.uiName, packet.path, packet.value, packet.valueType, packet.uiId)
         elseif action == "revert" then
-            result = LuaUiInspector.RevertValue(packet.uiName, packet.path)
+            result = LuaUiInspector.RevertValue(packet.uiName, packet.path, packet.uiId)
         elseif action == "revert_all" then
-            result = LuaUiInspector.RevertAll(packet.uiName)
+            result = LuaUiInspector.RevertAll(packet.uiName, packet.uiId)
         elseif action == "call_method" then
-            result = LuaUiInspector.CallMethod(packet.uiName, packet.path, packet.methodName)
+            result = LuaUiInspector.CallMethod(packet.uiName, packet.path, packet.methodName, packet.uiId)
         elseif action == "toggle_go_visible" then
-            result = LuaUiInspector.ToggleGoVisible(packet.uiName, packet.path)
+            result = LuaUiInspector.ToggleGoVisible(packet.uiName, packet.path, packet.uiId)
         elseif action == "set_text" then
-            result = LuaUiInspector.SetGoText(packet.uiName, packet.path, packet.value)
+            result = LuaUiInspector.SetGoText(packet.uiName, packet.path, packet.value, packet.uiId)
         elseif action == "destroy_go" then
-            result = LuaUiInspector.DestroyGo(packet.uiName, packet.path)
+            result = LuaUiInspector.DestroyGo(packet.uiName, packet.path, packet.uiId)
         elseif action == "get_components" then
-            result = LuaUiInspector.GetComponents(packet.uiName, packet.path)
+            result = LuaUiInspector.GetComponents(packet.uiName, packet.path, packet.uiId)
         elseif action == "get_component_detail" then
-            result = LuaUiInspector.GetComponentDetail(packet.uiName, packet.path, packet.compIndex)
+            result = LuaUiInspector.GetComponentDetail(packet.uiName, packet.path, packet.compIndex, packet.uiId)
         elseif action == "set_component_prop" then
-            result = LuaUiInspector.SetComponentProp(packet.uiName, packet.path, packet.compIndex, packet.propName, packet.value, packet.valueType)
+            result = LuaUiInspector.SetComponentProp(packet.uiName, packet.path, packet.compIndex, packet.propName, packet.value, packet.valueType, packet.uiId)
         elseif action == "call_component_method" then
-            result = LuaUiInspector.CallComponentMethod(packet.uiName, packet.path, packet.compIndex, packet.methodName)
+            result = LuaUiInspector.CallComponentMethod(packet.uiName, packet.path, packet.compIndex, packet.methodName, packet.uiId)
         elseif action == "search" then
             result = LuaUiInspector.Search(packet)
         else
             result = { error = "Unknown action: " .. tostring(action) }
         end
-        RuntimeGMClient.Send({ type = "UI_INSPECTOR_RESP", action = action, data = result })
+        RuntimeGMClient.Send({ type = "UI_INSPECTOR_RESP", action = action, requestId = packet.requestId, data = result })
     end
 
     -- 前向声明：让 RuntimeGMClient.Update() 闭包能捕获到这个 upvalue
@@ -4455,6 +4796,7 @@ local function StartRuntimeGM()
 
     function RuntimeGMClient.Update()
         if not RuntimeGMClient.IsRunning then return end
+        pcall(LuaHierarchy.UpdateHighlights)
         if not RuntimeGMClient.Socket then
             local now = 0
             pcall(function() now = CS.UnityEngine.Time.realtimeSinceStartup end)
@@ -6814,6 +7156,7 @@ local function StartRuntimeGM()
         end
         behaviour.LuaOnDestroy = function()
             origin_print("[RuntimeGM] OnDestroy: closing connection")
+            pcall(LuaHierarchy.ClearHighlights)
             RuntimeGMClient.Close()
             RuntimeGMClient.IsRunning = false
         end

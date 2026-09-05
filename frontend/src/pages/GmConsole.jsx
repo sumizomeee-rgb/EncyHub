@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ArrowLeft, Plus, Send, Radio, Smartphone, ChevronRight, ChevronDown,
+  ArrowLeft, Plus, Send, Radio, Smartphone, ChevronLeft, ChevronRight, ChevronDown,
   X, Trash2, Terminal, Users, Code, Megaphone, MessageSquare,
   Home, ZoomIn, ZoomOut, Edit, Layers, Globe, RefreshCw,
-  PanelLeftClose, PanelLeftOpen, Package, Database, Zap, Settings,
+  Package, Database, Zap, Settings,
   Film, Video, Clock, Table2, Camera, Clipboard, Check, AlertCircle,
   FileText, Download
 } from 'lucide-react'
@@ -468,7 +468,7 @@ function GmConsole() {
   // WS 连接状态: 'connecting' | 'connected' | 'disconnected'
   const [wsStatus, setWsStatus] = useState('connecting')
   const [activeTab, setActiveTab] = useState('lua_gm')
-  const [luaUiContext, setLuaUiContext] = useState(null) // null=普通模式, "UIName"=LuaUI上下文模式
+  const [luaUiContext, setLuaUiContext] = useState(null) // null=普通模式, {name,id}=LuaUI实例上下文
   const [pendingLocate, setPendingLocate] = useState(null) // 从 LuaUiInspector 联动到 Hierarchy 的 Locate 载荷
   // 自定义 GM 按钮拖拽排序
   const dragGmRef = useRef(null) // 当前正在拖动的按钮 index（用 ref 避免触发重渲染）
@@ -507,6 +507,7 @@ function GmConsole() {
   }, [])
 
   useEffect(() => { refreshHaruRootInfo() }, [refreshHaruRootInfo])
+  useEffect(() => { setLuaUiContext(null) }, [selectedClient?.id])
 
   // 稳定引用的子组件回调：和 React.memo 配合，避免在自定义 GM 弹窗里敲键盘时
   // LuaUiInspector / Hierarchy 因每次新建箭头函数 prop 而被迫重渲染。
@@ -954,10 +955,24 @@ function GmConsole() {
     // LuaUI 上下文模式：包装代码注入 self + 重定向 print 到 web 日志
     let cmd = luaInput
     if (luaUiContext) {
-      const escaped = luaUiContext.replace(/"/g, '\\"')
+      const contextName = typeof luaUiContext === 'string' ? luaUiContext : luaUiContext.name
+      const contextId = typeof luaUiContext === 'object' ? luaUiContext.id : null
+      const escaped = contextName.replace(/"/g, '\\"')
+      const escapedId = String(contextId || '').replace(/"/g, '\\"')
+      const resolveSelf = contextId
+        ? `local self = nil
+local __list = CS.XUiManager.Instance:GetAllList()
+for __i = 0, __list.Count - 1 do
+    local __xui = __list[__i]
+    if __xui and tostring(__xui.UUID) == "${escapedId}" and tostring(__xui.UiData.UiName) == "${escaped}" then
+        self = __xui.UiProxy and __xui.UiProxy.UiLuaTable
+        break
+    end
+end`
+        : `local self = XLuaUiManager.GetTopLuaUi("${escaped}")`
       cmd = `do
-local self = XLuaUiManager.GetTopLuaUi("${escaped}")
-if not self then RuntimeGMClient.SendLog("error", "UI not found: ${escaped}") return end
+${resolveSelf}
+if not self then RuntimeGMClient.SendLog("error", "UI instance not found: ${escaped}${contextId ? ` #${escapedId}` : ''}") return end
 local __op = rawget(_G, "print")
 rawset(_G, "print", function(...) local a={...}; for i,v in ipairs(a) do a[i]=tostring(v) end; if __op then pcall(__op, table.unpack(a)) end; RuntimeGMClient.SendLog("info", table.concat(a, "\\t")) end)
 local __ok, __ret = pcall(function()
@@ -974,7 +989,10 @@ end`
         : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
       if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
       const logType = luaUiContext ? 'cmd' : (broadcastMode ? 'broadcast' : 'cmd')
-      const logText = luaUiContext ? `[self=${luaUiContext}] ${luaInput}` : (broadcastMode ? `[广播] ${luaInput}` : `> ${luaInput}`)
+      const contextLabel = typeof luaUiContext === 'object'
+        ? `${luaUiContext.name}${luaUiContext.id ? ` #${luaUiContext.id}` : ''}`
+        : luaUiContext
+      const logText = luaUiContext ? `[self=${contextLabel}] ${luaInput}` : (broadcastMode ? `[广播] ${luaInput}` : `> ${luaInput}`)
       setLogs(prev => [...prev, { type: logType, text: logText, local: true }])
       const res = await fetch(url, {
         method: 'POST',
@@ -1266,14 +1284,16 @@ end`
         ) : (
           <div className="flex flex-col lg:flex-row gap-5" style={{ minHeight: 'calc(100vh - 120px)' }}>
             {/* Left Sidebar - Collapsible */}
-            <div className={`shrink-0 transition-all duration-300 ease-in-out overflow-hidden ${sidebarCollapsed ? 'lg:w-[52px]' : 'lg:w-[260px]'}`}>
+            <div className={`relative shrink-0 transition-all duration-300 ease-in-out overflow-visible ${sidebarCollapsed ? 'lg:w-[52px]' : 'lg:w-[260px]'}`}>
               {/* Toggle button - desktop only */}
               <button
-                className="hidden lg:flex w-full items-center justify-center p-1.5 mb-2 rounded-lg hover:bg-[var(--cream-warm)] text-[var(--coffee-muted)] transition-colors"
+                type="button"
+                className="hidden lg:flex absolute right-[-14px] top-1/2 z-20 h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--cream-warm)] bg-white/90 text-[var(--coffee-muted)] shadow-sm backdrop-blur-sm transition-all hover:scale-105 hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] hover:shadow-md"
                 onClick={() => setSidebarCollapsed(prev => !prev)}
                 title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+                aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
               >
-                {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+                {sidebarCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
               </button>
 
               {/* Collapsed view - desktop only when collapsed */}
@@ -1282,10 +1302,11 @@ end`
                   <button
                     type="button"
                     className="relative p-1 rounded-lg text-[var(--sage)] hover:bg-[var(--cream-warm)] transition-colors"
-                    title={`RuntimeGM Bridge 代码 · 握手端口 ${handshakePort}`}
+                    title={`下载 / 查看 RuntimeGM Bridge · 握手端口 ${handshakePort}`}
+                    aria-label="下载或查看 RuntimeGM Bridge"
                     onClick={() => setRuntimeGmModalOpen(true)}
                   >
-                    <RuntimeGmBridgeIcon size={18} />
+                    <Download size={18} />
                   </button>
                 </div>
                 <div className="glass-card p-2.5 w-full">
@@ -1342,10 +1363,11 @@ end`
                     <button
                       type="button"
                       onClick={() => setRuntimeGmModalOpen(true)}
-                      className="p-1.5 rounded-lg text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors"
-                      title="RuntimeGM Bridge 代码"
+                      className="p-1.5 rounded-lg text-[var(--sage)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors"
+                      title="下载 / 查看 RuntimeGM Bridge"
+                      aria-label="下载或查看 RuntimeGM Bridge"
                     >
-                      <RuntimeGmBridgeIcon size={15} />
+                      <Download size={15} />
                     </button>
                     <div className="flex items-center gap-1.5" title="所有分支 / 设备统一连接此固定端口">
                       <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
@@ -1911,14 +1933,14 @@ end`
                   </h2>
                   {luaUiContext && (
                     <span className="flex items-center gap-1.5 ml-1 px-2 py-0.5 rounded-full bg-[var(--caramel)]/15 text-[var(--caramel)] text-xs font-mono">
-                      🔗 self = {luaUiContext}
+                      🔗 self = {typeof luaUiContext === 'object' ? `${luaUiContext.name}${luaUiContext.id ? ` #${luaUiContext.id}` : ''}` : luaUiContext}
                       <button onClick={() => setLuaUiContext(null)} className="hover:text-[var(--terracotta)] ml-0.5" title="退出 LuaUI 模式">✕</button>
                     </span>
                   )}
                 </div>
                 <textarea
                   className={`w-full h-36 bg-[var(--coffee-deep)] text-[var(--sage)] rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:ring-2 placeholder-[var(--coffee-muted)] ${luaUiContext ? 'ring-2 ring-[var(--caramel)]/40 focus:ring-[var(--caramel)]' : 'focus:ring-[var(--caramel)]'}`}
-                  placeholder={luaUiContext ? `self 已绑定到 ${luaUiContext}，直接用 self.xxx / self:Method() / print(self.Name) ...` : '输入 Lua 代码... (Ctrl+Enter 执行)'}
+                  placeholder={luaUiContext ? `self 已绑定到 ${typeof luaUiContext === 'object' ? `${luaUiContext.name}${luaUiContext.id ? ` #${luaUiContext.id}` : ''}` : luaUiContext}，直接用 self.xxx / self:Method() / print(self.Name) ...` : '输入 Lua 代码... (Ctrl+Enter 执行)'}
                   value={luaInput}
                   onChange={e => setLuaInput(e.target.value)}
                   onKeyDown={e => {
