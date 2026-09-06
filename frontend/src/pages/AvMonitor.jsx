@@ -116,17 +116,21 @@ function audioFormatLabel(format) {
   return parts.filter(Boolean).join(' · ')
 }
 
-function AudioStatusIcon({ paused, status }) {
+function AudioStatusBadge({ paused, status }) {
+  const baseClass = 'inline-flex w-[58px] items-center justify-end gap-1 whitespace-nowrap text-[9px] font-medium'
   if (paused) {
-    return <span title="已暂停" aria-label="已暂停" className="text-[var(--amber)]"><Pause size={11} fill="currentColor" /></span>
+    return <span title="已暂停" className={`${baseClass} text-[var(--amber)]`}><Pause size={9} fill="currentColor" />已暂停</span>
   }
   if (status === 'Prep') {
-    return <span title="准备中" aria-label="准备中" className="text-[var(--caramel)]"><Loader2 size={11} className="animate-spin" /></span>
+    return <span title="准备中" className={`${baseClass} text-[var(--caramel)]`}><Loader2 size={9} className="animate-spin" />准备中</span>
   }
   if (status === 'Removed') {
-    return <span title="已结束" aria-label="已结束" className="inline-block w-2.5 h-2.5 rounded-full border border-[var(--terracotta)]/70" />
+    return <span title="已结束" className={`${baseClass} text-[var(--coffee-muted)]`}><Check size={9} />已结束</span>
   }
-  return <span title={status === 'Playing' ? '播放中' : status || '状态未知'} aria-label={status === 'Playing' ? '播放中' : status || '状态未知'} className="inline-block w-2 h-2 rounded-full bg-[var(--sage)] shadow-[0_0_0_2px_rgba(125,155,118,0.12)]" />
+  if (status === 'Playing') {
+    return <span title="播放中" className={`${baseClass} text-[var(--sage)]`}><span className="w-1.5 h-1.5 rounded-full bg-current shadow-[0_0_0_2px_rgba(125,155,118,0.12)]" />播放中</span>
+  }
+  return <span title={status || '状态未知'} className={`${baseClass} text-[var(--coffee-muted)]`}><span className="w-1.5 h-1.5 rounded-full border border-current" />{status || '未知'}</span>
 }
 
 function CollapsibleSection({ title, meta, expanded, onToggle, actions, children, className = '' }) {
@@ -286,6 +290,11 @@ function AudioEntryCard({ item, entryKey, expanded, onToggle, playTypeBadge, pla
   const cutoffActive = [item.startTime, item.endTime, item.lastFor, item.durationForEndtime].some(value => Number(value) > 0)
     || item.stopRemaining != null || item.isFadingOut
   const copyKey = `${entryKey}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+  const timingLabel = timing.isLoop
+    ? 'Loop'
+    : progressPercent != null
+      ? `${progressPercent}% · ${formatAudioSeconds(timing.time)}/${formatAudioSeconds(timing.duration)}`
+      : '--'
 
   return (
     <div className="rounded border border-[var(--glass-border)] bg-white/30 overflow-hidden">
@@ -294,18 +303,19 @@ function AudioEntryCard({ item, entryKey, expanded, onToggle, playTypeBadge, pla
           <span aria-hidden="true" className={`absolute inset-y-0 left-0 transition-[width] duration-300 ${playTypeProgress(item.playType)}`}
             style={{ width: `${progressPercent}%` }} />
         )}
-        <span className="relative z-10 flex items-center gap-2 min-w-0">
+        <span className="relative z-10 grid grid-cols-[12px_68px_44px_minmax(80px,1fr)_72px_138px_58px] items-center gap-2 min-w-0">
           <ChevronRight size={10} className={`flex-shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} />
-          {history && <span className="font-mono text-[9px] text-[var(--coffee-muted)] flex-shrink-0">{compactTimestamp(item.startedAt)}</span>}
-          <span className={`text-[10px] px-1 rounded flex-shrink-0 ${playTypeBadge(item.playType)}`}>{item.playType}</span>
-          <span className="font-medium truncate text-[var(--coffee-deep)] min-w-0">{item.name}</span>
-          <span className="font-mono text-[10px] text-[var(--coffee-muted)] flex-shrink-0">Cue:{item.cueId ?? '--'}</span>
-          {item.preexisting && <span title="打开监控时已在播放" className="text-[9px] text-[var(--coffee-muted)] flex-shrink-0">已在播放</span>}
-          <span className="ml-auto flex items-center gap-2 flex-shrink-0">
-            {progressPercent != null && <span className="font-mono text-[10px] font-semibold text-[var(--coffee-deep)]">{progressPercent}% · {formatAudioSeconds(timing.time)}/{formatAudioSeconds(timing.duration)}</span>}
-            {timing.isLoop && <span className="text-[10px] font-semibold text-[var(--caramel)]">Loop</span>}
-            <AudioStatusIcon paused={isPaused} status={playbackStatus} />
+          <span className="font-mono text-[9px] tabular-nums text-[var(--coffee-muted)] whitespace-nowrap">
+            {history ? compactTimestamp(item.startedAt) : '实时'}
           </span>
+          <span className={`justify-self-start text-[10px] px-1 rounded ${playTypeBadge(item.playType)}`}>{item.playType}</span>
+          <span className="flex items-center gap-1.5 min-w-0">
+            <span className="font-medium truncate text-[var(--coffee-deep)] min-w-0">{item.name}</span>
+            {item.preexisting && <span title="打开监控时已在播放" className="text-[9px] text-[var(--coffee-muted)] flex-shrink-0">已在播放</span>}
+          </span>
+          <span className="font-mono text-[10px] tabular-nums text-[var(--coffee-muted)] whitespace-nowrap">Cue:{item.cueId ?? '--'}</span>
+          <span className={`font-mono text-[10px] tabular-nums font-semibold text-right whitespace-nowrap ${timing.isLoop ? 'text-[var(--caramel)]' : 'text-[var(--coffee-deep)]'}`}>{timingLabel}</span>
+          <AudioStatusBadge paused={isPaused} status={playbackStatus} />
         </span>
       </button>
       <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>

@@ -168,7 +168,10 @@ def test_active_audio_list_exposes_cue_and_duration_aware_progress():
     assert "info.CriAtomExPlayback:IsPaused()" in lua
     assert "info.CriAtomExPlayback.status" in lua
     assert "info.Pausing" not in lua[lua.index("local function _av_audioEntry"):lua.index("local function _av_audioEventEnabled")]
-    assert "<AudioStatusIcon paused={isPaused} status={playbackStatus}" in jsx
+    assert "<AudioStatusBadge paused={isPaused} status={playbackStatus}" in jsx
+    assert "grid-cols-[12px_68px_44px_minmax(80px,1fr)_72px_138px_58px]" in jsx
+    assert "{history ? compactTimestamp(item.startedAt) : '实时'}" in jsx
+    assert "<Check size={9} />已结束" in jsx
     assert "SelectorLabelDic" in jsx
     assert "Source Vol." in jsx
     card_header = jsx[jsx.index('<button className="relative w-full'):jsx.index('<div className={`grid transition-[grid-template-rows,opacity]', jsx.index('<button className="relative w-full'))]
