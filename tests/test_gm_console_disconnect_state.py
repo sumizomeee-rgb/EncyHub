@@ -95,3 +95,24 @@ def test_handle_client_closes_transport_after_disconnect():
         assert writer.waited
 
     asyncio.run(run_case())
+
+
+def test_identified_client_is_retained_offline_after_disconnect():
+    from tools.gm_console.server_mgr import Client, ServerMgr
+
+    async def run_case():
+        mgr = ServerMgr()
+        client = Client(id="127.0.0.1-123", port=12581, writer=FakeWriter(), ip="127.0.0.1", pid=123)
+        mgr._remember_offline_client(client)
+        try:
+            cards = mgr.get_clients_info()
+            assert len(cards) == 1
+            assert cards[0]["id"] == client.id
+            assert cards[0]["online"] is False
+            assert cards[0]["offlineExpiresAt"] > cards[0]["disconnectedAt"]
+        finally:
+            task = mgr._offline_expiry_tasks.get(client.id)
+            if task:
+                task.cancel()
+
+    asyncio.run(run_case())

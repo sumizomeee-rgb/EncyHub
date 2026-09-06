@@ -584,9 +584,7 @@ local function StartRuntimeGM()
     local LuaAnimatorMonitor = {}
     LuaAnimatorMonitor._trackers = {}           -- instanceId → tracker table
     LuaAnimatorMonitor._subscribedId = nil      -- 当前订阅的 animator id (nil=未订阅)
-    LuaAnimatorMonitor._lastScanTime = 0
     LuaAnimatorMonitor._lastPushTime = 0
-    LuaAnimatorMonitor._scanInterval = 2.0      -- 扫描间隔(秒)
     LuaAnimatorMonitor._pushInterval = 0.1      -- 推送间隔(秒)
 
     origin_print("[RuntimeGM] LuaAnimatorMonitor module initialized")
@@ -739,7 +737,7 @@ local function StartRuntimeGM()
         }
 
         -- 采集 nextState（如果正在转场）— 双重检测修复
-        if animator:IsInTransition(layerIndex) then
+        if layer.transition.isInTransition then
             local nextInfo = animator:GetNextAnimatorStateInfo(layerIndex)
 
             -- 用 next clip 名称补充缓存
@@ -840,54 +838,44 @@ local function StartRuntimeGM()
         return snapshot
     end
 
-    -- 检测状态变化（双重检测：hash 比较 + IsInTransition）
-    function LuaAnimatorMonitor.DetectStateChanges(tracker)
-        local animator = tracker.animator
+    -- 复用本轮 Layer 快照，避免再次跨 Lua/C# 读取 Animator。
+    function LuaAnimatorMonitor.DetectStateChanges(tracker, snapshot)
         local changes = {}
-
-        for i = 0, animator.layerCount - 1 do
-            local stateInfo = animator:GetCurrentAnimatorStateInfo(i)
-            local currentHash = stateInfo.shortNameHash
+        for _, layer in ipairs(snapshot.layers) do
+            local i = layer.index
+            local currentHash = layer.currentState.nameHash
             local lastHash = tracker.lastStateHashes[i] or 0
-
-            -- 方式1: 帧间 hash 比较（捕获已完成的状态切换）
             if lastHash ~= 0 and lastHash ~= currentHash then
                 changes[#changes + 1] = {
-                    layerName = animator:GetLayerName(i),
+                    layerName = layer.name,
                     fromState = _resolveStateName(tracker, lastHash),
-                    toState = _resolveStateName(tracker, currentHash),
-                    timestamp = CS.UnityEngine.Time.time
+                    toState = layer.currentState.name,
+                    timestamp = snapshot.timestamp,
                 }
             end
-
-            -- 方式2: IsInTransition 检测（捕获进行中的状态切换）
-            if animator:IsInTransition(i) then
-                local nextInfo = animator:GetNextAnimatorStateInfo(i)
-                if nextInfo.shortNameHash ~= 0 and nextInfo.shortNameHash ~= currentHash then
-                    -- 避免与方式1重复
-                    local fromName = _resolveStateName(tracker, currentHash)
-                    local toName = _resolveStateName(tracker, nextInfo.shortNameHash)
-                    local isDuplicate = false
-                    for _, c in ipairs(changes) do
-                        if c.fromState == fromName and c.toState == toName then
-                            isDuplicate = true
-                            break
-                        end
-                    end
-                    if not isDuplicate then
-                        changes[#changes + 1] = {
-                            layerName = animator:GetLayerName(i),
-                            fromState = fromName,
-                            toState = toName,
-                            timestamp = CS.UnityEngine.Time.time
-                        }
+            local nextState = layer.nextState
+            if layer.transition.isInTransition and nextState
+                and nextState.nameHash ~= 0 and nextState.nameHash ~= currentHash then
+                local duplicate = false
+                for _, change in ipairs(changes) do
+                    if change.layerName == layer.name
+                        and change.fromState == layer.currentState.name
+                        and change.toState == nextState.name then
+                        duplicate = true
+                        break
                     end
                 end
+                if not duplicate then
+                    changes[#changes + 1] = {
+                        layerName = layer.name,
+                        fromState = layer.currentState.name,
+                        toState = nextState.name,
+                        timestamp = snapshot.timestamp,
+                    }
+                end
             end
-
             tracker.lastStateHashes[i] = currentHash
         end
-
         return #changes > 0 and changes or nil
     end
 
@@ -920,7 +908,6 @@ local function StartRuntimeGM()
             origin_print("[RuntimeGM] ANIM_SUBSCRIBE id=" .. tostring(packet.animatorId))
             LuaAnimatorMonitor._subscribedId = packet.animatorId
             LuaAnimatorMonitor._lastPushTime = 0
-            LuaAnimatorMonitor._lastScanTime = 0
             -- 立即扫描确保 tracker 存在
             LuaAnimatorMonitor.ScanAnimators()
 
@@ -946,17 +933,11 @@ local function StartRuntimeGM()
         end
     end
 
-    -- 每帧更新：扫描 + 采集 + 推送（仅在有订阅时工作）
+    -- 每帧更新：采集 + 推送（列表和订阅命令才主动扫描场景）
     function LuaAnimatorMonitor.Update()
         if not LuaAnimatorMonitor._subscribedId then return end
 
         local now = CS.UnityEngine.Time.realtimeSinceStartup
-
-        -- 扫描节流
-        if now - LuaAnimatorMonitor._lastScanTime >= LuaAnimatorMonitor._scanInterval then
-            LuaAnimatorMonitor._lastScanTime = now
-            LuaAnimatorMonitor.ScanAnimators()
-        end
 
         -- 推送节流
         if now - LuaAnimatorMonitor._lastPushTime < LuaAnimatorMonitor._pushInterval then
@@ -974,7 +955,7 @@ local function StartRuntimeGM()
 
         if validOk and valid then
             local snapshot = LuaAnimatorMonitor.TakeSnapshot(tracker)
-            local changes = LuaAnimatorMonitor.DetectStateChanges(tracker)
+            local changes = LuaAnimatorMonitor.DetectStateChanges(tracker, snapshot)
             if snapshot then
                 local msg = { type = "ANIM_DATA", snapshot = snapshot }
                 if changes then msg.stateChanges = changes end
@@ -993,11 +974,9 @@ local function StartRuntimeGM()
     LuaTimelineMonitor._directors = {}         -- instanceId → PlayableDirector
     LuaTimelineMonitor._monitored = {}         -- instanceId → true
     LuaTimelineMonitor._monitoredCount = 0
-    LuaTimelineMonitor._lastScanTime = 0
     LuaTimelineMonitor._lastPushTime = 0
-    LuaTimelineMonitor._scanInterval = 2.0     -- 扫描间隔
     LuaTimelineMonitor._pushInterval = 0.1     -- 推送间隔（100ms）
-    LuaTimelineMonitor._eventCaches = {}       -- instanceId → { assetName, events }
+    LuaTimelineMonitor._eventCaches = {}       -- Director → assetId, tracks, trackRefs, events
 
     origin_print("[RuntimeGM] LuaTimelineMonitor module initialized")
 
@@ -1067,11 +1046,14 @@ local function StartRuntimeGM()
             if ok2 and info then result[#result + 1] = info end
         end
         LuaTimelineMonitor._directors = newDirs
+        for id in pairs(LuaTimelineMonitor._eventCaches) do
+            if not newDirs[id] then LuaTimelineMonitor._eventCaches[id] = nil end
+        end
         return result
     end
 
     -- 构建完整快照
-    function LuaTimelineMonitor.TakeSnapshot(d)
+    function LuaTimelineMonitor.TakeSnapshot(d, forceStatic)
         local snap = {}
         local ok, err = pcall(function()
             snap.instanceId = d:GetInstanceID()
@@ -1087,45 +1069,57 @@ local function StartRuntimeGM()
                     snap.speed = g:GetRootPlayable(0):GetSpeed()
                 end
             end)
-            snap.assetName = ""
-            pcall(function() if d.playableAsset then snap.assetName = d.playableAsset.name end end)
-
-            snap.tracks = {}
-            if d.playableAsset then
-                local tracks = tlIter(d.playableAsset:GetOutputTracks())
-                for ti, track in ipairs(tracks) do
-                    local td = { trackName = "", trackType = "", muted = false, boundObjectName = "", clips = {} }
-                    pcall(function()
-                        td.trackName = track.name or ""
-                        td.trackType = tostring(track:GetType().Name)
-                        td.muted = track.muted
-                        pcall(function()
-                            local b = d:GetGenericBinding(track)
-                            if b then td.boundObjectName = tostring(b.name or b) end
-                        end)
-                        for _, clip in ipairs(tlIter(track:GetClips())) do
-                            pcall(function()
-                                local cs, cd = clip.start, clip.duration
-                                td.clips[#td.clips + 1] = {
-                                    name = clip.displayName,
-                                    start = tlSafeNum(cs),
-                                    duration = tlSafeNum(cd),
-                                    isActive = (d.time >= cs and d.time < cs + cd),
-                                }
-                            end)
-                        end
-                    end)
-                    snap.tracks[#snap.tracks + 1] = td
-                end
-            end
-            -- Events（静态数据，缓存避免每帧重复提取）
-            local id = d:GetInstanceID()
+            local asset = d.playableAsset
+            local assetId = asset and asset:GetInstanceID() or 0
+            snap.assetId = assetId
+            local id = snap.instanceId
             local cache = LuaTimelineMonitor._eventCaches[id]
-            if not cache or cache.assetName ~= snap.assetName then
-                cache = { assetName = snap.assetName, events = LuaTimelineMonitor.ExtractEvents(d) }
+            local cacheChanged = not cache or cache.assetId ~= assetId
+            if forceStatic or cacheChanged then
+                cache = { assetId = assetId, assetName = asset and asset.name or "",
+                    tracks = {}, trackRefs = {}, events = LuaTimelineMonitor.ExtractEvents(d) }
+                if asset then
+                    for _, track in ipairs(tlIter(asset:GetOutputTracks())) do
+                        local td = { trackName = "", trackType = "", boundObjectName = "", clips = {} }
+                        pcall(function()
+                            td.trackName = track.name or ""
+                            td.trackType = tostring(track:GetType().Name)
+                            pcall(function()
+                                local bound = d:GetGenericBinding(track)
+                                if bound then td.boundObjectName = tostring(bound.name or bound) end
+                            end)
+                            for _, clip in ipairs(tlIter(track:GetClips())) do
+                                pcall(function()
+                                    td.clips[#td.clips + 1] = {
+                                        name = clip.displayName,
+                                        start = tlSafeNum(clip.start),
+                                        duration = tlSafeNum(clip.duration),
+                                    }
+                                end)
+                            end
+                        end)
+                        cache.tracks[#cache.tracks + 1] = td
+                        cache.trackRefs[#cache.trackRefs + 1] = track
+                    end
+                end
                 LuaTimelineMonitor._eventCaches[id] = cache
             end
-            snap.events = cache.events
+            snap.assetName = cache.assetName
+            snap.trackStates = {}
+            for ti, track in ipairs(cache.trackRefs) do
+                local state = { muted = false, isActive = {} }
+                pcall(function() state.muted = track.muted end)
+                for ci, clip in ipairs(cache.tracks[ti].clips) do
+                    state.isActive[ci] = snap.currentTime >= clip.start
+                        and snap.currentTime < clip.start + clip.duration
+                end
+                snap.trackStates[ti] = state
+            end
+            -- 订阅/手动刷新或资源实例变化时才发送静态结构。
+            if forceStatic or cacheChanged then
+                snap.tracks = cache.tracks
+                snap.events = cache.events
+            end
         end)
         if not ok then origin_print("[RuntimeGM] Timeline TakeSnapshot error: " .. tostring(err)); return nil end
         return snap
@@ -1278,7 +1272,7 @@ local function StartRuntimeGM()
                     LuaTimelineMonitor._monitored[id] = true
                     LuaTimelineMonitor._monitoredCount = LuaTimelineMonitor._monitoredCount + 1
                 end
-                local snap = LuaTimelineMonitor.TakeSnapshot(LuaTimelineMonitor._directors[id])
+                local snap = LuaTimelineMonitor.TakeSnapshot(LuaTimelineMonitor._directors[id], true)
                 if snap then RuntimeGMClient.Send({ type = "TIMELINE_RESP", action = "snapshot", data = snap }) end
             end
 
@@ -1287,11 +1281,13 @@ local function StartRuntimeGM()
             if id and LuaTimelineMonitor._monitored[id] then
                 LuaTimelineMonitor._monitored[id] = nil
                 LuaTimelineMonitor._monitoredCount = LuaTimelineMonitor._monitoredCount - 1
+                LuaTimelineMonitor._eventCaches[id] = nil
             end
 
         elseif action == "unsubscribe_all" then
             LuaTimelineMonitor._monitored = {}
             LuaTimelineMonitor._monitoredCount = 0
+            LuaTimelineMonitor._eventCaches = {}
 
         elseif action == "control" then
             local d = LuaTimelineMonitor._directors[packet.instanceId]
@@ -1388,10 +1384,6 @@ local function StartRuntimeGM()
         if LuaTimelineMonitor._monitoredCount <= 0 then return end
         local now = CS.UnityEngine.Time.realtimeSinceStartup
 
-        if now - LuaTimelineMonitor._lastScanTime >= LuaTimelineMonitor._scanInterval then
-            LuaTimelineMonitor._lastScanTime = now
-            LuaTimelineMonitor.ScanDirectors()
-        end
         if now - LuaTimelineMonitor._lastPushTime < LuaTimelineMonitor._pushInterval then return end
         LuaTimelineMonitor._lastPushTime = now
 
@@ -1401,7 +1393,7 @@ local function StartRuntimeGM()
             if d then
                 local vOk, v = pcall(function() return d.gameObject.activeInHierarchy end)
                 if vOk and v then
-                    local snap = LuaTimelineMonitor.TakeSnapshot(d)
+                    local snap = LuaTimelineMonitor.TakeSnapshot(d, false)
                     if snap then RuntimeGMClient.Send({ type = "TIMELINE_RESP", action = "snapshot", data = snap }) end
                 else
                     toRemove[#toRemove + 1] = id
@@ -1413,6 +1405,7 @@ local function StartRuntimeGM()
         for _, id in ipairs(toRemove) do
             LuaTimelineMonitor._monitored[id] = nil
             LuaTimelineMonitor._monitoredCount = LuaTimelineMonitor._monitoredCount - 1
+            LuaTimelineMonitor._eventCaches[id] = nil
             RuntimeGMClient.Send({ type = "TIMELINE_RESP", action = "removed", data = { instanceId = id } })
         end
     end
@@ -5398,8 +5391,10 @@ local function StartRuntimeGM()
     LuaAvMonitor._videoLogEnabled = false
     LuaAvMonitor._videoLogCallback = nil
     LuaAvMonitor._pendingAudioEvents = {} -- 高频采集到的音频状态变化，随快照批量发送
+    LuaAvMonitor._pendingAudioHistoryEvents = {} -- 始终上报给 Hub 的历史增量，不依赖游戏日志开关
     LuaAvMonitor._audioKnown       = nil  -- instance Id -> AudioInfo 快照
     LuaAvMonitor._audioKnownOrder  = nil
+    LuaAvMonitor._audioDetailCache = {}   -- instance Id -> 不随帧变化的资源详情
     LuaAvMonitor._audioEventSeq    = 0
     LuaAvMonitor._lastAudioPollTime = -9999
     LuaAvMonitor._audioPollInterval = 0.0 -- Update 每帧采集；短 UI 音效通常不足 1 秒
@@ -5465,8 +5460,97 @@ local function StartRuntimeGM()
         return s
     end
 
+    local function _av_enumName(value)
+        local raw = tostring(value or "Unknown")
+        return raw:match("^([^:]+)") or raw
+    end
+
+    local function _av_fmtTimestamp()
+        local s = ""
+        pcall(function()
+            local dt = CS.System.DateTime.Now
+            s = string.format("%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second, dt.Millisecond)
+        end)
+        return s
+    end
+
+    local function _av_audioStaticDetails(info, fallbackId)
+        local key = tostring(info.Id or fallbackId)
+        local cached = LuaAvMonitor._audioDetailCache[key]
+        local detail = cached
+        if not detail then
+            detail = { selectorLabelDic = {} }
+            pcall(function() detail.playbackId = info.CriAtomExPlayback.id end)
+            pcall(function() detail.cueSheetId = info.CueSheetId end)
+            pcall(function() detail.cueSheetName = info.CueSheetName end)
+            pcall(function()
+                if info.Source and info.Source.gameObject then
+                    detail.sourceName = info.Source.gameObject.name
+                end
+            end)
+            pcall(function()
+                if info.Source and info.Source.transform then
+                    detail.transformId = info.Source.transform:GetInstanceID()
+                end
+            end)
+            pcall(function()
+                local iterator = info.SelectorLabelDic:GetEnumerator()
+                while iterator:MoveNext() do
+                    local pair = iterator.Current
+                    detail.selectorLabelDic[#detail.selectorLabelDic + 1] = {
+                        selector = tostring(pair.Key),
+                        label = tostring(pair.Value),
+                    }
+                end
+            end)
+            LuaAvMonitor._audioDetailCache[key] = detail
+        end
+
+        -- Prep 阶段可能拿不到格式；只在尚未成功时重试，成功后不再跨 Lua/C# 查询。
+        if not detail.format then pcall(function()
+            local acquired, formatInfo = info.CriAtomExPlayback:GetFormatInfo()
+            if acquired and formatInfo then
+                detail.format = {
+                    codec = _av_enumName(formatInfo.format),
+                    samplingRate = formatInfo.samplingRate,
+                    channels = formatInfo.numChannels,
+                    numSamples = formatInfo.numSamples,
+                    loopOffset = formatInfo.loopOffset,
+                    loopLength = formatInfo.loopLength,
+                }
+            end
+        end) end
+
+        return detail
+    end
+
+    local function _av_refreshAudioEntry(entry, info)
+        if not entry or not info then return entry end
+        pcall(function() entry.playbackStatus = _av_enumName(info.CriAtomExPlayback.status) end)
+        pcall(function() entry.paused = info.CriAtomExPlayback:IsPaused() and true or false end)
+        pcall(function() entry.isFadingOut = info.IsFadingOut and true or false end)
+        pcall(function() entry.volume = info.Source and info.Source.volume or 1.0 end)
+        pcall(function() entry.duration = info.Duration end)
+        pcall(function() entry.time = info.Time end)
+        pcall(function() entry.startTime = info.StartTime end)
+        pcall(function() entry.endTime = info.EndTime end)
+        pcall(function() entry.lastFor = info.LastFor end)
+        pcall(function() entry.durationForEndtime = info.DurationForEndtime end)
+        pcall(function()
+            local stopAt = tonumber(info.StopEndtimeStamp)
+            if stopAt and stopAt > 0 then
+                entry.stopRemaining = math.max(0, stopAt - CS.UnityEngine.Time.time)
+            else
+                entry.stopRemaining = nil
+            end
+        end)
+        return entry
+    end
+
     local function _av_audioEntry(info, fallbackId)
         if not info then return nil end
+        local detail = _av_audioStaticDetails(info, fallbackId)
         local entry = {
             id       = info.Id or fallbackId,
             cueId    = info.CueId,
@@ -5474,11 +5558,15 @@ local function StartRuntimeGM()
             playType = "Unknown",
             acbPath  = info.AcbFile,
             awbPath  = info.AwbFile,
-            status   = "Unknown",
             volume   = 1.0,
+            playbackId = detail.playbackId,
+            cueSheetId = detail.cueSheetId,
+            cueSheetName = detail.cueSheetName,
+            sourceName = detail.sourceName,
+            transformId = detail.transformId,
+            selectorLabelDic = detail.selectorLabelDic,
+            format = detail.format,
         }
-        if info.Pausing then entry.status = "Paused"
-        elseif info.Playing then entry.status = "Playing" end
         pcall(function()
             if info.CueTemplate then
                 local rawPlayType = tonumber(info.CueTemplate.PlayType)
@@ -5486,20 +5574,20 @@ local function StartRuntimeGM()
                 entry.playType = playTypeNames[rawPlayType] or tostring(info.CueTemplate.PlayType)
             end
         end)
-        pcall(function()
-            entry.volume = info.Source and info.Source.volume or 1.0
-        end)
-        pcall(function() entry.duration  = info.Duration end)
-        pcall(function() entry.time      = info.Time end)
-        pcall(function() entry.startTime = info.StartTime end)
-        pcall(function() entry.endTime   = info.EndTime end)
-        pcall(function() entry.lastFor   = info.LastFor end)
-        pcall(function()
-            if info.Source and info.Source.gameObject then
-                entry.sourceName = info.Source.gameObject.name
-            end
-        end)
-        return entry
+        return _av_refreshAudioEntry(entry, info)
+    end
+
+    local function _av_queueAudioHistoryEvent(action, entry, preexisting)
+        if not entry then return end
+        local events = LuaAvMonitor._pendingAudioHistoryEvents
+        events[#events + 1] = {
+            action = action,
+            occurredAt = _av_fmtTimestamp(),
+            preexisting = preexisting and true or false,
+            instanceId = entry.id,
+            entry = entry,
+        }
+        if #events > 500 then table.remove(events, 1) end
     end
 
     local function _av_audioEventEnabled(action)
@@ -5554,7 +5642,19 @@ local function StartRuntimeGM()
                 -- 极旧客户端若没有实例 Id，仍避免同 Cue 并发时互相覆盖。
                 if current[key] then key = key .. ":" .. tostring(i) end
                 local entry = previous and previous[key] or nil
-                if not entry then entry = _av_audioEntry(info, i) end
+                if not entry then
+                    entry = _av_audioEntry(info, i)
+                    _av_queueAudioHistoryEvent("Play", entry, previous == nil)
+                else
+                    -- 历史停止时需要最后一帧的真实播放进度；每帧仅额外读取这一项，
+                    -- 不恢复完整详情的跨 Lua/C# 刷新。
+                    pcall(function()
+                        local latestTime = info.Time
+                        if latestTime and latestTime >= 0 then
+                            entry.time = latestTime
+                        end
+                    end)
+                end
                 current[key] = entry
                 currentOrder[#currentOrder + 1] = key
             end
@@ -5565,11 +5665,17 @@ local function StartRuntimeGM()
                 if not previous[key] then _av_queueAudioEvent("Play", current[key]) end
             end
             for _, key in ipairs(LuaAvMonitor._audioKnownOrder or {}) do
-                if not current[key] then _av_queueAudioEvent("Stop", previous[key]) end
+                if not current[key] then
+                    _av_queueAudioHistoryEvent("Stop", previous[key], false)
+                    _av_queueAudioEvent("Stop", previous[key])
+                end
             end
         end
         LuaAvMonitor._audioKnown = current
         LuaAvMonitor._audioKnownOrder = currentOrder
+        for key, _ in pairs(LuaAvMonitor._audioDetailCache) do
+            if not current[key] then LuaAvMonitor._audioDetailCache[key] = nil end
+        end
     end
 
     -- 收集音频快照
@@ -5641,7 +5747,12 @@ local function StartRuntimeGM()
                     for i = 0, list.Count - 1 do
                         local info = list[i]
                         if info then
-                            activeList[#activeList + 1] = _av_audioEntry(info, i)
+                            local entry = _av_audioEntry(info, i)
+                            activeList[#activeList + 1] = entry
+                            local key = tostring(info.Id or i)
+                            if LuaAvMonitor._audioKnown and LuaAvMonitor._audioKnown[key] then
+                                LuaAvMonitor._audioKnown[key] = entry
+                            end
                         end
                     end
                 end
@@ -5680,6 +5791,8 @@ local function StartRuntimeGM()
         audio.eventStream = true
         audio.events = LuaAvMonitor._pendingAudioEvents
         LuaAvMonitor._pendingAudioEvents = {}
+        audio.historyEvents = LuaAvMonitor._pendingAudioHistoryEvents
+        LuaAvMonitor._pendingAudioHistoryEvents = {}
         return audio
     end
 
@@ -5755,8 +5868,6 @@ local function StartRuntimeGM()
         -- 超时自动停止（前端断连后不会永远推）
         if now - LuaAvMonitor._lastActivateTime > LuaAvMonitor._activeTimeout then
             LuaAvMonitor._isActive = false
-            LuaAvMonitor._audioKnown = nil
-            LuaAvMonitor._audioKnownOrder = nil
             return
         end
         _av_captureAudioTransitions(now)
@@ -5794,15 +5905,13 @@ local function StartRuntimeGM()
             LuaAvMonitor._isActive = true
             LuaAvMonitor._lastPushTime = -9999  -- 立即推送一次
             LuaAvMonitor._lastAudioPollTime = -9999
-            LuaAvMonitor._audioKnown = nil
-            LuaAvMonitor._audioKnownOrder = nil
             LuaAvMonitor._pendingAudioEvents = {}
+            LuaAvMonitor._pendingAudioHistoryEvents = {}
 
         elseif action == "stop" then
             LuaAvMonitor._isActive = false
-            LuaAvMonitor._audioKnown = nil
-            LuaAvMonitor._audioKnownOrder = nil
             LuaAvMonitor._pendingAudioEvents = {}
+            LuaAvMonitor._pendingAudioHistoryEvents = {}
 
         elseif action == "snapshot" then
             -- 激活 + 强制立即推送

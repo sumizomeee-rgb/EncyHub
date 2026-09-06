@@ -48,6 +48,78 @@ GAME_LOG_READ_CHUNK_BYTES = 64 * 1024
 GAME_LOG_SEND_CHUNK_BYTES = 512 * 1024
 GAME_LOG_SEND_CHUNK_ENTRIES = 100
 GAME_LOG_STOP_DELAY = 30.0
+AV_AUDIO_HISTORY_MAX_ENTRIES = 100
+av_audio_history_cache: dict[str, dict[str, Any]] = {}
+av_monitor_snapshot_cache: dict[str, dict[str, Any]] = {}
+
+
+def _clear_expired_client_cache(client_id: str):
+    """由 ServerMgr 到期任务同步调用，与离线卡片一同释放缓存。"""
+    av_audio_history_cache.pop(client_id, None)
+    av_monitor_snapshot_cache.pop(client_id, None)
+    game_log_cache.pop(client_id, None)
+    pending_screenshot_sessions.pop(client_id, None)
+    task = game_log_stop_tasks.pop(client_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def _get_av_audio_history_state(client_id: str) -> dict[str, Any]:
+    if client_id not in av_audio_history_cache:
+        av_audio_history_cache[client_id] = {"entries": [], "active": {}, "seq": 0}
+    return av_audio_history_cache[client_id]
+
+
+def _cache_av_audio_history(client_id: str, audio: dict[str, Any]) -> list[dict[str, Any]]:
+    state = _get_av_audio_history_state(client_id)
+    entries = state["entries"]
+    active = state["active"]
+
+    for event in audio.pop("historyEvents", []) or []:
+        if not isinstance(event, dict):
+            continue
+        instance_id = event.get("instanceId")
+        key = str(instance_id)
+        action = event.get("action")
+        payload = dict(event.get("entry") or {})
+        if action == "Play":
+            existing = active.get(key)
+            if existing:
+                existing.update(payload)
+                continue
+            state["seq"] += 1
+            item = {
+                **payload,
+                "historySeq": state["seq"],
+                "historyActive": True,
+                "preexisting": bool(event.get("preexisting")),
+                "startedAt": event.get("occurredAt") or "",
+                "stoppedAt": None,
+                "_startedMono": time.monotonic(),
+            }
+            entries.insert(0, item)
+            active[key] = item
+        elif action == "Stop":
+            item = active.pop(key, None)
+            if item:
+                item.update(payload)
+                item["historyActive"] = False
+                item["playbackStatus"] = "Removed"
+                item["stoppedAt"] = event.get("occurredAt") or ""
+                item["lifetimeSeconds"] = max(0.0, time.monotonic() - item.pop("_startedMono", time.monotonic()))
+
+    for current in audio.get("activeList", []) or []:
+        if not isinstance(current, dict):
+            continue
+        item = active.get(str(current.get("id")))
+        if item:
+            item.update(current)
+
+    while len(entries) > AV_AUDIO_HISTORY_MAX_ENTRIES:
+        removed = entries.pop()
+        active.pop(str(removed.get("id")), None)
+
+    return [{key: value for key, value in item.items() if not key.startswith("_")} for item in entries]
 
 
 def _prune_screenshot_sessions(client_id: str):
@@ -225,13 +297,17 @@ def _schedule_game_log_stop(client_id: str):
     if existing and not existing.done():
         existing.cancel()
 
+    manager = server_mgr
+    client = manager.clients.get(client_id) if manager else None
+
     async def delayed_stop():
         try:
             await asyncio.sleep(GAME_LOG_STOP_DELAY)
             if game_log_ws_connections.get(client_id):
                 return
-            if server_mgr:
-                await server_mgr.send_game_log_request(client_id, "stop", {})
+            if (client is not None and server_mgr is manager
+                    and manager.clients.get(client_id) is client):
+                await manager.send_game_log_request(client_id, "stop", {})
         except asyncio.CancelledError:
             pass
         finally:
@@ -250,6 +326,7 @@ async def lifespan(app: FastAPI):
     # 初始化
     os.makedirs(DATA_DIR, exist_ok=True)
     server_mgr = ServerMgr()
+    server_mgr.on_client_expired = _clear_expired_client_cache
     custom_gm_mgr = CustomGmManager(DATA_DIR)
     proto_parser = ProtoParser(DATA_DIR)
 
@@ -278,7 +355,7 @@ async def lifespan(app: FastAPI):
     server_mgr.on_log = on_log
 
     async def on_disconnect(client_id: str):
-        """客户端断开时直接 await 广播，确保前端卡片立即消失（不依赖 create_task 调度）"""
+        """客户端断开时直接 await 广播，确保前端卡片立即显示离线状态（不依赖 create_task 调度）"""
         await broadcast_event({
             "type": "update",
             "listeners": server_mgr.get_listeners_info(),
@@ -377,6 +454,11 @@ async def lifespan(app: FastAPI):
         data = pkt.get("data", {})
         if pkt.get("error"):
             data = {**data, "error": pkt.get("error")}
+        audio = data.get("audio") if isinstance(data, dict) else None
+        if isinstance(audio, dict):
+            audio["history"] = _cache_av_audio_history(client_id, audio)
+        if isinstance(data, dict) and not data.get("error"):
+            av_monitor_snapshot_cache[client_id] = data
         asyncio.create_task(broadcast_av_monitor_event({
             "type": pkt.get("action", "unknown"),
             "client_id": client_id,
@@ -937,6 +1019,11 @@ async def av_monitor_command(client_id: str, request: Request):
         raise HTTPException(400, "Missing action")
     await server_mgr.send_av_monitor_request(client_id, action, body)
     return {"status": "requested"}
+
+@app.get("/av_monitor/{client_id}/state")
+async def av_monitor_state(client_id: str):
+    """返回 Hub 内存中的最后一次 AV 快照，离线客户端仍可读取。"""
+    return {"client_id": client_id, "data": av_monitor_snapshot_cache.get(client_id, {})}
 
 @app.websocket("/ws/av_monitor")
 async def websocket_av_monitor(websocket: WebSocket):

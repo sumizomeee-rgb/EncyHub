@@ -273,7 +273,7 @@ def test_frontend_exposes_runtime_gm_code_modal():
     assert "RuntimeGmCodeModal" in content
     assert "runtime-gm-code" in content
     assert "copyText(code)" in content
-    assert "RuntimeGmBridgeIcon" in content
+    assert "<Cable size=" in content
     assert "粘贴到客户端 Lua 入口文件" in content
     assert "window.location.hostname" not in content
     assert "cachedHostRef" in content
@@ -310,7 +310,21 @@ def test_hidden_monitor_tabs_do_not_open_websockets():
     assert "[selectedClient?.id, active]" in hierarchy
 
     assert "if (!active || !selectedClient) return" in timeline
-    assert "[selectedClient?.id, active]" in timeline
+    assert "[selectedClient?.id, active, sendCmd]" in timeline
+
+
+def test_timeline_reuses_static_events_and_avoids_periodic_scene_scan():
+    runtime = read_file(RUNTIME_GM_LUA)
+    timeline = read_file(TIMELINE_MONITOR_JSX)
+
+    assert "function LuaTimelineMonitor.TakeSnapshot(d, forceStatic)" in runtime
+    assert "snap.events = cache.events" in runtime
+    assert "snap.tracks = cache.tracks" in runtime
+    assert "snap.trackStates = {}" in runtime
+    assert "LuaTimelineMonitor.TakeSnapshot(LuaTimelineMonitor._directors[id], true)" in runtime
+    assert "LuaTimelineMonitor._scanInterval" not in runtime
+    assert "mergeTimelineSnapshot(previous, msg.data)" in timeline
+    assert "latestSnapshotsRef.current[instanceId] = next" in timeline
 
 
 def test_hierarchy_manual_refresh_preserves_expanded_tree_state():

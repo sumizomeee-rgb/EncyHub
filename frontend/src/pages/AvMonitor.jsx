@@ -90,6 +90,66 @@ function SliderWithDebounce({ value, min = 0, max = 1, step = 0.01, onChange, di
 
 function pct(v) { return v != null ? `${Math.round(v * 100)}%` : '--' }
 
+function audioTiming(item) {
+  const duration = Number(item?.duration)
+  const time = Number(item?.time)
+  const hasDuration = Number.isFinite(duration) && duration > 0
+  const isLoop = Number.isFinite(duration) && duration < 0
+  const hasElapsed = Number.isFinite(time) && time >= 0
+  const progress = hasDuration && hasElapsed
+    ? Math.min(1, Math.max(0, time / duration))
+    : null
+
+  return { duration, time, hasDuration, isLoop, hasElapsed, progress }
+}
+
+function formatAudioSeconds(ms) {
+  const value = Number(ms)
+  return Number.isFinite(value) && value >= 0 ? `${(value / 1000).toFixed(2)}s` : '--'
+}
+
+function audioFormatLabel(format) {
+  if (!format) return '--'
+  const parts = [format.codec]
+  if (format.samplingRate > 0) parts.push(`${format.samplingRate / 1000}kHz`)
+  if (format.channels > 0) parts.push(format.channels === 1 ? 'Mono' : format.channels === 2 ? 'Stereo' : `${format.channels}ch`)
+  return parts.filter(Boolean).join(' · ')
+}
+
+function AudioStatusIcon({ paused, status }) {
+  if (paused) {
+    return <span title="已暂停" aria-label="已暂停" className="text-[var(--amber)]"><Pause size={11} fill="currentColor" /></span>
+  }
+  if (status === 'Prep') {
+    return <span title="准备中" aria-label="准备中" className="text-[var(--caramel)]"><Loader2 size={11} className="animate-spin" /></span>
+  }
+  if (status === 'Removed') {
+    return <span title="已结束" aria-label="已结束" className="inline-block w-2.5 h-2.5 rounded-full border border-[var(--terracotta)]/70" />
+  }
+  return <span title={status === 'Playing' ? '播放中' : status || '状态未知'} aria-label={status === 'Playing' ? '播放中' : status || '状态未知'} className="inline-block w-2 h-2 rounded-full bg-[var(--sage)] shadow-[0_0_0_2px_rgba(125,155,118,0.12)]" />
+}
+
+function CollapsibleSection({ title, meta, expanded, onToggle, actions, children, className = '' }) {
+  return (
+    <section className={`rounded-lg border border-[var(--glass-border)] bg-white/40 text-xs overflow-hidden [overflow-anchor:none] ${className}`}>
+      <div className={`flex items-center min-h-9 px-3 ${expanded ? 'border-b border-[var(--glass-border)]' : ''}`}>
+        <button className="flex flex-1 min-w-0 items-center gap-1.5 py-2 text-left hover:text-[var(--coffee-deep)]"
+          onClick={onToggle} aria-expanded={expanded}>
+          <ChevronRight size={12} className={`flex-shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} />
+          <span className="font-semibold text-[var(--coffee-deep)] truncate">{title}</span>
+          {meta != null && <span className="text-[var(--coffee-muted)] text-[10px] font-normal flex-shrink-0">{meta}</span>}
+        </button>
+        {actions && <div className="flex items-center gap-1 pl-2" onClick={e => e.stopPropagation()}>{actions}</div>}
+      </div>
+      <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+        <div className="min-h-0 overflow-hidden">
+          <div className="p-3">{children}</div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 // ============================================================
 // VolumeSlider — custom slider for volume (0-1)
 // ============================================================
@@ -185,6 +245,134 @@ function InfoRow({ label, value }) {
   )
 }
 
+function AudioDetailRow({ label, children, muted = false, wide = false }) {
+  return (
+    <div className={`flex gap-2 min-w-0 ${wide ? 'col-span-2' : ''}`}>
+      <span className="w-24 flex-shrink-0 text-[var(--coffee-muted)]">{label}</span>
+      <span className={`font-mono min-w-0 break-all ${muted ? 'text-[var(--coffee-muted)]/70' : 'text-[var(--coffee-deep)]'}`}>{children}</span>
+    </div>
+  )
+}
+
+function audioParam(value, suffix = 's') {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? `${number}${suffix}` : '未设置'
+}
+
+function compactTimestamp(value) {
+  if (!value) return '--'
+  return String(value).replace(/^\d{4}-\d{2}-\d{2}\s+/, '')
+}
+
+function historyTimestamp(value) {
+  return value ? String(value).replace(/^\d{4}-/, '') : '--'
+}
+
+function loadStoredState(key, fallback) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(key) || 'null')
+    return stored && typeof stored === 'object' ? { ...fallback, ...stored } : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function AudioEntryCard({ item, entryKey, expanded, onToggle, playTypeBadge, playTypeProgress,
+  copiedFile, handleCopy, history = false }) {
+  const timing = audioTiming(item)
+  const progressPercent = timing.progress == null ? null : Math.round(timing.progress * 100)
+  const playbackStatus = item.historyActive === false ? 'Removed' : (item.playbackStatus || item.status)
+  const isPaused = item.paused ?? item.status === 'Paused'
+  const cutoffActive = [item.startTime, item.endTime, item.lastFor, item.durationForEndtime].some(value => Number(value) > 0)
+    || item.stopRemaining != null || item.isFadingOut
+  const copyKey = `${entryKey}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+
+  return (
+    <div className="rounded border border-[var(--glass-border)] bg-white/30 overflow-hidden">
+      <button className="relative w-full px-2 py-1.5 text-left overflow-hidden" onClick={onToggle}>
+        {progressPercent != null && (
+          <span aria-hidden="true" className={`absolute inset-y-0 left-0 transition-[width] duration-300 ${playTypeProgress(item.playType)}`}
+            style={{ width: `${progressPercent}%` }} />
+        )}
+        <span className="relative z-10 flex items-center gap-2 min-w-0">
+          <ChevronRight size={10} className={`flex-shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} />
+          {history && <span className="font-mono text-[9px] text-[var(--coffee-muted)] flex-shrink-0">{compactTimestamp(item.startedAt)}</span>}
+          <span className={`text-[10px] px-1 rounded flex-shrink-0 ${playTypeBadge(item.playType)}`}>{item.playType}</span>
+          <span className="font-medium truncate text-[var(--coffee-deep)] min-w-0">{item.name}</span>
+          <span className="font-mono text-[10px] text-[var(--coffee-muted)] flex-shrink-0">Cue:{item.cueId ?? '--'}</span>
+          {item.preexisting && <span title="打开监控时已在播放" className="text-[9px] text-[var(--coffee-muted)] flex-shrink-0">已在播放</span>}
+          <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+            {progressPercent != null && <span className="font-mono text-[10px] font-semibold text-[var(--coffee-deep)]">{progressPercent}% · {formatAudioSeconds(timing.time)}/{formatAudioSeconds(timing.duration)}</span>}
+            {timing.isLoop && <span className="text-[10px] font-semibold text-[var(--caramel)]">Loop</span>}
+            <AudioStatusIcon paused={isPaused} status={playbackStatus} />
+          </span>
+        </span>
+      </button>
+      <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+        <div className="min-h-0 overflow-hidden">
+          <div className="px-3 pb-2.5 pt-2 border-t border-[var(--glass-border)] text-[10px] space-y-2.5">
+            {history && (
+              <div>
+                <div className="text-[9px] font-semibold uppercase tracking-wider text-[var(--coffee-muted)] mb-1">生命周期</div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                  <AudioDetailRow label="播放时间">{historyTimestamp(item.startedAt)}</AudioDetailRow>
+                  <AudioDetailRow label="停止时间" muted={!item.stoppedAt}>{item.stoppedAt ? historyTimestamp(item.stoppedAt) : (item.historyActive ? '仍在播放' : '--')}</AudioDetailRow>
+                  <AudioDetailRow label="实际存活">{item.lifetimeSeconds != null ? `${Number(item.lifetimeSeconds).toFixed(2)}s` : (item.historyActive ? '计时中' : '--')}</AudioDetailRow>
+                  <AudioDetailRow label="最终状态">{playbackStatus || '--'}</AudioDetailRow>
+                </div>
+              </div>
+            )}
+
+            <div className={history ? 'pt-2 border-t border-[var(--glass-border)]' : ''}>
+              <div className="text-[9px] font-semibold uppercase tracking-wider text-[var(--coffee-muted)] mb-1">业务与实例</div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                <AudioDetailRow label="InstanceId">{item.id ?? '--'}</AudioDetailRow>
+                <AudioDetailRow label="CueId">{item.cueId ?? '--'}</AudioDetailRow>
+                <AudioDetailRow label="PlayType">{item.playType || '--'}</AudioDetailRow>
+                <AudioDetailRow label="Source">{item.sourceName || '--'}</AudioDetailRow>
+                <AudioDetailRow label="TransformId">{item.transformId ?? '--'}</AudioDetailRow>
+                <AudioDetailRow label="Source Vol.">{pct(item.volume)}</AudioDetailRow>
+                <AudioDetailRow label="SelectorLabelDic" wide>{item.selectorLabelDic?.length ? item.selectorLabelDic.map(v => `${v.selector}=${v.label}`).join(', ') : '--'}</AudioDetailRow>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[var(--glass-border)]">
+              <div className="text-[9px] font-semibold uppercase tracking-wider text-[var(--coffee-muted)] mb-1">CRI 播放参数</div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                <AudioDetailRow label="PlaybackId">{item.playbackId ?? '--'}</AudioDetailRow>
+                <AudioDetailRow label="Status">{playbackStatus || '--'}</AudioDetailRow>
+                <AudioDetailRow label="Paused">{isPaused ? 'Yes' : 'No'}</AudioDetailRow>
+                <AudioDetailRow label="Time">{timing.hasElapsed ? formatAudioSeconds(timing.time) : '--'}</AudioDetailRow>
+                <AudioDetailRow label="Duration">{timing.isLoop ? 'Loop' : timing.hasDuration ? formatAudioSeconds(timing.duration) : '--'}</AudioDetailRow>
+                <AudioDetailRow label="Progress">{progressPercent != null ? `${progressPercent}%` : '--'}</AudioDetailRow>
+                <AudioDetailRow label="Format" wide>{audioFormatLabel(item.format)}</AudioDetailRow>
+                <AudioDetailRow label="CueSheet" wide>{item.cueSheetId ?? '--'}{item.cueSheetName ? ` · ${item.cueSheetName}` : ''}</AudioDetailRow>
+                {item.acbPath && <AudioDetailRow label="ACB" wide><button className={`inline-flex items-center gap-1 ${copiedFile === `acb_${copyKey}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`} onClick={() => handleCopy(item.acbPath.split(/[/\\]/).pop(), `acb_${copyKey}`)}>{copiedFile === `acb_${copyKey}` ? <Check size={10} /> : <Copy size={10} />}…/{item.acbPath.split(/[/\\]/).pop()}</button></AudioDetailRow>}
+                {item.awbPath && <AudioDetailRow label="AWB" wide><button className={`inline-flex items-center gap-1 ${copiedFile === `awb_${copyKey}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`} onClick={() => handleCopy(item.awbPath.split(/[/\\]/).pop(), `awb_${copyKey}`)}>{copiedFile === `awb_${copyKey}` ? <Check size={10} /> : <Copy size={10} />}…/{item.awbPath.split(/[/\\]/).pop()}</button></AudioDetailRow>}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[var(--glass-border)]">
+              <div className="flex items-center gap-2 text-[9px] font-semibold uppercase tracking-wider text-[var(--coffee-muted)] mb-1">
+                音频截取与停止
+                <span className={`normal-case tracking-normal font-normal ${cutoffActive ? 'text-[var(--amber)]' : 'text-[var(--coffee-muted)]/70'}`}>{cutoffActive ? '生效中' : '未启用'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                <AudioDetailRow label="StartTime" muted={!(Number(item.startTime) > 0)}>{audioParam(item.startTime)}</AudioDetailRow>
+                <AudioDetailRow label="EndTime" muted={!(Number(item.endTime) > 0)}>{audioParam(item.endTime)}</AudioDetailRow>
+                <AudioDetailRow label="LastFor" muted={!(Number(item.lastFor) > 0)}>{audioParam(item.lastFor)}</AudioDetailRow>
+                <AudioDetailRow label="DurationForEndtime" muted={!(Number(item.durationForEndtime) > 0)}>{audioParam(item.durationForEndtime)}</AudioDetailRow>
+                <AudioDetailRow label="StopEndtimeStamp" muted={item.stopRemaining == null}>{item.stopRemaining != null ? `剩余 ${Number(item.stopRemaining).toFixed(2)}s` : '未设置'}</AudioDetailRow>
+                <AudioDetailRow label="IsFadingOut" muted={!item.isFadingOut}>{item.isFadingOut ? 'Yes' : 'No'}</AudioDetailRow>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ============================================================
 // AudioTab
 // ============================================================
@@ -196,6 +384,37 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
   const bgm = audioSnap?.bgm
   const vols = audioSnap?.volumes
   const debugFlags = audioSnap?.debugFlags || {}
+  const [sectionOpen, setSectionOpen] = useState(() => loadStoredState('gm_av_audio_sections', { bgm: true, active: true, history: false, volume: false, log: false, cue: false, debug: false, cri: false }))
+  const [historyPaused, setHistoryPaused] = useState(false)
+  const [historyView, setHistoryView] = useState([])
+  const [historyHiddenCount, setHistoryHiddenCount] = useState(0)
+  const [historyClearedThrough, setHistoryClearedThrough] = useState(0)
+  const historySeqRef = useRef(0)
+  const toggleSection = key => setSectionOpen(prev => ({ ...prev, [key]: !prev[key] }))
+
+  useEffect(() => {
+    try { localStorage.setItem('gm_av_audio_sections', JSON.stringify(sectionOpen)) } catch {}
+  }, [sectionOpen])
+
+  useEffect(() => {
+    const next = (audioSnap?.history || []).filter(item => (item.historySeq || 0) > historyClearedThrough)
+    const newestSeq = next[0]?.historySeq || 0
+    if (historyPaused) {
+      setHistoryHiddenCount(Math.max(0, newestSeq - historySeqRef.current))
+      return
+    }
+    setHistoryView(next)
+    setHistoryHiddenCount(0)
+    historySeqRef.current = newestSeq
+  }, [audioSnap?.history, historyPaused, historyClearedThrough])
+
+  const resumeHistory = () => {
+    const next = (audioSnap?.history || []).filter(item => (item.historySeq || 0) > historyClearedThrough)
+    setHistoryPaused(false)
+    setHistoryView(next)
+    setHistoryHiddenCount(0)
+    historySeqRef.current = next[0]?.historySeq || 0
+  }
 
   const catLabels = [['music', 'Music', 'music'], ['sfx', 'SFX', 'sfx'], ['cv', 'CV', 'voice']]
   const secLabels = [['music', '2nd Music'], ['sfx', '2nd SFX'], ['voice', '2nd Voice']]
@@ -222,6 +441,12 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
     return 'bg-purple-100 text-purple-600'
   }
 
+  const playTypeProgress = (pt) => {
+    if (pt === 'Music') return 'bg-[var(--caramel)]/15'
+    if (pt === 'SFX') return 'bg-blue-400/15'
+    return 'bg-purple-400/15'
+  }
+
   return (
     <div className="space-y-3">
       {commandError && (
@@ -230,10 +455,8 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
         </div>
       )}
       {/* 1. BGM Card (with quick actions) */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
-        <div className="flex items-center gap-1.5 mb-2 font-semibold text-[var(--coffee-deep)]">
-          <Music size={12} />当前 BGM
-        </div>
+      <CollapsibleSection title="当前 BGM" expanded={sectionOpen.bgm} onToggle={() => toggleSection('bgm')}
+        meta={<Music size={12} />}>
         {!bgm || (!bgm.name && !bgm.cueId) ? (
           <div className="text-[var(--coffee-muted)]">-- 无播放 --</div>
         ) : (
@@ -281,11 +504,62 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
             <RotateCw size={10} />重载
           </button>
         </div>
-      </section>
+      </CollapsibleSection>
 
-      {/* 2. Volume Mixer */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
-        <div className="font-semibold text-[var(--coffee-deep)] mb-2">音量调节</div>
+      {/* 2. Active Audio List */}
+      <CollapsibleSection title="活跃音频列表" meta={`(${audioSnap?.activeList?.length ?? 0})`}
+        expanded={sectionOpen.active} onToggle={() => toggleSection('active')}>
+        {!audioSnap?.activeList?.length ? (
+          <div className="text-[var(--coffee-muted)]">暂无活跃音频</div>
+        ) : (
+          <div className="space-y-0.5">
+            {audioSnap.activeList.map((item, i) => (
+              <AudioEntryCard key={item.id ?? i} item={item} entryKey={`active_${item.id ?? i}`}
+                expanded={expandedAudio === `active:${item.id ?? i}`}
+                onToggle={() => setExpandedAudio(expandedAudio === `active:${item.id ?? i}` ? null : `active:${item.id ?? i}`)}
+                playTypeBadge={playTypeBadge} playTypeProgress={playTypeProgress}
+                copiedFile={copiedFile} handleCopy={handleCopy} />
+            ))}
+          </div>
+        )}
+      </CollapsibleSection>
+
+      {/* 3. Recent Audio History */}
+      <CollapsibleSection title="最近音频历史" meta={`(${historyView.length}/100${historyHiddenCount ? ` · +${historyHiddenCount}` : ''})`}
+        expanded={sectionOpen.history} onToggle={() => toggleSection('history')}
+        actions={<>
+          <button onClick={() => historyPaused ? resumeHistory() : setHistoryPaused(true)}
+            className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${historyPaused ? 'border-[var(--amber)]/40 bg-[var(--amber)]/10 text-[var(--amber)]' : 'border-[var(--glass-border)] text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)]'}`}>
+            {historyPaused ? `恢复${historyHiddenCount ? ` (+${historyHiddenCount})` : ''}` : '暂停'}
+          </button>
+          <button onClick={() => {
+            const newestSeq = audioSnap?.history?.[0]?.historySeq || 0
+            setHistoryClearedThrough(newestSeq)
+            setHistoryView([])
+            setHistoryHiddenCount(0)
+            historySeqRef.current = newestSeq
+          }}
+            className="px-1.5 py-0.5 rounded text-[10px] border border-[var(--glass-border)] text-[var(--coffee-muted)] hover:text-[var(--terracotta)] transition-colors">
+            清空视图
+          </button>
+        </>}>
+        {!historyView.length ? (
+          <div className="text-center text-[var(--coffee-muted)] py-2">暂无播放历史</div>
+        ) : (
+          <div className="max-h-96 overflow-y-auto space-y-0.5">
+            {historyView.map((item, i) => (
+              <AudioEntryCard key={item.historySeq ?? i} item={item} entryKey={`history_${item.historySeq ?? i}`}
+                expanded={expandedAudio === `history:${item.historySeq ?? i}`}
+                onToggle={() => setExpandedAudio(expandedAudio === `history:${item.historySeq ?? i}` ? null : `history:${item.historySeq ?? i}`)}
+                playTypeBadge={playTypeBadge} playTypeProgress={playTypeProgress}
+                copiedFile={copiedFile} handleCopy={handleCopy} history />
+            ))}
+          </div>
+        )}
+      </CollapsibleSection>
+
+      {/* 4. Volume Mixer */}
+      <CollapsibleSection title="音量调节" expanded={sectionOpen.volume} onToggle={() => toggleSection('volume')}>
 
         <button onClick={toggleMasterMute}
           className={`w-full mb-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${audioSnap?.masterMute
@@ -326,122 +600,11 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
             onChange={v => setSourceVol(key, v)}
           />
         ))}
-      </section>
+      </CollapsibleSection>
 
-      {/* 3. Active Audio List */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
-        <div className="font-semibold text-[var(--coffee-deep)] mb-2">
-          活跃音频列表
-          <span className="ml-1.5 text-[var(--coffee-muted)] font-normal">({audioSnap?.activeList?.length ?? 0})</span>
-        </div>
-        {!audioSnap?.activeList?.length ? (
-          <div className="text-[var(--coffee-muted)]">暂无活跃音频</div>
-        ) : (
-          <div className="space-y-0.5">
-            {audioSnap.activeList.map((item, i) => (
-              <div key={item.id ?? i} className="rounded border border-[var(--glass-border)] bg-white/30 overflow-hidden">
-                <button className="w-full flex items-center gap-2 px-2 py-1.5 text-left"
-                  onClick={() => setExpandedAudio(expandedAudio === i ? null : i)}>
-                  {expandedAudio === i ? <ChevronDown size={10} className="flex-shrink-0" /> : <ChevronRight size={10} className="flex-shrink-0" />}
-                  <span className={`text-[10px] px-1 rounded flex-shrink-0 ${playTypeBadge(item.playType)}`}>
-                    {item.playType}
-                  </span>
-                  <span className="font-medium truncate text-[var(--coffee-deep)]">{item.name}</span>
-                  <span className="ml-auto text-[var(--coffee-muted)] flex-shrink-0">{pct(item.volume)}</span>
-                  <span className={`text-[10px] flex-shrink-0 ${item.status === 'Playing' ? 'text-[var(--sage)]' : 'text-[var(--coffee-muted)]'}`}>
-                    {item.status}
-                  </span>
-                </button>
-                {expandedAudio === i && (
-                  <div className="px-3 pb-2 pt-1 border-t border-[var(--glass-border)] text-[var(--coffee-muted)]">
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
-                      <div className="flex gap-2">
-                        <span className="w-14 flex-shrink-0">InstanceId</span>
-                        <span className="font-mono text-[var(--coffee-deep)]">{item.id ?? '--'}</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <span className="w-14 flex-shrink-0">CueId</span>
-                        <span className="font-mono text-[var(--coffee-deep)]">{item.cueId ?? '--'}</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <span className="w-14 flex-shrink-0">Volume</span>
-                        <span className="font-mono text-[var(--coffee-deep)]">{pct(item.volume)}</span>
-                      </div>
-                      {item.duration != null && (
-                        <div className="flex gap-2">
-                          <span className="w-14 flex-shrink-0">Duration</span>
-                          <span className="font-mono text-[var(--coffee-deep)]">{item.duration}ms</span>
-                        </div>
-                      )}
-                      {item.time != null && item.time >= 0 && (
-                        <div className="flex gap-2">
-                          <span className="w-14 flex-shrink-0">Time</span>
-                          <span className="font-mono text-[var(--coffee-deep)]">{item.time}ms</span>
-                        </div>
-                      )}
-                      {item.startTime != null && item.startTime >= 0 && (
-                        <div className="flex gap-2">
-                          <span className="w-14 flex-shrink-0">Start</span>
-                          <span className="font-mono text-[var(--coffee-deep)]">{item.startTime}s</span>
-                        </div>
-                      )}
-                      {item.endTime != null && item.endTime >= 0 && (
-                        <div className="flex gap-2">
-                          <span className="w-14 flex-shrink-0">End</span>
-                          <span className="font-mono text-[var(--coffee-deep)]">{item.endTime}s</span>
-                        </div>
-                      )}
-                      {item.lastFor != null && item.lastFor >= 0 && (
-                        <div className="flex gap-2">
-                          <span className="w-14 flex-shrink-0">LastFor</span>
-                          <span className="font-mono text-[var(--coffee-deep)]">{item.lastFor}s</span>
-                        </div>
-                      )}
-                      {item.sourceName && (
-                        <div className="flex gap-2 col-span-2">
-                          <span className="w-14 flex-shrink-0">Source</span>
-                          <span className="font-mono text-[var(--coffee-deep)] truncate">{item.sourceName}</span>
-                        </div>
-                      )}
-                    </div>
-                    {(item.acbPath || item.awbPath) && (
-                      <div className="mt-1 pt-1 border-t border-[var(--glass-border)] space-y-0.5">
-                        {item.acbPath && (
-                          <div className="flex items-center gap-1">
-                            <span className="w-14 flex-shrink-0">ACB</span>
-                            <button className={`flex items-center gap-1 transition-colors ${copiedFile === `acb_${i}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`}
-                              onClick={() => handleCopy(item.acbPath.split(/[/\\]/).pop(), `acb_${i}`)} title={item.acbPath}>
-                              {copiedFile === `acb_${i}` ? <Check size={10} /> : <Copy size={10} />}
-                              <span className="truncate">…/{item.acbPath.split(/[/\\]/).pop()}</span>
-                            </button>
-                          </div>
-                        )}
-                        {item.awbPath && (
-                          <div className="flex items-center gap-1">
-                            <span className="w-14 flex-shrink-0">AWB</span>
-                            <button className={`flex items-center gap-1 transition-colors ${copiedFile === `awb_${i}` ? 'text-[var(--sage)]' : 'hover:text-[var(--coffee-deep)]'}`}
-                              onClick={() => handleCopy(item.awbPath.split(/[/\\]/).pop(), `awb_${i}`)} title={item.awbPath}>
-                              {copiedFile === `awb_${i}` ? <Check size={10} /> : <Copy size={10} />}
-                              <span className="truncate">…/{item.awbPath.split(/[/\\]/).pop()}</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 4. Audio Play Log */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 text-xs overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--glass-border)]">
-          <span className="font-semibold text-[var(--coffee-deep)]">播放日志</span>
-          <span className="text-[var(--coffee-muted)] text-[10px]">({audioLog?.length ?? 0})</span>
-        </div>
+      {/* 5. Audio Play Log */}
+      <CollapsibleSection title="音频事件日志" meta={`(${audioLog?.length ?? 0})`}
+        expanded={sectionOpen.log} onToggle={() => toggleSection('log')} className="[&>div:last-child>div>div]:p-0">
         <div className="max-h-40 overflow-y-auto">
           {!audioLog?.length ? (
             <div className="px-3 py-3 text-[var(--coffee-muted)] text-center">开启 Log Collect 及 Play Log / Stop Log 后实时记录</div>
@@ -466,11 +629,10 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
             </div>
           )}
         </div>
-      </section>
+      </CollapsibleSection>
 
-      {/* 5. CueId Query */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
-        <div className="font-semibold text-[var(--coffee-deep)] mb-2">CueId 精确查询</div>
+      {/* 6. CueId Query */}
+      <CollapsibleSection title="CueId 精确查询" expanded={sectionOpen.cue} onToggle={() => toggleSection('cue')}>
         <div className="flex gap-1.5">
           <input type="number" value={cueQuery} onChange={e => setCueQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && queryCue()}
@@ -495,11 +657,10 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
         {cueResult?.error && (
           <div className="mt-2 text-[var(--terracotta)] text-[10px]">{cueResult.error}</div>
         )}
-      </section>
+      </CollapsibleSection>
 
-      {/* 6. Debug Flags */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 p-3 text-xs">
-        <div className="font-semibold text-[var(--coffee-deep)] mb-2">Debug 开关</div>
+      {/* 7. Debug Flags */}
+      <CollapsibleSection title="Debug 开关" expanded={sectionOpen.debug} onToggle={() => toggleSection('debug')}>
         <div className="grid grid-cols-2 gap-1.5">
           {debugFlagLabels.map(([flag, label]) => (
             <button key={flag} onClick={() => toggleDebugFlag(flag)}
@@ -511,22 +672,14 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
             </button>
           ))}
         </div>
-      </section>
+      </CollapsibleSection>
 
-      {/* 7. CRI Stats (collapsible) */}
-      <section className="rounded-lg border border-[var(--glass-border)] bg-white/40 text-xs overflow-hidden">
-        <button className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-[var(--cream-warm)]/50 transition-colors"
-          onClick={() => setCriExpanded(v => !v)}>
-          {criExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          <span className="font-semibold text-[var(--coffee-deep)]">CRI 资源指标</span>
-          {audioSnap?.criStats && (
-            <span className="ml-2 text-[var(--coffee-muted)]">
-              Binds: {audioSnap.criStats.bindsCur ?? '?'}/{audioSnap.criStats.bindsLimit ?? '?'} &nbsp;/&nbsp; Loaders: {audioSnap.criStats.loadersCur ?? '?'}/{audioSnap.criStats.loadersLimit ?? '?'}
-            </span>
-          )}
-        </button>
-        {criExpanded && audioSnap?.criStats && (
-          <div className="px-4 pb-2 grid grid-cols-2 gap-x-6 gap-y-1 border-t border-[var(--glass-border)]">
+      {/* 8. CRI Stats */}
+      <CollapsibleSection title="CRI 资源指标"
+        meta={audioSnap?.criStats ? `Binds ${audioSnap.criStats.bindsCur ?? '?'}/${audioSnap.criStats.bindsLimit ?? '?'} · Loaders ${audioSnap.criStats.loadersCur ?? '?'}/${audioSnap.criStats.loadersLimit ?? '?'}` : null}
+        expanded={sectionOpen.cri} onToggle={() => { toggleSection('cri'); setCriExpanded(v => !v) }}>
+        {audioSnap?.criStats && (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1">
             {Object.entries(audioSnap.criStats).map(([k, v]) => (
               <div key={k} className="flex justify-between pt-1">
                 <span className="text-[var(--coffee-muted)]">{k}</span>
@@ -535,7 +688,7 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
             ))}
           </div>
         )}
-      </section>
+      </CollapsibleSection>
     </div>
   )
 }
@@ -585,7 +738,8 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
   }
 
   const [leftWidth, setLeftWidth] = useState(200)
-  const [moreInfoExpanded, setMoreInfoExpanded] = useState(false)
+  const [moreInfoExpanded, setMoreInfoExpanded] = useState(() => localStorage.getItem('gm_av_video_more_info') === 'true')
+  const [videoSections, setVideoSections] = useState(() => loadStoredState('gm_av_video_sections', { players: true, log: true }))
   const [speedLocal, setSpeedLocal] = useState('1')
   const [editingTime, setEditingTime] = useState(false)
   const [timeInput, setTimeInput] = useState('')
@@ -594,6 +748,13 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
   const isDragging = useRef(false)
   const anchorRef = useRef({ time: 0, ts: 0, speed: 1, playing: false, total: 0 })
   const rafRef = useRef(null)
+
+  useEffect(() => {
+    try { localStorage.setItem('gm_av_video_sections', JSON.stringify(videoSections)) } catch {}
+  }, [videoSections])
+  useEffect(() => {
+    try { localStorage.setItem('gm_av_video_more_info', String(moreInfoExpanded)) } catch {}
+  }, [moreInfoExpanded])
 
   const players = videoSnap?.players || []
   const player = players.find(p => p.id === selectedPlayer)
@@ -682,7 +843,9 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
   return (
     <div className="flex flex-col gap-3">
       {/* Split panel */}
-      <div className="flex rounded-lg border border-[var(--glass-border)] bg-white/30 overflow-hidden"
+      <CollapsibleSection title="播放器" meta={`(${players.length})`} expanded={videoSections.players}
+        onToggle={() => setVideoSections(v => ({ ...v, players: !v.players }))} className="[&>div:last-child>div>div]:p-0">
+      <div className="flex bg-white/30 overflow-hidden"
         style={{ minHeight: 360 }}
         onMouseMove={e => {
           if (!isDragging.current) return
@@ -831,7 +994,8 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
                   {moreInfoExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   <span className="font-semibold text-[var(--coffee-deep)]">更多信息</span>
                 </button>
-                {moreInfoExpanded && (
+                <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${moreInfoExpanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+                  <div className="min-h-0 overflow-hidden">
                   <div className="px-3 pb-2 grid grid-cols-2 gap-x-4 border-t border-[var(--glass-border)]">
                     <InfoRow label="Status" value={player.status} />
                     <InfoRow label="IsPaused" value={player.isPaused != null ? (player.isPaused ? 'Yes' : 'No') : null} />
@@ -862,18 +1026,19 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
                     <InfoRow label="RetainSound" value={player.retainSound != null ? (player.retainSound ? 'Yes' : 'No') : null} />
                     <InfoRow label="RetainCv" value={player.retainCv != null ? (player.retainCv ? 'Yes' : 'No') : null} />
                   </div>
-                )}
+                  </div>
+                </div>
               </div>
             </>
           )}
         </div>
       </div>
+      </CollapsibleSection>
 
       {/* Event Log */}
-      <div className="rounded-lg border border-[var(--glass-border)] bg-white/40 overflow-hidden text-xs">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--glass-border)]">
-          <span className="font-semibold text-[var(--coffee-deep)]">事件日志</span>
-          <span className="text-[var(--coffee-muted)] text-[10px]">({eventLog.length})</span>
+      <CollapsibleSection title="事件日志" meta={`(${eventLog.length})`} expanded={videoSections.log}
+        onToggle={() => setVideoSections(v => ({ ...v, log: !v.log }))} className="[&>div:last-child>div>div]:p-0"
+        actions={<>
           <button onClick={() => sendCmd('toggle_video_log', { enabled: !videoSnap?.logEnabled })}
             className={`ml-1 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors ${
               videoSnap?.logEnabled
@@ -891,7 +1056,7 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
               </button>
             ))}
           </div>
-        </div>
+        </>}>
         <div className="overflow-y-auto font-mono" style={{ maxHeight: 200 }}>
           {eventLog.length === 0 ? (
             <div className="text-center text-[var(--coffee-muted)] py-4">暂无事件</div>
@@ -907,7 +1072,7 @@ function VideoTab({ videoSnap, selectedPlayer, setSelectedPlayer, eventLog, even
             </div>
           ))}
         </div>
-      </div>
+      </CollapsibleSection>
     </div>
   )
 }
@@ -957,6 +1122,16 @@ function AvMonitor({ clients, selectedClient, active }) {
     setAudioCommandError(null)
     prevActiveRef.current = null
     lastUpdateRef.current = 0
+    if (selectedClient?.id) {
+      fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/state`)
+        .then(response => response.ok ? response.json() : null)
+        .then(result => {
+          const data = result?.data
+          if (data?.audio) setAudioSnap(data.audio)
+          if (data?.video) setVideoSnap(data.video)
+        })
+        .catch(() => {})
+    }
   }, [selectedClient?.id])
 
   // --- WebSocket ---
@@ -974,6 +1149,7 @@ function AvMonitor({ clients, selectedClient, active }) {
         pingTimer = setInterval(() => {
           if (ws.readyState !== WebSocket.OPEN) return
           ws.send('ping')
+          if (selectedClient.online === false) return
           // 游戏侧 AV 订阅 30 秒无命令会超时；snapshot 同时作为心跳且不会重置事件基线。
           fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -981,10 +1157,12 @@ function AvMonitor({ clients, selectedClient, active }) {
           }).catch(() => {})
         }, 20000)
         // 通知游戏侧开始推送
-        fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'start' })
-        }).catch(() => {})
+        if (selectedClient.online !== false) {
+          fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'start' })
+          }).catch(() => {})
+        }
       }
       ws.onmessage = (event) => {
         if (event.data === 'pong') return
@@ -1068,11 +1246,11 @@ function AvMonitor({ clients, selectedClient, active }) {
       wsRef.current?.close()
       wsRef.current = null
     }
-  }, [selectedClient?.id, active])
+  }, [selectedClient?.id, selectedClient?.online, active])
 
   // --- Command helper ---
   const sendCmd = useCallback((action, params = {}, onResponse) => {
-    if (!selectedClient) return
+    if (!selectedClient || selectedClient.online === false) return
     if (onResponse) listenersRef.current[action] = onResponse
     return fetch(`/api/gm_console/av_monitor/${encodeURIComponent(selectedClient.id)}/command`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1084,7 +1262,7 @@ function AvMonitor({ clients, selectedClient, active }) {
       setAudioCommandError(`${action}: ${e.message}`)
       console.error('[AvMonitor] sendCmd error:', e)
     })
-  }, [selectedClient?.id])
+  }, [selectedClient?.id, selectedClient?.online])
 
   const manualRefresh = useCallback(() => {
     lastUpdateRef.current = 0
@@ -1211,6 +1389,11 @@ function AvMonitor({ clients, selectedClient, active }) {
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        {selectedClient.online === false && (
+          <div className="mb-3 rounded-lg border border-[var(--coffee-muted)]/25 bg-[var(--cream-warm)]/60 px-3 py-2 text-xs text-[var(--coffee-muted)]">
+            客户端已离线，当前展示 Hub 保留的最后一次快照与音频历史；控制功能暂不可用。
+          </div>
+        )}
         {subTab === 'audio' ? (
           <AudioTab
             audioSnap={audioSnap}

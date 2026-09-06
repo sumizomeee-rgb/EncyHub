@@ -6,7 +6,7 @@ import {
   Home, ZoomIn, ZoomOut, Edit, Layers, Globe, RefreshCw,
   Package, Database, Zap, Settings,
   Film, Video, Clock, Table2, Camera, Clipboard, Check, AlertCircle,
-  FileText, Download
+  FileText, Download, Cable
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import { copyText } from '../utils/clipboard'
@@ -75,15 +75,10 @@ function PlatformIcon({ platform, size, className }) {
   return <IconFn size={size} className={className} />
 }
 
-function RuntimeGmBridgeIcon({ size = 16, className = '' }) {
-  return (
-    <svg viewBox="0 0 24 24" width={size} height={size} className={className}
-      fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
-      <path d="m10 9-3 3 3 3" />
-      <path d="m14 9 3 3-3 3" />
-    </svg>
-  )
+function offlineRemaining(client, nowMs) {
+  if (client?.online !== false || !client.offlineExpiresAt) return ''
+  const seconds = Math.max(0, Math.ceil(client.offlineExpiresAt * 1000 - nowMs) / 1000)
+  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 }
 
 const LOG_TYPE_FILTERS = [
@@ -435,7 +430,13 @@ function GmConsole() {
   const toast = useToast()
   const [listeners, setListeners] = useState([])
   const [clients, setClients] = useState([])
+  const [clientClock, setClientClock] = useState(Date.now())
   const [selectedClient, setSelectedClient] = useState(null)
+
+  useEffect(() => {
+    const timer = setInterval(() => setClientClock(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
   const [screenshot, setScreenshot] = useState(null) // { client_id, image, width, height }
   const [screenshotCopying, setScreenshotCopying] = useState(false)
   // 截图请求中的客户端 id 集合（per-client 锁，防止重复点击）
@@ -1298,17 +1299,15 @@ end`
 
               {/* Collapsed view - desktop only when collapsed */}
               <div className={`${sidebarCollapsed ? 'lg:flex' : 'lg:hidden'} hidden flex-col items-center gap-3`}>
-                <div className="glass-card p-2 w-full flex justify-center">
-                  <button
-                    type="button"
-                    className="relative p-1 rounded-lg text-[var(--sage)] hover:bg-[var(--cream-warm)] transition-colors"
-                    title={`下载 / 查看 RuntimeGM Bridge · 握手端口 ${handshakePort}`}
-                    aria-label="下载或查看 RuntimeGM Bridge"
-                    onClick={() => setRuntimeGmModalOpen(true)}
-                  >
-                    <Download size={18} />
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="glass-card p-3 w-full flex justify-center text-[var(--sage)] hover:bg-[var(--cream-warm)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--caramel)]/35"
+                  title="连接游戏"
+                  aria-label="连接游戏"
+                  onClick={() => setRuntimeGmModalOpen(true)}
+                >
+                  <Cable size={18} />
+                </button>
                 <div className="glass-card p-2.5 w-full">
                   <div className="flex flex-col items-center gap-1.5">
                     <div
@@ -1321,7 +1320,7 @@ end`
                     {clients.map(client => (
                       <div
                         key={client.id}
-                        className={`p-1.5 rounded-lg cursor-pointer transition-all ${
+                        className={`p-1.5 rounded-lg cursor-pointer transition-all ${client.online === false ? 'opacity-45 grayscale' : ''} ${
                           selectedClient?.id === client.id && !broadcastMode
                             ? 'bg-[var(--caramel-light)]/20'
                             : 'hover:bg-[var(--cream-warm)]'
@@ -1331,7 +1330,7 @@ end`
                             : ''
                         }`}
                         onClick={() => handleSelectClient(client)}
-                        title={`${client.device || 'Unknown'}\n#${client.pid || '?'} · ${client.ip || ''} · ${client.platform || ''}${client.appVersion ? ` · v${client.appVersion}` : ''}`}
+                        title={`${client.device || 'Unknown'}\n#${client.pid || '?'} · ${client.ip || ''} · ${client.platform || ''}${client.appVersion ? ` · v${client.appVersion}` : ''}${client.online === false ? `\n离线，保留 ${offlineRemaining(client, clientClock)}` : ''}`}
                       >
                         <PlatformIcon platform={client.platform} size={14}
                           className={
@@ -1350,32 +1349,20 @@ end`
 
               {/* Expanded view - always on mobile, conditional on desktop */}
               <div className={`space-y-4 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
-              {/* Handshake Port (read-only) */}
-              <div className="glass-card p-5 animate-fade-in">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--sage)] to-[var(--sage-soft)] flex items-center justify-center">
-                      <Radio size={14} className="text-white" />
-                    </div>
-                    <h2 className="font-display text-base font-semibold text-[var(--coffee-deep)]">握手端口</h2>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setRuntimeGmModalOpen(true)}
-                      className="p-1.5 rounded-lg text-[var(--sage)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors"
-                      title="下载 / 查看 RuntimeGM Bridge"
-                      aria-label="下载或查看 RuntimeGM Bridge"
-                    >
-                      <Download size={15} />
-                    </button>
-                    <div className="flex items-center gap-1.5" title="所有分支 / 设备统一连接此固定端口">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--sage)] animate-pulse" />
-                      <span className="font-mono text-sm font-semibold text-[var(--coffee-deep)]">:{handshakePort}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              {/* Connect game */}
+              <button
+                type="button"
+                className="glass-card group w-full p-5 animate-fade-in flex items-center justify-between gap-2 text-left hover:bg-[var(--cream-warm)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--caramel)]/35"
+                onClick={() => setRuntimeGmModalOpen(true)}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--sage)] to-[var(--sage-soft)] flex items-center justify-center">
+                    <Cable size={14} className="text-white" />
+                  </span>
+                  <span className="font-display text-base font-semibold text-[var(--coffee-deep)]">连接游戏</span>
+                </span>
+                <ChevronRight size={16} className="text-[var(--coffee-muted)] group-hover:text-[var(--coffee-deep)] transition-colors" />
+              </button>
 
               {/* Clients */}
               <div className="glass-card p-5 animate-fade-in" style={{ animationDelay: '0.1s' }}>
@@ -1407,7 +1394,7 @@ end`
                     {clients.map(client => (
                       <div
                         key={client.id}
-                        className={`group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${
+                        className={`group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${client.online === false ? 'opacity-55 grayscale-[0.65]' : ''} ${
                           selectedClient?.id === client.id && !broadcastMode
                             ? 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-l-[3px] border-[var(--caramel)]'
                             : 'bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)]'
@@ -1425,6 +1412,7 @@ end`
                         <div className="flex-1 min-w-0">
                           <div className="font-medium text-xs text-[var(--coffee-deep)] truncate">
                             {client.device || 'Unknown'}
+                            {client.online === false && <span className="ml-1.5 font-mono text-[9px] font-normal text-[var(--coffee-muted)]">离线 {offlineRemaining(client, clientClock)}</span>}
                           </div>
                           <div className="text-[10px] text-[var(--coffee-muted)] overflow-hidden whitespace-nowrap">
                             {client.ip && (
@@ -1458,7 +1446,7 @@ end`
                               : 'opacity-0 group-hover:opacity-100 hover:bg-[var(--cream-warm)]'
                           }`}
                           title={screenshotLoadingIds.has(client.id) ? '截图中...' : '抓取截图'}
-                          disabled={screenshotLoadingIds.has(client.id)}
+                          disabled={screenshotLoadingIds.has(client.id) || client.online === false}
                           onClick={(e) => {
                             e.stopPropagation()
                             handleRequestScreenshot(client.id)
@@ -2357,10 +2345,10 @@ function RuntimeGmCodeModal({ open, handshakePort, haruRootInfo, onClose }) {
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-[var(--glass-border)]">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--sage)] to-[var(--sage-soft)] flex items-center justify-center shrink-0">
-              <RuntimeGmBridgeIcon size={17} className="text-white" />
+              <Cable size={17} className="text-white" />
             </div>
             <div className="min-w-0">
-              <h3 className="font-display text-base font-semibold text-[var(--coffee-deep)] truncate">RuntimeGM Bridge 代码</h3>
+              <h3 className="font-display text-base font-semibold text-[var(--coffee-deep)] truncate">连接游戏</h3>
               <p className="text-xs text-[var(--coffee-muted)] truncate">粘贴到客户端 Lua 入口文件，建立与当前 GM Console 的连接。</p>
             </div>
           </div>

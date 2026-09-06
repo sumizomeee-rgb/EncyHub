@@ -36,6 +36,7 @@ def test_client_serializes_structured_svn_info():
         "svnBranch": "trunk",
         "svnRevision": "1541437",
         "svnDetection": "cli_realm",
+        "online": True,
     }
 
 

@@ -32,7 +32,8 @@ def test_audio_events_are_captured_by_instance_and_sent_with_snapshots():
 
     assert "local function _av_captureAudioTransitions(now)" in lua
     assert 'if not previous[key] then _av_queueAudioEvent("Play", current[key]) end' in lua
-    assert 'if not current[key] then _av_queueAudioEvent("Stop", previous[key]) end' in lua
+    assert 'if not current[key] then' in lua
+    assert '_av_queueAudioEvent("Stop", previous[key])' in lua
     assert "_av_captureAudioTransitions(now)" in lua
     assert "audio.eventStream = true" in lua
     assert "audio.events = LuaAvMonitor._pendingAudioEvents" in lua
@@ -144,4 +145,95 @@ def test_per_frame_audio_scan_only_builds_details_for_new_instances():
 
     assert "local instanceId = info.Id" in lua
     assert "local entry = previous and previous[key] or nil" in lua
-    assert "if not entry then entry = _av_audioEntry(info, i) end" in lua
+    assert "entry = _av_audioEntry(info, i)" in lua
+    scan = lua[lua.index("local function _av_captureAudioTransitions"):lua.index("-- 收集音频快照")]
+    assert "if not entry then" in scan
+    assert "_av_refreshAudioEntry(entry, info)" not in scan
+    assert "local latestTime = info.Time" in scan
+    assert "if latestTime and latestTime >= 0 then" in scan
+    assert "entry.time = latestTime" in scan
+
+
+def test_active_audio_list_exposes_cue_and_duration_aware_progress():
+    lua = read(RUNTIME_LUA)
+    jsx = read(AV_MONITOR_JSX)
+
+    assert "Number.isFinite(duration) && duration > 0" in jsx
+    assert "Number.isFinite(duration) && duration < 0" in jsx
+    assert "time / duration" in jsx
+    assert "Cue:{item.cueId ?? '--'}" in jsx
+    assert "{timing.isLoop ? 'Loop'" in jsx
+    assert "{progressPercent}%" in jsx
+    assert "(value / 1000).toFixed(2)" in jsx
+    assert "info.CriAtomExPlayback:IsPaused()" in lua
+    assert "info.CriAtomExPlayback.status" in lua
+    assert "info.Pausing" not in lua[lua.index("local function _av_audioEntry"):lua.index("local function _av_audioEventEnabled")]
+    assert "<AudioStatusIcon paused={isPaused} status={playbackStatus}" in jsx
+    assert "SelectorLabelDic" in jsx
+    assert "Source Vol." in jsx
+    card_header = jsx[jsx.index('<button className="relative w-full'):jsx.index('<div className={`grid transition-[grid-template-rows,opacity]', jsx.index('<button className="relative w-full'))]
+    assert "{pct(item.volume)}" not in card_header
+
+    active_list = jsx.index("{/* 2. Active Audio List */}")
+    volume_mixer = jsx.index("{/* 4. Volume Mixer */}")
+    assert active_list < volume_mixer
+
+
+def test_audio_history_is_owned_by_hub_and_exposed_to_frontend():
+    lua = read(RUNTIME_LUA)
+    jsx = read(AV_MONITOR_JSX)
+    main = read(ROOT / "tools" / "gm_console" / "main.py")
+
+    assert "LuaAvMonitor._audioHistory" not in lua
+    assert "audio.historyEvents = LuaAvMonitor._pendingAudioHistoryEvents" in lua
+    assert "AV_AUDIO_HISTORY_MAX_ENTRIES = 100" in main
+    assert 'audio["history"] = _cache_av_audio_history(client_id, audio)' in main
+    assert 'title="最近音频历史"' in jsx
+    assert "historyPaused" in jsx
+    assert "清空视图" in jsx
+
+
+def test_audio_cutoff_fields_are_always_visible():
+    lua = read(RUNTIME_LUA)
+    jsx = read(AV_MONITOR_JSX)
+
+    assert "entry.durationForEndtime = info.DurationForEndtime" in lua
+    assert "entry.stopRemaining = math.max(0, stopAt - CS.UnityEngine.Time.time)" in lua
+    assert "audioParam(item.startTime)" in jsx
+    assert "audioParam(item.endTime)" in jsx
+    assert "audioParam(item.lastFor)" in jsx
+    assert "audioParam(item.durationForEndtime)" in jsx
+    assert "音频截取与停止" in jsx
+    assert "未启用" in jsx
+
+
+def test_monitor_sections_use_animated_collapsible_container():
+    jsx = read(AV_MONITOR_JSX)
+
+    assert "function CollapsibleSection" in jsx
+    assert "transition-[grid-template-rows,opacity]" in jsx
+    assert "[overflow-anchor:none]" in jsx
+    for title in ["当前 BGM", "活跃音频列表", "最近音频历史", "音量调节", "音频事件日志", "CueId 精确查询", "Debug 开关", "CRI 资源指标", "播放器", "事件日志"]:
+        assert f'title="{title}"' in jsx
+
+
+def test_audio_entries_share_one_detail_component_and_persist_sections():
+    jsx = read(AV_MONITOR_JSX)
+
+    assert "function AudioEntryCard" in jsx
+    assert "业务与实例" in jsx
+    assert "CRI 播放参数" in jsx
+    assert "生命周期" in jsx
+    assert "gm_av_audio_sections" in jsx
+    assert "gm_av_video_sections" in jsx
+
+
+def test_audio_entry_exposes_source_transform_and_compact_history_time():
+    lua = read(RUNTIME_LUA)
+    jsx = read(AV_MONITOR_JSX)
+
+    assert "detail.transformId = info.Source.transform:GetInstanceID()" in lua
+    assert "transformId = detail.transformId" in lua
+    assert 'label="TransformId"' in jsx
+    assert "function historyTimestamp" in jsx
+    assert "replace(/^\\d{4}-/, '')" in jsx

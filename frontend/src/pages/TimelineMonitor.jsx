@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { mergeTimelineSnapshot } from '../utils/timelineSnapshot.js'
 import { Search, RotateCw, X, ChevronDown, ChevronRight, Play, Pause, Square, SkipBack, SkipForward, Volume2, VolumeX, Loader2 } from 'lucide-react'
 
 // ============================================================================
@@ -46,64 +47,8 @@ function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
     const autoRefreshRef = useRef(autoRefresh)
     const refreshIntervalRef = useRef(refreshInterval)
     const lastUpdateMapRef = useRef({})
-
-    // --- WebSocket ---
-    useEffect(() => {
-        if (!active || !selectedClient) return
-        let closed = false
-        const connect = () => {
-            if (closed) return
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-            const ws = new WebSocket(`${protocol}//${window.location.host}/api/gm_console/ws/timeline`)
-            wsRef.current = ws
-            let pingTimer = null
-            ws.onopen = () => {
-                setWsConnected(true)
-                pingTimer = setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN) ws.send('ping')
-                }, 25000)
-            }
-            ws.onmessage = (event) => {
-                if (event.data === 'pong') return
-                try {
-                    const msg = JSON.parse(event.data)
-                    if (msg.client_id !== selectedClient?.id) return
-                    if (msg.type === 'scan') {
-                        setDirectors(msg.data || [])
-                        setLoading(false)
-                    } else if (msg.type === 'snapshot' && msg.data) {
-                        // Throttle per-instance: skip state updates when inactive or too frequent
-                        if (!activeRef.current || !autoRefreshRef.current) return
-                        const instanceId = msg.data.instanceId
-                        const now = Date.now()
-                        const lastMap = lastUpdateMapRef.current
-                        const isPlaying = msg.data.playState === 'Playing'
-                        // Playing snapshots bypass throttle (game side already rate-limits;
-                        // we need frequent anchor sync for smooth interpolation)
-                        if (!isPlaying && now - (lastMap[instanceId] || 0) < refreshIntervalRef.current * 1000) return
-                        lastMap[instanceId] = now
-                        setSnapshots(prev => ({ ...prev, [instanceId]: msg.data }))
-                        const snapId = msg.data.instanceId
-                        const snapPlaying = msg.data.playState === 'Playing'
-                        setDirectors(prev => prev.map(d => d.instanceId === snapId ? { ...d, isPlaying: snapPlaying } : d))
-                    } else if (msg.type === 'removed' && msg.data) {
-                        const rid = msg.data.instanceId
-                        setMonitored(prev => { const n = new Set(prev); n.delete(rid); return n })
-                        setSnapshots(prev => { const n = { ...prev }; delete n[rid]; return n })
-                    }
-                } catch (e) { console.error('[Timeline WS] parse error:', e) }
-            }
-            ws.onclose = () => {
-                if (pingTimer) clearInterval(pingTimer)
-                setWsConnected(false)
-                wsRef.current = null
-                if (!closed) setTimeout(connect, 2000)
-            }
-            ws.onerror = () => ws.close()
-        }
-        connect()
-        return () => { closed = true; wsRef.current?.close(); wsRef.current = null }
-    }, [selectedClient?.id, active])
+    const latestSnapshotsRef = useRef({})
+    const monitoredRef = useRef(new Set())
 
     // --- Commands ---
     const sendCmd = useCallback(async (action, params = {}) => {
@@ -117,48 +62,133 @@ function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
         } catch (e) { console.error('[Timeline] sendCmd error:', e) }
     }, [selectedClient?.id])
 
+    // --- WebSocket ---
+    useEffect(() => {
+        if (!active || !selectedClient) return
+        let closed = false
+        let reconnectTimer = null
+        const connect = () => {
+            if (closed) return
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+            const ws = new WebSocket(`${protocol}//${window.location.host}/api/gm_console/ws/timeline`)
+            wsRef.current = ws
+            let pingTimer = null
+            ws.onopen = () => {
+                if (closed) return
+                setWsConnected(true)
+                // A fresh subscription always requests the static structure again.
+                for (const instanceId of monitoredRef.current) sendCmd('subscribe', { instanceId })
+                pingTimer = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) ws.send('ping')
+                }, 25000)
+            }
+            ws.onmessage = (event) => {
+                if (closed || event.data === 'pong') return
+                try {
+                    const msg = JSON.parse(event.data)
+                    if (msg.client_id !== selectedClient?.id) return
+                    if (msg.type === 'scan') {
+                        setDirectors(Array.isArray(msg.data) ? msg.data : [])
+                        setLoading(false)
+                    } else if (msg.type === 'snapshot' && msg.data) {
+                        const instanceId = msg.data.instanceId
+                        if (!monitoredRef.current.has(instanceId)) return
+                        const previous = latestSnapshotsRef.current[instanceId]
+                        const next = mergeTimelineSnapshot(previous, msg.data)
+                        latestSnapshotsRef.current[instanceId] = next
+                        // Cache every packet, including static metadata received while paused.
+                        if (!activeRef.current || !autoRefreshRef.current) return
+                        const now = Date.now()
+                        const hasStatic = (Object.hasOwn(msg.data, 'trackStates') && Object.hasOwn(msg.data, 'tracks')) || Object.hasOwn(msg.data, 'events')
+                        if (previous && !hasStatic && next.playState !== 'Playing' && now - (lastUpdateMapRef.current[instanceId] || 0) < refreshIntervalRef.current * 1000) return
+                        lastUpdateMapRef.current[instanceId] = now
+                        setSnapshots(prev => ({ ...prev, [instanceId]: next }))
+                        setDirectors(prev => prev.map(d => d.instanceId === instanceId ? { ...d, isPlaying: next.playState === 'Playing' } : d))
+                    } else if (msg.type === 'removed' && msg.data) {
+                        const rid = msg.data.instanceId
+                        monitoredRef.current.delete(rid)
+                        delete latestSnapshotsRef.current[rid]
+                        delete lastUpdateMapRef.current[rid]
+                        setMonitored(prev => { const n = new Set(prev); n.delete(rid); return n })
+                        setSnapshots(prev => { const n = { ...prev }; delete n[rid]; return n })
+                    }
+                } catch (e) { console.error('[Timeline WS] parse error:', e) }
+            }
+            ws.onclose = () => {
+                if (pingTimer) clearInterval(pingTimer)
+                if (closed) return
+                setWsConnected(false)
+                wsRef.current = null
+                reconnectTimer = setTimeout(connect, 2000)
+            }
+            ws.onerror = () => ws.close()
+        }
+        connect()
+        return () => { closed = true; clearTimeout(reconnectTimer); wsRef.current?.close(); wsRef.current = null; setWsConnected(false) }
+    }, [selectedClient?.id, active, sendCmd])
+
     const scan = useCallback(() => { setLoading(true); sendCmd('scan') }, [sendCmd])
 
-    const toggleMonitor = useCallback((id) => {
-        setMonitored(prev => {
-            const next = new Set(prev)
-            if (next.has(id)) {
-                next.delete(id)
-                sendCmd('unsubscribe', { instanceId: id })
-                setSnapshots(p => { const n = { ...p }; delete n[id]; return n })
-            } else {
-                next.add(id)
-                sendCmd('subscribe', { instanceId: id })
-            }
-            return next
-        })
-    }, [sendCmd])
-
     const removeMonitor = useCallback((id) => {
+        monitoredRef.current.delete(id)
+        delete latestSnapshotsRef.current[id]
+        delete lastUpdateMapRef.current[id]
         sendCmd('unsubscribe', { instanceId: id })
-        setMonitored(prev => { const n = new Set(prev); n.delete(id); return n })
+        setMonitored(new Set(monitoredRef.current))
         setSnapshots(prev => { const n = { ...prev }; delete n[id]; return n })
     }, [sendCmd])
 
+    const toggleMonitor = useCallback((id) => {
+        if (monitoredRef.current.has(id)) {
+            removeMonitor(id)
+        } else {
+            monitoredRef.current.add(id)
+            setMonitored(new Set(monitoredRef.current))
+            sendCmd('subscribe', { instanceId: id })
+        }
+    }, [sendCmd, removeMonitor])
+
     const clearAll = useCallback(() => {
         sendCmd('unsubscribe_all')
+        monitoredRef.current = new Set()
+        latestSnapshotsRef.current = {}
+        lastUpdateMapRef.current = {}
         setMonitored(new Set())
         setSnapshots({})
     }, [sendCmd])
 
+    const manualRefresh = useCallback(() => {
+        lastUpdateMapRef.current = {}
+        setSnapshots({ ...latestSnapshotsRef.current })
+        setDirectors(prev => prev.map(d => {
+            const snapshot = latestSnapshotsRef.current[d.instanceId]
+            return snapshot ? { ...d, isPlaying: snapshot.playState === 'Playing' } : d
+        }))
+    }, [])
+
     useEffect(() => { activeRef.current = active }, [active])
-    useEffect(() => { autoRefreshRef.current = autoRefresh }, [autoRefresh])
+    useEffect(() => {
+        autoRefreshRef.current = autoRefresh
+        if (autoRefresh) manualRefresh()
+    }, [autoRefresh, manualRefresh])
     useEffect(() => { refreshIntervalRef.current = refreshInterval }, [refreshInterval])
 
-    const manualRefresh = useCallback(() => { lastUpdateMapRef.current = {} }, [])
-
-    // --- Cleanup on client change ---
+    // Clear the previous client's subscription and all cached structure on switch/unmount.
     useEffect(() => {
+        monitoredRef.current = new Set()
+        latestSnapshotsRef.current = {}
+        lastUpdateMapRef.current = {}
         setMonitored(new Set())
         setSnapshots({})
         setDirectors([])
-        lastUpdateMapRef.current = {}
-    }, [selectedClient?.id])
+        setCollapsed(new Set())
+        return () => {
+            for (const instanceId of monitoredRef.current) sendCmd('unsubscribe', { instanceId })
+            monitoredRef.current.clear()
+            latestSnapshotsRef.current = {}
+            lastUpdateMapRef.current = {}
+        }
+    }, [sendCmd])
 
     const filteredDirs = filter
         ? directors.filter(d => {
@@ -244,7 +274,7 @@ function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
                     const snap = snapshots[id]
                     const isCollapsed = collapsed.has(id)
                     return (
-                        <MonitorCard key={id} instanceId={id} snapshot={snap} isCollapsed={isCollapsed}
+                        <MonitorCard key={id} instanceId={id} snapshot={snap} autoRefresh={autoRefresh && active} isCollapsed={isCollapsed}
                             onToggleCollapse={() => setCollapsed(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })}
                             onRemove={() => removeMonitor(id)}
                             onRefresh={manualRefresh}
@@ -263,7 +293,7 @@ function TimelineMonitor({ clients, selectedClient, broadcastMode, active }) {
 // ============================================================================
 // 监控卡片
 // ============================================================================
-function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRemove, onRefresh, onControl, onMuteTrack, onInvokeSignal, onScrub }) {
+function MonitorCard({ instanceId, snapshot, autoRefresh, isCollapsed, onToggleCollapse, onRemove, onRefresh, onControl, onMuteTrack, onInvokeSignal, onScrub }) {
     // --- Anchor-based interpolation (same pattern as AvMonitor VideoTab) ---
     const [displayTime, setDisplayTime] = useState(0)
     const anchorRef = useRef({ time: 0, ts: 0, speed: 1, playing: false, total: 0 })
@@ -272,7 +302,7 @@ function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRe
     // Sync anchor when snapshot arrives
     useEffect(() => {
         if (!snapshot) return
-        const isPlaying = snapshot.playState === 'Playing'
+        const isPlaying = autoRefresh && snapshot.playState === 'Playing'
         anchorRef.current = {
             time: snapshot.currentTime ?? 0,
             ts: performance.now(),
@@ -281,7 +311,7 @@ function MonitorCard({ instanceId, snapshot, isCollapsed, onToggleCollapse, onRe
             total: snapshot.duration ?? 0,
         }
         if (!isPlaying) setDisplayTime(snapshot.currentTime ?? 0)
-    }, [snapshot?.currentTime, snapshot?.playState, snapshot?.speed, snapshot?.duration])
+    }, [snapshot, autoRefresh])
 
     // rAF loop for smooth interpolation while playing
     useEffect(() => {

@@ -7,6 +7,7 @@ import json
 import socket
 import os
 import sys
+import time
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Callable, Tuple
@@ -52,6 +53,7 @@ class Client:
             "svnBranch": self.svn_branch,
             "svnRevision": self.svn_revision,
             "svnDetection": self.svn_detection,
+            "online": True,
         }
 
 
@@ -78,6 +80,10 @@ class ServerMgr:
     def __init__(self):
         self.listeners: Dict[int, asyncio.AbstractServer] = {}
         self.clients: Dict[str, Client] = {}
+        self.offline_clients: Dict[str, dict] = {}
+        self._offline_expiry_tasks: Dict[str, asyncio.Task] = {}
+        self.offline_retention_seconds = 180.0
+        self.on_client_expired: Optional[Callable[[str], None]] = None
         self.logs: List[Log] = []
         self.cmd_id = 1000
         self.on_update: Optional[Callable] = None
@@ -143,6 +149,63 @@ class ServerMgr:
         """递增客户端列表版本，用于前端忽略旧 HTTP/WS 快照。"""
         self.client_state_rev += 1
 
+    def _remember_offline_client(self, client: Client):
+        if client.id.startswith("temp:"):
+            return
+        now = time.time()
+        snapshot = client.to_dict()
+        snapshot.update({
+            "online": False,
+            "disconnectedAt": now,
+            "offlineExpiresAt": now + self.offline_retention_seconds,
+        })
+        self.offline_clients[client.id] = snapshot
+        old_task = self._offline_expiry_tasks.pop(client.id, None)
+        if old_task and not old_task.done():
+            old_task.cancel()
+
+        async def expire():
+            try:
+                await asyncio.sleep(self.offline_retention_seconds)
+                current = self.offline_clients.get(client.id)
+                if (current is not snapshot
+                        or self._offline_expiry_tasks.get(client.id) is not task
+                        or client.id in self.clients):
+                    return
+                self.offline_clients.pop(client.id, None)
+                self._clear_client_cache(client.id)
+                self._mark_clients_changed()
+                if self.on_update:
+                    self.on_update()
+            except asyncio.CancelledError:
+                pass
+            finally:
+                if self._offline_expiry_tasks.get(client.id) is task:
+                    self._offline_expiry_tasks.pop(client.id, None)
+
+        task = asyncio.create_task(expire())
+        self._offline_expiry_tasks[client.id] = task
+
+    def _clear_client_cache(self, client_id: str):
+        """同步清理到期状态；中途不让出事件循环，避免重连写入后被旧任务清掉。"""
+        self._animator_list_cache.pop(client_id, None)
+        self._screenshot_parts.pop(client_id, None)
+        self.logs[:] = [log for log in self.logs if log.client_id != client_id]
+        for cmd_id, pending in list(self._pending_execs.items()):
+            if pending.get("client_id") == client_id:
+                self._pending_execs.pop(cmd_id, None)
+                pending["error"] = "client expired"
+                pending["done"] = True
+                pending["event"].set()
+        if self.on_client_expired:
+            self.on_client_expired(client_id)
+
+    def _restore_online_client(self, client_id: str):
+        self.offline_clients.pop(client_id, None)
+        task = self._offline_expiry_tasks.pop(client_id, None)
+        if task and not task.done():
+            task.cancel()
+
     async def add_listener(self, port: int) -> tuple[bool, str]:
         """添加监听端口（支持重启）"""
         # 如果端口已在监听，先关闭（支持重启）
@@ -158,6 +221,8 @@ class ServerMgr:
         for cid in dead_clients:
             if cid in self.clients:
                 c = self.clients.pop(cid)
+                self._remember_offline_client(c)
+                c.writer.close()
                 self._add_log("info", f"清理端口 {port} 的旧客户端: {cid}", cid)
         if dead_clients:
             self._mark_clients_changed()
@@ -206,6 +271,7 @@ class ServerMgr:
         for cid in to_remove:
             c = self.clients.pop(cid, None)
             if c:
+                self._remember_offline_client(c)
                 try:
                     c.writer.close()
                     await c.writer.wait_closed()
@@ -294,6 +360,7 @@ class ServerMgr:
             removed = False
             if self.clients.get(cur_id) is client_obj:
                 del self.clients[cur_id]
+                self._remember_offline_client(client_obj)
                 self._mark_clients_changed()
                 removed = True
             self._add_log("info", f"客户端断开: {cur_id} ({disconnect_reason})", cur_id)
@@ -335,6 +402,7 @@ class ServerMgr:
         client_obj.id = new_id
         # 4) 写入确定键
         self.clients[new_id] = client_obj
+        self._restore_online_client(new_id)
         # 5) 迁移以 client_id 为键的附属状态
         if old_id in self._animator_list_cache:
             self._animator_list_cache[new_id] = self._animator_list_cache.pop(old_id)
@@ -531,8 +599,10 @@ class ServerMgr:
         except Exception as e:
             print(f"[ServerMgr] send_to_client 发送失败: cid={client_id}, error={e}")
             # 发送失败时清理该客户端
-            if client_id in self.clients:
+            if self.clients.get(client_id) is client:
                 self.clients.pop(client_id)
+                self._remember_offline_client(client)
+                client.writer.close()
                 self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（发送失败）: {client_id}", client_id)
                 if self.on_update:
@@ -555,9 +625,11 @@ class ServerMgr:
             await client.writer.drain()
             self.cmd_id += 1
         except Exception as e:
-            del self._pending_execs[cmd_id]
-            if client_id in self.clients:
+            self._pending_execs.pop(cmd_id, None)
+            if self.clients.get(client_id) is client:
                 self.clients.pop(client_id)
+                self._remember_offline_client(client)
+                client.writer.close()
                 self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（发送失败）: {client_id}", client_id)
                 if self.on_update:
@@ -567,10 +639,10 @@ class ServerMgr:
         try:
             await asyncio.wait_for(pe["event"].wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            del self._pending_execs[cmd_id]
+            self._pending_execs.pop(cmd_id, None)
             return False, pe["logs"], "timeout"
 
-        del self._pending_execs[cmd_id]
+        self._pending_execs.pop(cmd_id, None)
         return pe["error"] is None, pe["logs"], pe["error"]
 
     async def send_gm_to_client(self, client_id: str, gm_id: str, val: Any = None) -> tuple[bool, str]:
@@ -595,8 +667,10 @@ class ServerMgr:
         except Exception as e:
             print(f"[ServerMgr] send_gm_to_client 发送失败: cid={client_id}, error={e}")
             # 发送失败时清理该客户端
-            if client_id in self.clients:
+            if self.clients.get(client_id) is client:
                 self.clients.pop(client_id)
+                self._remember_offline_client(client)
+                client.writer.close()
                 self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（GM发送失败）: {client_id}", client_id)
                 if self.on_update:
@@ -613,11 +687,13 @@ class ServerMgr:
                 await c.writer.drain()
             except Exception as e:
                 print(f"[ServerMgr] broadcast 发送失败: cid={cid}, error={e}")
-                dead_clients.append(cid)
+                dead_clients.append((cid, c))
         # 清理失效的客户端
-        for cid in dead_clients:
-            if cid in self.clients:
-                c = self.clients.pop(cid)
+        for cid, c in dead_clients:
+            if self.clients.get(cid) is c:
+                self.clients.pop(cid)
+                self._remember_offline_client(c)
+                c.writer.close()
                 self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（broadcast检测）: {cid}", cid)
                 if self.on_update:
@@ -639,11 +715,13 @@ class ServerMgr:
                 await c.writer.drain()
             except Exception as e:
                 print(f"[ServerMgr] broadcast_gm 发送失败: cid={cid}, error={e}")
-                dead_clients.append(cid)
+                dead_clients.append((cid, c))
         # 清理失效的客户端
-        for cid in dead_clients:
-            if cid in self.clients:
-                c = self.clients.pop(cid)
+        for cid, c in dead_clients:
+            if self.clients.get(cid) is c:
+                self.clients.pop(cid)
+                self._remember_offline_client(c)
+                c.writer.close()
                 self._mark_clients_changed()
                 self._add_log("warning", f"客户端断开（broadcast GM检测）: {cid}", cid)
                 if self.on_update:
@@ -662,7 +740,10 @@ class ServerMgr:
 
     def get_clients_info(self) -> list:
         """获取客户端信息"""
-        return [c.to_dict() for c in self.clients.values()]
+        online = [c.to_dict() for c in self.clients.values()]
+        online_ids = {item["id"] for item in online}
+        offline = [item for cid, item in self.offline_clients.items() if cid not in online_ids]
+        return online + offline
 
     def get_logs(self, limit: int = 100) -> list:
         """获取日志"""
