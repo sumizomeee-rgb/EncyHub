@@ -5,6 +5,7 @@ import os
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import PureWindowsPath
 from typing import Optional, Any
 
@@ -70,6 +71,17 @@ def _get_av_audio_history_state(client_id: str) -> dict[str, Any]:
     return av_audio_history_cache[client_id]
 
 
+def _audio_event_elapsed_seconds(started_at: Any, stopped_at: Any) -> Optional[float]:
+    """优先使用游戏端事件时间，避免同批到达 Hub 时被算成 0 秒。"""
+    if not started_at or not stopped_at:
+        return None
+    try:
+        elapsed = (datetime.fromisoformat(str(stopped_at)) - datetime.fromisoformat(str(started_at))).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return elapsed if elapsed >= 0 else None
+
+
 def _cache_av_audio_history(client_id: str, audio: dict[str, Any]) -> list[dict[str, Any]]:
     state = _get_av_audio_history_state(client_id)
     entries = state["entries"]
@@ -105,8 +117,11 @@ def _cache_av_audio_history(client_id: str, audio: dict[str, Any]) -> list[dict[
                 item.update(payload)
                 item["historyActive"] = False
                 item["playbackStatus"] = "Removed"
-                item["stoppedAt"] = event.get("occurredAt") or ""
-                item["lifetimeSeconds"] = max(0.0, time.monotonic() - item.pop("_startedMono", time.monotonic()))
+                stopped_at = event.get("occurredAt") or ""
+                item["stoppedAt"] = stopped_at
+                received_elapsed = max(0.0, time.monotonic() - item.pop("_startedMono", time.monotonic()))
+                event_elapsed = _audio_event_elapsed_seconds(item.get("startedAt"), stopped_at)
+                item["lifetimeSeconds"] = event_elapsed if event_elapsed is not None else received_elapsed
 
     for current in audio.get("activeList", []) or []:
         if not isinstance(current, dict):

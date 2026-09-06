@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import {
   Play, Pause, Square, RotateCw, ChevronDown, ChevronRight,
-  Copy, Check, Loader2, Film, Music, Lock, VolumeX
+  Copy, Check, Loader2, Film, Music, Lock, VolumeX, Search, X, Waves
 } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 
@@ -282,7 +282,7 @@ function loadStoredState(key, fallback) {
 }
 
 function AudioEntryCard({ item, entryKey, expanded, onToggle, playTypeBadge, playTypeProgress,
-  copiedFile, handleCopy, history = false }) {
+  copiedFile, handleCopy, onQueryCue, history = false }) {
   const timing = audioTiming(item)
   const progressPercent = timing.progress == null ? null : Math.round(timing.progress * 100)
   const playbackStatus = item.historyActive === false ? 'Removed' : (item.playbackStatus || item.status)
@@ -313,7 +313,14 @@ function AudioEntryCard({ item, entryKey, expanded, onToggle, playTypeBadge, pla
             <span className="font-medium truncate text-[var(--coffee-deep)] min-w-0">{item.name}</span>
             {item.preexisting && <span title="打开监控时已在播放" className="text-[9px] text-[var(--coffee-muted)] flex-shrink-0">已在播放</span>}
           </span>
-          <span className="font-mono text-[10px] tabular-nums text-[var(--coffee-muted)] whitespace-nowrap">Cue:{item.cueId ?? '--'}</span>
+          <span role={item.cueId != null ? 'button' : undefined} tabIndex={item.cueId != null ? 0 : undefined}
+            className={`font-mono text-[10px] tabular-nums whitespace-nowrap ${item.cueId != null ? 'text-[var(--caramel)] hover:text-[var(--coffee-deep)] underline decoration-dotted underline-offset-2' : 'text-[var(--coffee-muted)]'}`}
+            title={item.cueId != null ? '查询 Cue 信息' : undefined}
+            onClick={e => { if (item.cueId == null) return; e.stopPropagation(); onQueryCue(item.cueId) }}
+            onKeyDown={e => {
+              if (item.cueId == null || (e.key !== 'Enter' && e.key !== ' ')) return
+              e.preventDefault(); e.stopPropagation(); onQueryCue(item.cueId)
+            }}>Cue:{item.cueId ?? '--'}</span>
           <span className={`font-mono text-[10px] tabular-nums font-semibold text-right whitespace-nowrap ${timing.isLoop ? 'text-[var(--caramel)]' : 'text-[var(--coffee-deep)]'}`}>{timingLabel}</span>
           <AudioStatusBadge paused={isPaused} status={playbackStatus} />
         </span>
@@ -383,11 +390,173 @@ function AudioEntryCard({ item, entryKey, expanded, onToggle, playTypeBadge, pla
   )
 }
 
+function cueBoolean(value) {
+  if (value == null) return '--'
+  return value === true || Number(value) !== 0 ? 'true' : 'false'
+}
+
+function cueAisacId(value) {
+  const id = Number(value)
+  return !Number.isFinite(id) || id === 0xFFFFFFFF ? 'Invalid' : id
+}
+
+function cueEnumLabel(value) {
+  return value == null ? '--' : String(value).replace(/:\s*-?\d+$/, '')
+}
+
+function cueProbability(value) {
+  const probability = Number(value)
+  if (!Number.isFinite(probability)) return '--'
+  if (probability >= 100) return '100% · Always'
+  if (probability <= 0) return '0% · Never'
+  return `${probability}%`
+}
+
+function cueSilentMode(value) {
+  const mode = cueEnumLabel(value)
+  const descriptions = {
+    Normal: '静音时继续处理',
+    Stop: '静音时停止',
+    Virtual: '静音时虚拟化',
+    VirtualRetrigger: '静音时重触发虚拟化',
+  }
+  return descriptions[mode] ? `${mode} · ${descriptions[mode]}` : mode
+}
+
+function CueInfoRow({ label, value, wide = false, align = 'right' }) {
+  const display = value == null || value === '' ? '--' : String(value)
+  return (
+    <div className={`grid grid-cols-[96px_minmax(0,1fr)] items-baseline gap-1.5 min-w-0 py-0.5 ${wide ? 'col-span-2' : ''}`}>
+      <span className="text-[9px] text-[var(--coffee-muted)] whitespace-nowrap" title={label}>{label}</span>
+      <span className={`min-w-0 font-mono text-[10px] text-[var(--coffee-deep)] ${align === 'left' ? 'text-left break-all' : 'text-right truncate'}`} title={display}>{display}</span>
+    </div>
+  )
+}
+
+function CueInfoGroup({ title, note, children }) {
+  return (
+    <section className="rounded-md border border-[var(--glass-border)] bg-white/45 px-2.5 py-2">
+      <div className="flex items-baseline justify-between gap-3 mb-1 border-b border-[var(--glass-border)]/60 pb-1">
+        <h3 className="text-[11px] font-semibold text-[var(--coffee-deep)]">{title}</h3>
+        {note && <span className="text-[9px] text-[var(--coffee-muted)] text-right">{note}</span>}
+      </div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0">{children}</div>
+    </section>
+  )
+}
+
+function CueMetric({ label, value, accent = false }) {
+  return (
+    <div className="min-w-0 px-2 py-1.5 border-r border-[var(--glass-border)] last:border-r-0">
+      <div className="text-[8px] uppercase tracking-wider text-[var(--coffee-muted)]">{label}</div>
+      <div className={`mt-0.5 font-mono text-xs font-semibold truncate ${accent ? 'text-[var(--caramel)]' : 'text-[var(--coffee-deep)]'}`} title={String(value ?? '--')}>{value ?? '--'}</div>
+    </div>
+  )
+}
+
+function CueInfoDrawer({ open, loading, result, onClose }) {
+  if (!open) return null
+  const cue = result?.cueInfo
+  const pos = result?.pos3d
+  const wave = result?.firstWaveform
+  const randomParameters = pos?.randomParameters?.join(', ')
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="Cue 信息查询结果">
+      <div aria-hidden="true" className="absolute inset-0 bg-[var(--coffee-deep)]/20" onClick={onClose} />
+      <aside className="relative h-full w-[480px] max-w-[92vw] border-l border-[var(--glass-border)] bg-[var(--cream)] shadow-[-18px_0_50px_rgba(62,45,35,0.18)] flex flex-col animate-[slideInRight_180ms_ease-out]">
+        <header className="flex items-center gap-3 px-4 py-3 border-b border-[var(--glass-border)] bg-white/55">
+          <div className="w-8 h-8 rounded-lg bg-[var(--caramel)]/12 text-[var(--caramel)] flex items-center justify-center"><Waves size={16} /></div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-[var(--coffee-deep)]">Cue 信息</div>
+            <div className="font-mono text-[10px] text-[var(--coffee-muted)] truncate">
+              {result?.cueName ? `${result.cueName} · #${result.cueId}` : '读取 CRI 元数据'}
+            </div>
+          </div>
+          <button className="p-1.5 rounded-md text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors" onClick={onClose} title="关闭 (Esc)"><X size={16} /></button>
+        </header>
+
+        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
+          {loading && (
+            <div className="h-full min-h-52 flex flex-col items-center justify-center gap-3 text-[var(--coffee-muted)]">
+              <Loader2 size={22} className="animate-spin text-[var(--caramel)]" />
+              <span className="text-xs">正在读取 ACB 元数据…</span>
+            </div>
+          )}
+          {!loading && result?.error && (
+            <div role="alert" className="rounded-lg border border-[var(--terracotta)]/35 bg-[var(--terracotta)]/10 p-3 text-xs text-[var(--terracotta)] break-all">{result.error}</div>
+          )}
+          {!loading && result && !result.error && (
+            <>
+              <div className="grid grid-cols-4 rounded-md border border-[var(--caramel)]/25 bg-[var(--caramel)]/[0.07] overflow-hidden">
+                <CueMetric label="CueId" value={result.cueId} accent />
+                <CueMetric label="时长" value={Number(cue?.lengthMs) >= 0 ? `${(cue.lengthMs / 1000).toFixed(2)}s` : '--'} />
+                <CueMetric label="Tracks" value={cue?.numTracks} />
+                <CueMetric label="Waveforms" value={cue?.numRelatedWaveForms} />
+              </div>
+              <CueInfoGroup title="业务与资源">
+                <CueInfoRow label="PlayType" value={result.playType} />
+                <CueInfoRow label="CueSheetId" value={result.cueSheetId} />
+                <CueInfoRow label="Cue 名称" value={result.cueName} wide />
+                <CueInfoRow label="ACB" value={result.acbPath} wide />
+                {result.awbPath && <CueInfoRow label="AWB" value={result.awbPath} wide />}
+              </CueInfoGroup>
+              <CueInfoGroup title="Cue 基础信息">
+                <CueInfoRow label="CRI CueId" value={cue?.id} />
+                <CueInfoRow label="类型" value={cueEnumLabel(cue?.type)} />
+                <CueInfoRow label="Block 数" value={cue?.numBlocks} />
+                <CueInfoRow label="Cue Limit" value={Number(cue?.numLimits) < 0 ? 'Unlimited' : cue?.numLimits} />
+                <CueInfoRow label="Category" value={cue?.categories?.length ? cue.categories.join(', ') : '无'} wide />
+                <CueInfoRow label="UserData" value={cue?.userData} wide align="left" />
+              </CueInfoGroup>
+              <CueInfoGroup title="播放策略">
+                <CueInfoRow label="优先级" value={cue?.priority} />
+                <CueInfoRow label="触发概率" value={cueProbability(cue?.probability)} />
+                <CueInfoRow label="Cue Volume" value={cue?.volume != null ? `${Number(cue.volume).toFixed(3)}×` : null} />
+                <CueInfoRow label="Pitch" value={cue?.pitch} />
+                <CueInfoRow label="Pan Type" value={cueEnumLabel(cue?.panType)} />
+                <CueInfoRow label="静音策略" value={cueSilentMode(cue?.silentMode)} />
+              </CueInfoGroup>
+              <CueInfoGroup title="3D 参数">
+                <CueInfoRow label="内/外锥角" value={pos ? `${pos.coneInsideAngle} / ${pos.coneOutsideAngle}` : null} />
+                <CueInfoRow label="最小/最大衰减" value={pos ? `${pos.minAttenuationDistance} / ${pos.maxAttenuationDistance}` : null} />
+                <CueInfoRow label="Source Radius" value={pos?.sourceRadius} />
+                <CueInfoRow label="Interior Distance" value={pos?.interiorDistance} />
+                <CueInfoRow label="Doppler" value={pos?.dopplerFactor} />
+                <CueInfoRow label="Random Position" value={pos ? `${pos.randomType} (${randomParameters})` : null} />
+                <CueInfoRow label="Follow Source" value={cueBoolean(pos?.randomFollowsSource)} />
+                <CueInfoRow label="Distance AISAC" value={cueAisacId(pos?.distanceAisacControlId)} />
+                <CueInfoRow label="Listener Azimuth" value={cueAisacId(pos?.listenerAngleAisacControlId)} />
+                <CueInfoRow label="Source Azimuth" value={cueAisacId(pos?.sourceAngleAisacControlId)} />
+                <CueInfoRow label="Listener Elevation" value={cueAisacId(pos?.listenerElevationAisacControlId)} />
+                <CueInfoRow label="Source Elevation" value={cueAisacId(pos?.sourceElevationAisacControlId)} />
+              </CueInfoGroup>
+              <CueInfoGroup title="首个 Waveform" note="首个 Track 中最先播放的 Waveform">
+                <CueInfoRow label="WaveId" value={wave?.waveId} />
+                <CueInfoRow label="Format" value={wave?.format} />
+                <CueInfoRow label="采样率" value={wave?.samplingRate ? `${wave.samplingRate} Hz` : null} />
+                <CueInfoRow label="声道数" value={wave?.numChannels} />
+                <CueInfoRow label="采样数" value={wave?.numSamples} />
+                <CueInfoRow label="时长" value={wave?.durationMs != null ? `${(wave.durationMs / 1000).toFixed(3)} s` : null} />
+                <CueInfoRow label="Streaming" value={wave ? cueBoolean(wave.streaming) : null} />
+              </CueInfoGroup>
+              <CueInfoGroup title="AISAC" note={`${result.aisacControls?.length || 0} 个可控项`}>
+                {result.aisacControls?.length ? result.aisacControls.map((item, index) => (
+                  <CueInfoRow key={`${item.id}_${index}`} label={item.name || `Control ${index + 1}`} value={item.id} wide />
+                )) : <CueInfoRow label="可用控制" value="无" wide />}
+              </CueInfoGroup>
+            </>
+          )}
+        </div>
+      </aside>
+    </div>
+  )
+}
+
 // ============================================================
 // AudioTab
 // ============================================================
 function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedAudio,
-  cueQuery, setCueQuery, cueResult, cueLoading, criExpanded, setCriExpanded,
+  cueQuery, setCueQuery, cueLoading, criExpanded, setCriExpanded,
   handleCopy, setCatVol, setSecVol, setSourceVol, toggleMasterMute, toggleAisacMute,
   toggleDebugFlag, queryCue, sendCmd, commandError }) {
 
@@ -401,6 +570,10 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
   const [historyClearedThrough, setHistoryClearedThrough] = useState(0)
   const historySeqRef = useRef(0)
   const toggleSection = key => setSectionOpen(prev => ({ ...prev, [key]: !prev[key] }))
+  const toggleAudioEntry = (list, key) => setExpandedAudio(prev => ({
+    ...prev,
+    [list]: prev[list] === key ? null : key,
+  }))
 
   useEffect(() => {
     try { localStorage.setItem('gm_av_audio_sections', JSON.stringify(sectionOpen)) } catch {}
@@ -473,7 +646,7 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
           <div className="space-y-1.5">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium text-[var(--coffee-deep)] truncate max-w-[200px]">{bgm.name || '--'}</span>
-              <span className="text-[var(--coffee-muted)]">CueId: <span className="font-mono text-[var(--coffee-deep)]">{bgm.cueId ?? '--'}</span></span>
+              <span className="text-[var(--coffee-muted)]">CueId: {bgm.cueId != null ? <button className="font-mono text-[var(--caramel)] hover:text-[var(--coffee-deep)] underline decoration-dotted underline-offset-2" onClick={() => queryCue(bgm.cueId)} title="查询 Cue 信息">{bgm.cueId}</button> : <span className="font-mono">--</span>}</span>
               <span className="text-[var(--coffee-muted)]">InstanceId: <span className="font-mono text-[var(--coffee-deep)]">{bgm.instanceId ?? '--'}</span></span>
               {bgm.playType && <span className="text-[10px] px-1 rounded bg-[var(--caramel)]/15 text-[var(--caramel)]">{bgm.playType}</span>}
             </div>
@@ -525,10 +698,10 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
           <div className="space-y-0.5">
             {audioSnap.activeList.map((item, i) => (
               <AudioEntryCard key={item.id ?? i} item={item} entryKey={`active_${item.id ?? i}`}
-                expanded={expandedAudio === `active:${item.id ?? i}`}
-                onToggle={() => setExpandedAudio(expandedAudio === `active:${item.id ?? i}` ? null : `active:${item.id ?? i}`)}
+                expanded={expandedAudio.active === (item.id ?? i)}
+                onToggle={() => toggleAudioEntry('active', item.id ?? i)}
                 playTypeBadge={playTypeBadge} playTypeProgress={playTypeProgress}
-                copiedFile={copiedFile} handleCopy={handleCopy} />
+                copiedFile={copiedFile} handleCopy={handleCopy} onQueryCue={queryCue} />
             ))}
           </div>
         )}
@@ -559,10 +732,10 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
           <div className="max-h-96 overflow-y-auto space-y-0.5">
             {historyView.map((item, i) => (
               <AudioEntryCard key={item.historySeq ?? i} item={item} entryKey={`history_${item.historySeq ?? i}`}
-                expanded={expandedAudio === `history:${item.historySeq ?? i}`}
-                onToggle={() => setExpandedAudio(expandedAudio === `history:${item.historySeq ?? i}` ? null : `history:${item.historySeq ?? i}`)}
+                expanded={expandedAudio.history === (item.historySeq ?? i)}
+                onToggle={() => toggleAudioEntry('history', item.historySeq ?? i)}
                 playTypeBadge={playTypeBadge} playTypeProgress={playTypeProgress}
-                copiedFile={copiedFile} handleCopy={handleCopy} history />
+                copiedFile={copiedFile} handleCopy={handleCopy} onQueryCue={queryCue} history />
             ))}
           </div>
         )}
@@ -641,32 +814,20 @@ function AudioTab({ audioSnap, audioLog, copiedFile, expandedAudio, setExpandedA
         </div>
       </CollapsibleSection>
 
-      {/* 6. CueId Query */}
-      <CollapsibleSection title="CueId 精确查询" expanded={sectionOpen.cue} onToggle={() => toggleSection('cue')}>
+      {/* 6. Cue Info Query */}
+      <CollapsibleSection title="Cue 信息查询" expanded={sectionOpen.cue} onToggle={() => toggleSection('cue')}>
         <div className="flex gap-1.5">
           <input type="number" value={cueQuery} onChange={e => setCueQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && queryCue()}
             placeholder="输入 CueId..."
             className="flex-1 px-2 py-1 rounded border border-[var(--glass-border)] bg-white/60 focus:outline-none focus:border-[var(--caramel)] font-mono appearance-none"
           />
-          <button onClick={queryCue} disabled={!cueQuery.trim()}
+          <button onClick={() => queryCue()} disabled={!cueQuery.trim() || cueLoading}
             className="px-3 py-1 rounded bg-[var(--caramel)] text-white text-xs hover:opacity-90 disabled:opacity-40 disabled:pointer-events-none transition-opacity flex items-center gap-1">
-            {cueLoading ? <Loader2 size={12} className="animate-spin" /> : '查询'}
+            {cueLoading ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}查询
           </button>
         </div>
-        {cueResult && !cueResult.error && (
-          <div className="mt-2 p-2 rounded bg-[var(--cream-warm)]/60 border border-[var(--glass-border)] space-y-0.5 font-mono text-[10px]">
-            {Object.entries(cueResult).map(([k, v]) => (
-              <div key={k} className="flex gap-2">
-                <span className="text-[var(--coffee-muted)] w-28 flex-shrink-0">{k}</span>
-                <span className="text-[var(--coffee-deep)] break-all">{String(v)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {cueResult?.error && (
-          <div className="mt-2 text-[var(--terracotta)] text-[10px]">{cueResult.error}</div>
-        )}
+        <div className="mt-1.5 text-[10px] text-[var(--coffee-muted)]">也可以直接点击当前 BGM、活跃列表或历史列表中的 CueId。</div>
       </CollapsibleSection>
 
       {/* 7. Debug Flags */}
@@ -1099,10 +1260,11 @@ function AvMonitor({ clients, selectedClient, active }) {
   // Audio state
   const [audioSnap, setAudioSnap] = useState(null)
   const [copiedFile, setCopiedFile] = useState(null)
-  const [expandedAudio, setExpandedAudio] = useState(null)
+  const [expandedAudio, setExpandedAudio] = useState({ active: null, history: null })
   const [cueQuery, setCueQuery] = useState('')
   const [cueResult, setCueResult] = useState(null)
   const [cueLoading, setCueLoading] = useState(false)
+  const [cueDrawerOpen, setCueDrawerOpen] = useState(false)
   const [criExpanded, setCriExpanded] = useState(false)
   const [audioCommandError, setAudioCommandError] = useState(null)
 
@@ -1127,9 +1289,18 @@ function AvMonitor({ clients, selectedClient, active }) {
   useEffect(() => { autoRefreshRef.current = autoRefresh }, [autoRefresh])
   useEffect(() => { refreshIntervalRef.current = refreshInterval }, [refreshInterval])
   useEffect(() => {
+    if (!cueDrawerOpen) return
+    const closeOnEscape = event => { if (event.key === 'Escape') setCueDrawerOpen(false) }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [cueDrawerOpen])
+  useEffect(() => {
     setAudioSnap(null)
     setAudioLog([])
     setAudioCommandError(null)
+    setCueDrawerOpen(false)
+    setCueResult(null)
+    setCueLoading(false)
     prevActiveRef.current = null
     lastUpdateRef.current = 0
     if (selectedClient?.id) {
@@ -1325,11 +1496,16 @@ function AvMonitor({ clients, selectedClient, active }) {
     setAudioSnap(prev => prev ? { ...prev, debugFlags: { ...prev.debugFlags, [flag]: next } } : prev)
   }, [sendCmd, audioSnap?.debugFlags])
 
-  const queryCue = useCallback(() => {
-    if (!cueQuery.trim()) return
+  const queryCue = useCallback((requestedCueId) => {
+    const queryValue = requestedCueId ?? cueQuery
+    if (String(queryValue).trim() === '') return
+    const cueId = Number.parseInt(queryValue, 10)
+    if (!Number.isFinite(cueId)) return
+    setCueQuery(String(cueId))
+    setCueDrawerOpen(true)
     setCueLoading(true)
     setCueResult(null)
-    sendCmd('query_cue', { cueId: parseInt(cueQuery) }, (data) => {
+    sendCmd('query_cue', { cueId }, (data) => {
       setCueResult(data)
       setCueLoading(false)
     })
@@ -1413,7 +1589,6 @@ function AvMonitor({ clients, selectedClient, active }) {
             setExpandedAudio={setExpandedAudio}
             cueQuery={cueQuery}
             setCueQuery={setCueQuery}
-            cueResult={cueResult}
             cueLoading={cueLoading}
             criExpanded={criExpanded}
             setCriExpanded={setCriExpanded}
@@ -1443,6 +1618,7 @@ function AvMonitor({ clients, selectedClient, active }) {
           />
         )}
       </div>
+      <CueInfoDrawer open={cueDrawerOpen} loading={cueLoading} result={cueResult} onClose={() => setCueDrawerOpen(false)} />
     </div>
   )
 }

@@ -496,6 +496,10 @@ function GmConsole() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     return localStorage.getItem('gm_sidebarCollapsed') === 'true'
   })
+  const [sidebarContentExpanded, setSidebarContentExpanded] = useState(() => {
+    return localStorage.getItem('gm_sidebarCollapsed') !== 'true'
+  })
+  const sidebarTransitionTimerRef = useRef(null)
 
   useEffect(() => { document.title = 'GM Console - EncyHub' }, [])
 
@@ -537,7 +541,19 @@ function GmConsole() {
   useEffect(() => { localStorage.setItem('gm_btnMinWidth', String(btnMinWidth)) }, [btnMinWidth])
   useEffect(() => { localStorage.setItem('gm_btnHeight', String(btnHeight)) }, [btnHeight])
   useEffect(() => { localStorage.setItem('gm_sidebarCollapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
+  useEffect(() => () => clearTimeout(sidebarTransitionTimerRef.current), [])
   useEffect(() => { webLogClearTextRef.current = webLogClearText }, [webLogClearText])
+
+  const toggleSidebar = useCallback(() => {
+    clearTimeout(sidebarTransitionTimerRef.current)
+    if (sidebarCollapsed) {
+      setSidebarCollapsed(false)
+      sidebarTransitionTimerRef.current = setTimeout(() => setSidebarContentExpanded(true), 280)
+    } else {
+      setSidebarContentExpanded(false)
+      setSidebarCollapsed(true)
+    }
+  }, [sidebarCollapsed])
 
   // 面包屑导航：仅存路径（节点 name 数组），其余从 selectedClient.gm_tree 派生
   const [breadcrumbPath, setBreadcrumbPath] = useState([])
@@ -1290,7 +1306,7 @@ end`
               <button
                 type="button"
                 className="hidden lg:flex absolute right-[-14px] top-1/2 z-20 h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--cream-warm)] bg-white/90 text-[var(--coffee-muted)] shadow-sm backdrop-blur-sm transition-all hover:scale-105 hover:bg-[var(--cream-warm)] hover:text-[var(--coffee-deep)] hover:shadow-md"
-                onClick={() => setSidebarCollapsed(prev => !prev)}
+                onClick={toggleSidebar}
                 title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
                 aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
               >
@@ -1298,7 +1314,7 @@ end`
               </button>
 
               {/* Collapsed view - desktop only when collapsed */}
-              <div className={`${sidebarCollapsed ? 'lg:flex' : 'lg:hidden'} hidden flex-col items-center gap-3`}>
+              <div className={`${sidebarContentExpanded ? 'lg:hidden' : 'lg:flex'} hidden flex-col items-center gap-3`}>
                 <button
                   type="button"
                   className="glass-card p-3 w-full flex justify-center text-[var(--sage)] hover:bg-[var(--cream-warm)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--caramel)]/35"
@@ -1348,7 +1364,7 @@ end`
               </div>
 
               {/* Expanded view - always on mobile, conditional on desktop */}
-              <div className={`space-y-4 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
+              <div className={`space-y-4 ${sidebarContentExpanded ? '' : 'lg:hidden'}`}>
               {/* Connect game */}
               <button
                 type="button"

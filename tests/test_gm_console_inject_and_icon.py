@@ -132,3 +132,13 @@ def test_runtime_gm_bridge_button_icon_stays_simple():
 
     assert 'viewBox="0 0 24 24"' in icon_source
     assert icon_source.count("<path") <= 3
+
+
+def test_sidebar_waits_for_width_transition_before_showing_expanded_content():
+    source = _read_repo_file("frontend", "src", "pages", "GmConsole.jsx")
+
+    assert "sidebarContentExpanded" in source
+    assert "setSidebarCollapsed(false)" in source
+    assert "setTimeout(() => setSidebarContentExpanded(true), 280)" in source
+    assert "setSidebarContentExpanded(false)" in source
+    assert "onClick={toggleSidebar}" in source

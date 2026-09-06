@@ -194,6 +194,25 @@ def test_audio_history_is_owned_by_hub_and_exposed_to_frontend():
     assert 'title="最近音频历史"' in jsx
     assert "historyPaused" in jsx
     assert "清空视图" in jsx
+    assert "useState({ active: null, history: null })" in jsx
+    assert "toggleAudioEntry('active', item.id ?? i)" in jsx
+    assert "toggleAudioEntry('history', item.historySeq ?? i)" in jsx
+
+
+def test_audio_history_lifetime_uses_event_timestamps_when_events_arrive_together():
+    from tools.gm_console import main
+
+    client_id = "audio-lifetime-test"
+    main.av_audio_history_cache.pop(client_id, None)
+    history = main._cache_av_audio_history(client_id, {
+        "historyEvents": [
+            {"action": "Play", "instanceId": 1, "occurredAt": "2026-09-06 15:32:36.584", "entry": {"id": 1}},
+            {"action": "Stop", "instanceId": 1, "occurredAt": "2026-09-06 15:32:37.124", "entry": {"id": 1}},
+        ]
+    })
+
+    assert abs(history[0]["lifetimeSeconds"] - 0.54) < 0.001
+    main.av_audio_history_cache.pop(client_id, None)
 
 
 def test_audio_cutoff_fields_are_always_visible():
@@ -216,7 +235,7 @@ def test_monitor_sections_use_animated_collapsible_container():
     assert "function CollapsibleSection" in jsx
     assert "transition-[grid-template-rows,opacity]" in jsx
     assert "[overflow-anchor:none]" in jsx
-    for title in ["当前 BGM", "活跃音频列表", "最近音频历史", "音量调节", "音频事件日志", "CueId 精确查询", "Debug 开关", "CRI 资源指标", "播放器", "事件日志"]:
+    for title in ["当前 BGM", "活跃音频列表", "最近音频历史", "音量调节", "音频事件日志", "Cue 信息查询", "Debug 开关", "CRI 资源指标", "播放器", "事件日志"]:
         assert f'title="{title}"' in jsx
 
 
@@ -240,3 +259,51 @@ def test_audio_entry_exposes_source_transform_and_compact_history_time():
     assert 'label="TransformId"' in jsx
     assert "function historyTimestamp" in jsx
     assert "replace(/^\\d{4}-/, '')" in jsx
+
+
+def test_cue_info_query_reuses_loaded_acb_and_releases_temporary_acb():
+    lua = read(RUNTIME_LUA)
+
+    query = lua[lua.index('elseif action == "query_cue" then'):lua.index('elseif action == "set_debug_flag" then')]
+    assert "CS.CriWare.CriAtom.GetAcb(sheet.CueSheetName)" in query
+    assert "CS.XAudioManager.TransformPath(sheet.CueSheetName)" in query
+    assert "CS.CriWare.CriAtomExAcb.LoadAcbFile(nil, acbPath, awbPath)" in query
+    assert "temporaryAcb = acb" in query
+    assert "temporaryAcb:Dispose()" in query
+    assert "CS.XAudioManager.GetCueInfoSync" not in query
+
+
+def test_cue_info_query_returns_cri_metadata_and_first_waveform_only():
+    lua = read(RUNTIME_LUA)
+
+    for field in ["cueInfo", "pos3d", "firstWaveform", "aisacControls", "numTracks", "numRelatedWaveForms"]:
+        assert field in lua
+    assert "acb:GetCueInfo(cue.CueName)" in lua
+    assert "acb:GetWaveFormInfo(cue.CueName)" in lua
+    assert "acb:GetNumUsableAisacControls(cue.CueName)" in lua
+    assert "acb:GetUsableAisacControl(cue.CueName, i)" in lua
+
+
+def test_cue_info_drawer_and_audio_list_query_entry_are_exposed():
+    jsx = read(AV_MONITOR_JSX)
+
+    assert "function CueInfoDrawer" in jsx
+    assert 'w-[480px]' in jsx
+    assert 'aria-label="Cue 信息查询结果"' in jsx
+    assert 'aria-hidden="true" className="absolute inset-0 bg-[var(--coffee-deep)]/20"' in jsx
+    assert 'backdrop-blur-[1px]' not in jsx
+    assert "event.key === 'Escape'" in jsx
+    assert "onQueryCue(item.cueId)" in jsx
+    assert "queryCue(bgm.cueId)" in jsx
+    assert "首个 Track 中最先播放的 Waveform" in jsx
+    assert "function cueBoolean" in jsx
+    assert "function cueAisacId" in jsx
+    assert "function cueProbability" in jsx
+    assert "function cueSilentMode" in jsx
+    assert "id === 0xFFFFFFFF ? 'Invalid'" in jsx
+    assert "Number(cue?.lengthMs) >= 0" in jsx
+    assert 'label="ACB 来源"' not in jsx
+    assert 'label="Header Visible"' not in jsx
+    assert 'label="Selector Index"' not in jsx
+    for group in ["业务与资源", "Cue 基础信息", "播放策略", "3D 参数", "首个 Waveform", "AISAC"]:
+        assert f'title="{group}"' in jsx

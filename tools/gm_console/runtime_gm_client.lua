@@ -5981,6 +5981,7 @@ local function StartRuntimeGM()
             local cueId = tonumber(packet.cueId)
             if not cueId then _av_sendResp("query_cue", nil, "invalid cueId"); return end
             local result
+            local temporaryAcb
             local ok, err = pcall(function()
                 local cue = CS.XAudioManager.GetCueTemplate(cueId)
                 if cue then
@@ -5999,9 +6000,108 @@ local function StartRuntimeGM()
                         result.acbPath = sheet.CueSheetName
                         result.awbPath = sheet.HasAwb and sheet.CueAwb or ""
                         result.hasAwb = sheet.HasAwb and true or false
+
+                        local acb = CS.CriWare.CriAtom.GetAcb(sheet.CueSheetName)
+                        result.acbSource = acb and "loaded" or "temporary"
+                        if not acb then
+                            local acbPath = CS.XAudioManager.TransformPath(sheet.CueSheetName)
+                            local awbPath = nil
+                            if sheet.HasAwb and sheet.CueAwb and sheet.CueAwb ~= "" then
+                                awbPath = CS.XAudioManager.TransformPath(sheet.CueAwb)
+                            end
+                            if not acbPath or acbPath == "" then error("ACB path is unavailable") end
+                            acb = CS.CriWare.CriAtomExAcb.LoadAcbFile(nil, acbPath, awbPath)
+                            temporaryAcb = acb
+                        end
+                        if not acb then error("failed to load ACB: " .. tostring(sheet.CueSheetName)) end
+
+                        local cueOk, cueInfo = acb:GetCueInfo(cue.CueName)
+                        if not cueOk then error("GetCueInfo failed: " .. tostring(cue.CueName)) end
+
+                        local categories = {}
+                        if cueInfo.categories then
+                            for i = 0, cueInfo.categories.Length - 1 do
+                                local category = tonumber(cueInfo.categories[i])
+                                if category and category ~= 65535 then categories[#categories + 1] = category end
+                            end
+                        end
+                        local pos3d = cueInfo.pos3dInfo
+                        local randomPos = pos3d.randomPos
+                        result.cueInfo = {
+                            id = cueInfo.id,
+                            type = tostring(cueInfo.type),
+                            name = cueInfo.name,
+                            userData = cueInfo.userData,
+                            lengthMs = tonumber(cueInfo.length),
+                            categories = categories,
+                            numLimits = cueInfo.numLimits,
+                            numBlocks = cueInfo.numBlocks,
+                            numTracks = cueInfo.numTracks,
+                            numRelatedWaveForms = cueInfo.numRelatedWaveForms,
+                            priority = cueInfo.priority,
+                            headerVisibility = cueInfo.headerVisibility,
+                            ignorePlayerParameter = cueInfo.ignore_player_parameter,
+                            probability = cueInfo.probability,
+                            panType = tostring(cueInfo.panType),
+                            volume = cueInfo.volume,
+                            silentMode = tostring(cueInfo.silentMode),
+                            pitch = cueInfo.pitch,
+                            selectorIndex = cueInfo.selectorIndex,
+                        }
+                        result.pos3d = {
+                            coneInsideAngle = pos3d.coneInsideAngle,
+                            coneOutsideAngle = pos3d.coneOutsideAngle,
+                            minAttenuationDistance = pos3d.minAttenuationDistance,
+                            maxAttenuationDistance = pos3d.maxAttenuationDistance,
+                            sourceRadius = pos3d.sourceRadius,
+                            interiorDistance = pos3d.interiorDistance,
+                            dopplerFactor = pos3d.dopplerFactor,
+                            randomFollowsSource = randomPos.FollowsOriginalSource,
+                            randomType = tostring(randomPos.CalculationType),
+                            randomParameters = {
+                                randomPos.CalculationParameter1,
+                                randomPos.CalculationParameter2,
+                                randomPos.CalculationParameter3,
+                            },
+                            distanceAisacControlId = tonumber(pos3d.distanceAisacControl),
+                            listenerAngleAisacControlId = tonumber(pos3d.listenerBaseAngleAisacControl),
+                            sourceAngleAisacControlId = tonumber(pos3d.sourceBaseAngleAisacControl),
+                            listenerElevationAisacControlId = tonumber(pos3d.listenerBaseElevationAisacControl),
+                            sourceElevationAisacControlId = tonumber(pos3d.sourceBaseElevationAisacControl),
+                        }
+
+                        local waveOk, waveInfo = acb:GetWaveFormInfo(cue.CueName)
+                        if waveOk then
+                            local samplingRate = tonumber(waveInfo.samplingRate)
+                            local numSamples = tonumber(waveInfo.numSamples)
+                            result.firstWaveform = {
+                                waveId = waveInfo.waveId,
+                                format = tonumber(waveInfo.format),
+                                samplingRate = samplingRate,
+                                numChannels = waveInfo.numChannels,
+                                numSamples = numSamples,
+                                streaming = waveInfo.streamingFlag and true or false,
+                                durationMs = samplingRate and samplingRate > 0 and numSamples and (numSamples * 1000 / samplingRate) or nil,
+                            }
+                        end
+
+                        result.aisacControls = {}
+                        local aisacCount = acb:GetNumUsableAisacControls(cue.CueName)
+                        if aisacCount and aisacCount > 0 then
+                            for i = 0, aisacCount - 1 do
+                                local aisacOk, aisacInfo = acb:GetUsableAisacControl(cue.CueName, i)
+                                if aisacOk then
+                                    result.aisacControls[#result.aisacControls + 1] = {
+                                        name = aisacInfo.name,
+                                        id = tonumber(aisacInfo.id),
+                                    }
+                                end
+                            end
+                        end
                     end
                 end
             end)
+            if temporaryAcb then pcall(function() temporaryAcb:Dispose() end) end
             if not ok then _av_sendResp("query_cue", nil, tostring(err))
             elseif not result then _av_sendResp("query_cue", nil, "CueId " .. cueId .. " not found")
             else _av_sendResp("query_cue", result) end
