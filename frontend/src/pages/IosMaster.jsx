@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, RefreshCw, Smartphone, Usb, FileText, Upload, Download,
   X, Package, ChevronDown, ChevronRight, FolderOpen,
-  Edit, Check, Search, Camera, Trash2, Info, HardDrive
+  Edit, Check, Search, Camera, Trash2, Info, HardDrive, RotateCcw
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
@@ -13,6 +13,11 @@ function IosMaster() {
   const [devices, setDevices] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedDevice, setSelectedDevice] = useState(null)
+  const [runningApps, setRunningApps] = useState({ supported: null, apps: [], note: '' })
+  const [runningAppMenu, setRunningAppMenu] = useState(null)
+  const [restartAppTarget, setRestartAppTarget] = useState(null)
+  const [restartAppLoading, setRestartAppLoading] = useState(false)
+  const runningAppMenuRef = useRef(null)
   const [syslog, setSyslog] = useState([])
   const [syslogRunning, setSyslogRunning] = useState(false)
   const wsRef = useRef(null)
@@ -77,10 +82,11 @@ function IosMaster() {
   const [installFile, setInstallFile] = useState(null)
   const [installProgress, setInstallProgress] = useState(null)
 
-  // AFC 目录浏览
-  const [afcEntries, setAfcEntries] = useState([])
-  const [afcPath, setAfcPath] = useState('/')
-  const [afcLoading, setAfcLoading] = useState(false)
+  // App 容器目录浏览
+  const [appAfcEntries, setAppAfcEntries] = useState([])
+  const [appAfcPath, setAppAfcPath] = useState('/Documents')
+  const [appAfcLoading, setAppAfcLoading] = useState(false)
+  const [appAfcError, setAppAfcError] = useState('')
 
   // ── Fetch Devices ──
   const fetchDevices = async () => {
@@ -106,6 +112,44 @@ function IosMaster() {
     const interval = setInterval(fetchDevices, 3000)
     return () => clearInterval(interval)
   }, [])
+
+  // iOS 可检测运行进程，但标准 USB 服务不提供可靠的“当前前台”标记。
+  useEffect(() => {
+    setRunningApps({ supported: null, apps: [], note: '' })
+    if (!selectedDevice) return
+    let cancelled = false
+    const poll = async () => {
+      if (document.hidden) return
+      try {
+        const res = await fetch(`/api/ios_master/devices/${selectedDevice.udid}/running-apps`)
+        const data = await res.json()
+        if (!cancelled) setRunningApps(data)
+      } catch (err) {
+        if (!cancelled) setRunningApps({ supported: false, apps: [], note: err.message })
+      }
+    }
+    poll()
+    const interval = setInterval(poll, 10000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [selectedDevice?.udid])
+
+  useEffect(() => {
+    if (!runningAppMenu) return
+    const closeMenu = (event) => {
+      if (!runningAppMenuRef.current?.contains(event.target)) setRunningAppMenu(null)
+    }
+    window.addEventListener('pointerdown', closeMenu)
+    return () => window.removeEventListener('pointerdown', closeMenu)
+  }, [runningAppMenu])
+
+  useEffect(() => {
+    if (!restartAppTarget) return
+    const closeDialog = (event) => {
+      if (event.key === 'Escape' && !restartAppLoading) setRestartAppTarget(null)
+    }
+    window.addEventListener('keydown', closeDialog)
+    return () => window.removeEventListener('keydown', closeDialog)
+  }, [restartAppTarget, restartAppLoading])
 
   // ── Fetch Path History ──
   useEffect(() => {
@@ -152,7 +196,9 @@ function IosMaster() {
     setSyslog([])
     setSyslogRunning(false)
     setApps([])
-    setAfcEntries([])
+    setAppAfcEntries([])
+    setAppAfcPath('/Documents')
+    setAppAfcError('')
     if (wsRef.current) { try { wsRef.current.close() } catch {} }
 
     // Fetch device info
@@ -251,6 +297,33 @@ function IosMaster() {
       }
     } catch (err) {
       toast.error('卸载失败: ' + err.message)
+    }
+  }
+
+  const handleRestartApp = async () => {
+    if (!selectedDevice || !restartAppTarget || restartAppLoading) return
+    setRestartAppLoading(true)
+    try {
+      const res = await fetch(`/api/ios_master/devices/${selectedDevice.udid}/apps/restart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bundle_id: restartAppTarget.bundle_id }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(data.detail || '重启 App 失败')
+        return
+      }
+      setRunningApps(prev => ({
+        ...prev,
+        apps: prev.apps.map(app => app.bundle_id === restartAppTarget.bundle_id ? { ...app, pid: data.pid || app.pid } : app),
+      }))
+      toast.success(data.message || `已重启 ${restartAppTarget.name}`)
+      setRestartAppTarget(null)
+    } catch (err) {
+      toast.error('重启 App 失败: ' + err.message)
+    } finally {
+      setRestartAppLoading(false)
     }
   }
 
@@ -463,24 +536,42 @@ function IosMaster() {
     finally { setInstallProgress(null) }
   }
 
-  // ── AFC Browse ──
-  const browseAfc = async (path = '/') => {
-    if (!selectedDevice) return
-    setAfcLoading(true)
+  // ── App Container Browse ──
+  const browseAppAfc = async (bundleId, path = '/Documents') => {
+    if (!selectedDevice || !bundleId) return
+    setAppAfcLoading(true)
+    setAppAfcError('')
     try {
-      const res = await fetch(`/api/ios_master/devices/${selectedDevice.udid}/afc/ls`, {
+      const res = await fetch(`/api/ios_master/devices/${selectedDevice.udid}/app-afc/ls?bundle_id=${encodeURIComponent(bundleId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path }),
       })
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        const data = await res.json()
-        setAfcEntries(data.entries || [])
-        setAfcPath(path)
+        setAppAfcEntries(data.entries || [])
+        setAppAfcPath(path)
+        setAppPushRemotePath(path.endsWith('/') ? path : `${path}/`)
+      } else {
+        setAppAfcEntries([])
+        setAppAfcError(data.detail || '该 App 未开放文件容器访问')
       }
-    } catch {}
-    finally { setAfcLoading(false) }
+    } catch (err) {
+      setAppAfcEntries([])
+      setAppAfcError(err.message)
+    } finally { setAppAfcLoading(false) }
   }
+
+  const selectSandboxApp = (bundleId) => {
+    setSelectedBundleId(bundleId)
+    localStorage.setItem('ios_selectedBundleId', bundleId)
+    setAppAfcEntries([])
+    setAppAfcPath('/Documents')
+    setAppAfcError('')
+    if (bundleId) browseAppAfc(bundleId, '/Documents')
+  }
+
+  const appAfcParent = appAfcPath === '/' ? null : (appAfcPath.split('/').slice(0, -1).join('/') || '/')
 
   // ── Helpers ──
   const formatBytes = (bytes) => {
@@ -625,6 +716,43 @@ function IosMaster() {
                           </div>
                         )}
                         <p className="text-xs text-[var(--coffee-muted)] font-mono">{selectedDevice.udid}</p>
+                        <div className="flex items-center gap-1.5 mt-1.5 text-xs" title={runningApps.note || '运行中 App 不等于当前前台 App'}>
+                          <span className="text-[var(--coffee-muted)]">运行中 App:</span>
+                          {runningApps.supported === null ? (
+                            <span className="text-[var(--coffee-muted)]">检测中...</span>
+                          ) : runningApps.supported === false ? (
+                            <span className="text-amber-600">当前连接不支持检测</span>
+                          ) : runningApps.apps.length === 0 ? (
+                            <span className="text-[var(--coffee-muted)]">未识别到用户 App</span>
+                          ) : (
+                            <div ref={runningAppMenuRef} className="flex items-center gap-1 flex-wrap">
+                              {runningApps.apps.slice(0, 3).map(app => (
+                                <div key={app.bundle_id} className="relative">
+                                  <button
+                                    className="px-1.5 py-0.5 rounded bg-[var(--sage)]/15 text-[var(--sage)] hover:bg-[var(--sage)]/25"
+                                    onClick={() => setRunningAppMenu(current => current === app.bundle_id ? null : app.bundle_id)}
+                                    title={`${app.bundle_id} (PID ${app.pid})\n点击打开操作菜单`}
+                                    aria-expanded={runningAppMenu === app.bundle_id}
+                                  >
+                                    {app.name}
+                                  </button>
+                                  {runningAppMenu === app.bundle_id && (
+                                    <div className="absolute left-0 top-full z-40 mt-1 min-w-36 rounded-xl border border-[var(--glass-border)] bg-white/95 p-1.5 shadow-xl backdrop-blur-xl animate-fade-in">
+                                      <button
+                                        className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-[var(--coffee-deep)] hover:bg-[var(--error-soft)]/50 hover:text-[var(--terracotta)] transition-colors"
+                                        onClick={() => { setRunningAppMenu(null); setRestartAppTarget(app) }}
+                                      >
+                                        <RotateCcw size={14} />
+                                        重启 App
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                              {runningApps.apps.length > 3 && <span className="text-[var(--coffee-muted)]">+{runningApps.apps.length - 3}</span>}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <button className="btn-primary flex items-center gap-2" onClick={() => setShowInstallModal(true)}>
@@ -731,7 +859,11 @@ function IosMaster() {
                           </button>
                           <button
                             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${transferMode === 'app' ? 'bg-white shadow-sm text-[var(--coffee-deep)]' : 'text-[var(--coffee-muted)]'}`}
-                            onClick={() => { setTransferMode('app'); if (apps.length === 0 && selectedDevice) fetchApps() }}
+                            onClick={() => {
+                              setTransferMode('app')
+                              if (apps.length === 0 && selectedDevice) fetchApps()
+                              if (selectedBundleId) browseAppAfc(selectedBundleId, appAfcPath)
+                            }}
                           >
                             <Package size={14} className="inline mr-1.5" />App 沙盒
                           </button>
@@ -867,34 +999,74 @@ function IosMaster() {
                           </>
                         ) : (
                           /* App Sandbox Mode */
-                          <div className="space-y-3">
-                            <div>
-                              <label className="block text-xs text-[var(--coffee-muted)] mb-1">Bundle ID</label>
+                          <div className="space-y-4">
+                            <div className="p-3 rounded-xl bg-white/70 border border-[var(--glass-border)]">
+                              <label className="block text-xs text-[var(--coffee-muted)] mb-1.5">选择要管理文件的 App</label>
                               <div className="flex gap-2">
-                                <input
-                                  type="text"
-                                  list="ios-app-bundles"
-                                  className="font-mono text-sm flex-1"
+                                <select
+                                  className="text-sm flex-1"
                                   value={selectedBundleId}
-                                  onChange={e => setSelectedBundleId(e.target.value.trim())}
-                                  placeholder="com.kurogame.haru.internal.debug"
-                                />
-                                <datalist id="ios-app-bundles">
+                                  onChange={e => selectSandboxApp(e.target.value)}
+                                >
+                                  <option value="">请选择 App...</option>
                                   {selectableApps.map(a => (
-                                    <option key={a.bundle_id} value={a.bundle_id}>{a.name}</option>
+                                    <option key={a.bundle_id} value={a.bundle_id}>{a.name} — {a.bundle_id}</option>
                                   ))}
-                                </datalist>
+                                  {selectedBundleId && !selectableApps.some(a => a.bundle_id === selectedBundleId) && (
+                                    <option value={selectedBundleId}>{selectedBundleId}</option>
+                                  )}
+                                </select>
                                 <button className="btn-secondary p-2 shrink-0" onClick={() => fetchApps()} disabled={appsLoading} title="刷新应用列表">
                                   <RefreshCw size={14} className={appsLoading ? 'animate-spin' : ''} />
                                 </button>
                               </div>
                               <p className="text-xs text-[var(--coffee-muted)] mt-1">
-                                {appsLoading ? '正在读取 App 列表...' : selectableApps.length > 0 ? `已读取 ${selectableApps.length} 个用户 App` : '可直接输入 Bundle ID'}
+                                {appsLoading ? '正在读取 App 列表...' : selectableApps.length > 0 ? `已读取 ${selectableApps.length} 个用户 App` : '暂无可选的用户 App'}
                               </p>
                             </div>
                             {selectedBundleId && (
                               <>
-                                <div className="border-t border-[var(--glass-border)]" />
+                                <div className="rounded-xl border border-[var(--glass-border)] bg-white/60 overflow-hidden">
+                                  <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[var(--glass-border)]">
+                                    <div className="min-w-0">
+                                      <div className="text-xs text-[var(--coffee-muted)]">App 容器内当前目录</div>
+                                      <div className="font-mono text-sm truncate" title={appAfcPath}>{appAfcPath}</div>
+                                    </div>
+                                    <div className="flex gap-1 shrink-0">
+                                      {appAfcParent && <button className="btn-secondary px-2 py-1 text-xs" onClick={() => browseAppAfc(selectedBundleId, appAfcParent)}>上一级</button>}
+                                      <button className="btn-secondary p-1.5" onClick={() => browseAppAfc(selectedBundleId, appAfcPath)} title="刷新目录"><RefreshCw size={13} className={appAfcLoading ? 'animate-spin' : ''} /></button>
+                                    </div>
+                                  </div>
+                                  {appAfcError ? (
+                                    <div className="p-3 text-sm text-amber-700 bg-amber-50">
+                                      <div className="font-medium">无法访问该 App 的文件容器</div>
+                                      <div className="text-xs mt-1 break-all">{appAfcError}</div>
+                                    </div>
+                                  ) : appAfcLoading ? (
+                                    <div className="flex justify-center py-6"><div className="spinner" /></div>
+                                  ) : (
+                                    <div className="max-h-48 overflow-auto p-1">
+                                      {appAfcEntries.map(entry => (
+                                        <button
+                                          key={entry.path}
+                                          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left hover:bg-[var(--cream-warm)]"
+                                          onClick={() => entry.is_dir ? browseAppAfc(selectedBundleId, entry.path) : setAppPullRemotePath(entry.path)}
+                                          title={entry.is_dir ? '进入目录' : '选中此文件用于拉取'}
+                                        >
+                                          {entry.is_dir ? <FolderOpen size={14} className="text-[var(--caramel)] shrink-0" /> : <FileText size={14} className="text-[var(--sky)] shrink-0" />}
+                                          <span className="font-mono text-xs truncate flex-1">{entry.name}</span>
+                                          {!entry.is_dir && <span className="text-xs text-[var(--coffee-muted)]">{formatBytes(entry.size)}</span>}
+                                        </button>
+                                      ))}
+                                      {appAfcEntries.length === 0 && <div className="text-center text-xs text-[var(--coffee-muted)] py-5">目录为空</div>}
+                                    </div>
+                                  )}
+                                  {!appAfcError && (
+                                    <button className="w-full px-3 py-2 text-xs text-blue-600 hover:bg-blue-50 border-t border-[var(--glass-border)]" onClick={() => setAppPushRemotePath(appAfcPath.endsWith('/') ? appAfcPath : `${appAfcPath}/`)}>
+                                      将当前目录设为推送目标
+                                    </button>
+                                  )}
+                                </div>
                                 <div>
                                   <div className="flex items-center gap-2 mb-2">
                                     <Upload size={14} className="text-[var(--caramel)]" />
@@ -902,7 +1074,10 @@ function IosMaster() {
                                   </div>
                                   <div className="space-y-2">
                                     <input type="text" value={appPushLocalPath} onChange={e => setAppPushLocalPath(e.target.value)} placeholder="本地路径" className="font-mono text-sm" />
-                                    <input type="text" value={appPushRemotePath} onChange={e => setAppPushRemotePath(e.target.value)} placeholder="files/ 或 /Documents/files/" className="font-mono text-sm" />
+                                    <div>
+                                      <label className="block text-xs text-[var(--coffee-muted)] mb-1">App 容器内目标路径</label>
+                                      <input type="text" value={appPushRemotePath} onChange={e => setAppPushRemotePath(e.target.value)} placeholder="/Documents/files/" className="font-mono text-sm" />
+                                    </div>
                                     <button className="btn-primary flex items-center gap-2 text-sm" onClick={handleAppPush} disabled={!appPushLocalPath.trim() || operating}><Upload size={14} />推送</button>
                                   </div>
                                 </div>
@@ -913,7 +1088,7 @@ function IosMaster() {
                                     <span className="text-sm font-medium">从 App 沙盒拉取</span>
                                   </div>
                                   <div className="space-y-2">
-                                    <input type="text" value={appPullRemotePath} onChange={e => setAppPullRemotePath(e.target.value)} placeholder="files/log 或 /Documents/files/log" className="font-mono text-sm" />
+                                    <input type="text" value={appPullRemotePath} onChange={e => setAppPullRemotePath(e.target.value)} placeholder="点击上方文件，或填写 /Documents/files/log" className="font-mono text-sm" />
                                     <input type="text" value={appPullLocalPath} onChange={e => setAppPullLocalPath(e.target.value)} placeholder="本地保存路径 (留空默认)" className="font-mono text-sm" />
                                     <button className="btn-primary flex items-center gap-2 text-sm" onClick={handleAppPull} disabled={!appPullRemotePath.trim() || operating}><Download size={14} />拉取</button>
                                   </div>
@@ -1015,6 +1190,72 @@ function IosMaster() {
           </div>
         )}
       </main>
+
+      {restartAppTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--coffee-deep)]/35 backdrop-blur-sm px-4 animate-fade-in"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !restartAppLoading) setRestartAppTarget(null)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="restart-app-dialog-title"
+            className="glass-card w-full max-w-md overflow-hidden border border-white/70 shadow-2xl shadow-[var(--coffee-deep)]/20"
+          >
+            <div className="h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-[var(--caramel)]" />
+            <div className="p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0">
+                    <RotateCcw size={21} className="text-blue-600" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 id="restart-app-dialog-title" className="font-display text-xl font-semibold text-[var(--coffee-deep)]">
+                      重启 {restartAppTarget.name}？
+                    </h2>
+                    <p className="mt-1 text-sm leading-relaxed text-[var(--coffee-muted)]">
+                      App 将被终止并立即重新启动，未保存的状态可能丢失。
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="p-2 -mt-1 -mr-1 rounded-lg text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors disabled:opacity-40"
+                  onClick={() => setRestartAppTarget(null)}
+                  disabled={restartAppLoading}
+                  aria-label="关闭重启 App 确认"
+                >
+                  <X size={17} />
+                </button>
+              </div>
+
+              <div className="mt-5 rounded-xl border border-[var(--glass-border)] bg-[var(--cream-warm)]/55 px-4 py-3">
+                <div className="text-xs text-[var(--coffee-muted)]">Bundle ID</div>
+                <div className="mt-1 font-mono text-sm text-[var(--coffee-deep)] break-all">{restartAppTarget.bundle_id}</div>
+                <div className="mt-2 text-xs text-[var(--coffee-muted)]">PID {restartAppTarget.pid}</div>
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3">
+                <button className="btn-secondary px-5" onClick={() => setRestartAppTarget(null)} disabled={restartAppLoading}>
+                  取消
+                </button>
+                <button
+                  className="btn-primary inline-flex items-center gap-2 px-5 disabled:opacity-60 disabled:cursor-not-allowed"
+                  onClick={handleRestartApp}
+                  disabled={restartAppLoading}
+                >
+                  {restartAppLoading
+                    ? <div className="spinner" style={{ width: 15, height: 15, borderWidth: 2 }} />
+                    : <RotateCcw size={15} />
+                  }
+                  {restartAppLoading ? '正在重启...' : '确认重启'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* IPA Install Modal */}
       {showInstallModal && (

@@ -171,6 +171,7 @@ class iOSDeviceManager:
                 result.append({
                     'bundle_id': bundle_id,
                     'name': info.get('CFBundleDisplayName', info.get('CFBundleName', bundle_id)),
+                    'executable': info.get('CFBundleExecutable', ''),
                     'version': info.get('CFBundleShortVersionString', info.get('CFBundleVersion', '')),
                     'bundle_version': info.get('CFBundleVersion', ''),
                     'size': info.get('StaticDiskUsage', 0) + info.get('DynamicDiskUsage', 0),
@@ -183,6 +184,66 @@ class iOSDeviceManager:
             return result
         except Exception as e:
             return [{'error': str(e) or f'操作失败 ({type(e).__name__})'}]
+
+    async def get_running_apps(self, udid: str) -> Dict[str, Any]:
+        """Return running user apps. iOS does not expose a reliable foreground flag."""
+        try:
+            apps = await self.list_apps(udid, "User")
+            if apps and 'error' in apps[0]:
+                raise RuntimeError(apps[0]['error'])
+
+            lockdown = await self._create_lockdown_async(udid)
+            from pymobiledevice3.services.os_trace import OsTraceService
+            os_trace = OsTraceService(lockdown=lockdown)
+            try:
+                payload = (await os_trace.get_pid_list()).get('Payload') or {}
+            finally:
+                await os_trace.close()
+
+            by_executable = {app.get('executable'): app for app in apps if app.get('executable')}
+            by_bundle = {app.get('bundle_id'): app for app in apps if app.get('bundle_id')}
+            running = []
+            seen = set()
+            for pid, process in payload.items():
+                process_name = process.get('ProcessName', '')
+                bundle_id = process.get('BundleIdentifier', '')
+                app = by_bundle.get(bundle_id) or by_executable.get(process_name)
+                if not app or app['bundle_id'] in seen:
+                    continue
+                seen.add(app['bundle_id'])
+                running.append({
+                    'bundle_id': app['bundle_id'],
+                    'name': app['name'],
+                    'pid': int(pid),
+                })
+            running.sort(key=lambda item: item['name'].lower())
+            return {
+                'supported': True,
+                'apps': running,
+                'foreground_available': False,
+                'note': 'iOS 标准 USB 服务可识别运行进程，但不能可靠区分当前前台 App',
+            }
+        except Exception as e:
+            return {
+                'supported': False,
+                'apps': [],
+                'foreground_available': False,
+                'note': str(e) or f'运行中 App 检测失败 ({type(e).__name__})',
+            }
+
+    async def restart_app(self, udid: str, bundle_id: str) -> tuple[bool, str, Optional[int]]:
+        """Restart an app through the developer ProcessControl service."""
+        try:
+            lockdown = await self._create_lockdown_async(udid)
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+            from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
+
+            async with DvtProvider(lockdown) as dvt, ProcessControl(dvt) as process_control:
+                pid = await process_control.launch(bundle_id=bundle_id, kill_existing=True)
+            return True, f"已重启 {bundle_id}", pid
+        except Exception as e:
+            detail = str(e) or f'重启失败 ({type(e).__name__})'
+            return False, detail, None
 
     async def uninstall_app(self, udid: str, bundle_id: str) -> tuple[bool, str]:
         try:

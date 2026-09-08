@@ -644,6 +644,12 @@ function GmConsole() {
   }, [])
 
   // HTTP fallback fetch
+  const getDirectClient = useCallback(() => {
+    if (selectedClient) return selectedClient.online === false ? null : selectedClient
+    const onlineClients = clients.filter(client => client.online !== false)
+    return onlineClients.length === 1 ? onlineClients[0] : null
+  }, [clients, selectedClient])
+
   const fetchDataHttp = useCallback(async () => {
     try {
       const [clientsRes, logsRes] = await Promise.all([
@@ -911,8 +917,9 @@ function GmConsole() {
   // 没有选中任何客户端且非广播模式时，若列表里有客户端就自动选第1个
   // 痛点：唯一客户端掉线 → 重连后用户不必再手动点一次
   useEffect(() => {
-    if (!broadcastMode && !selectedClient && clients.length > 0) {
-      handleSelectClient(clients[0], { auto: true })
+    const firstOnlineClient = clients.find(client => client.online !== false)
+    if (!broadcastMode && !selectedClient && firstOnlineClient) {
+      handleSelectClient(firstOnlineClient, { auto: true })
     }
   }, [clients, selectedClient, broadcastMode, handleSelectClient])
 
@@ -942,15 +949,16 @@ function GmConsole() {
 
   const handleRefreshLuaGmTree = useCallback(async () => {
     const cmd = 'RuntimeGMClient.ReloadGM(true)'
+    const directClient = getDirectClient()
     if (broadcastMode) {
       await fetch('/api/gm_console/broadcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cmd }),
       })
-    } else if (selectedClient) {
+    } else if (directClient) {
       setAutoSelectedClientId(null) // 对当前客户端发命令，消光
-      await fetch(`/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`, {
+      await fetch(`/api/gm_console/clients/${encodeURIComponent(directClient.id)}/exec`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cmd }),
@@ -960,13 +968,14 @@ function GmConsole() {
       return
     }
     toast.success('已发送刷新GM信号')
-  }, [broadcastMode, selectedClient, toast])
+  }, [broadcastMode, getDirectClient, selectedClient, toast])
 
   // 执行 Lua 命令
   const handleExec = async () => {
     if (!luaInput.trim()) return
-    if (!selectedClient && !broadcastMode) {
-      toast.warning('请先选择一个客户端或广播模式')
+    const directClient = getDirectClient()
+    if (!directClient && !broadcastMode) {
+      toast.warning(selectedClient?.online === false ? '当前客户端已离线，请选择在线客户端或广播模式' : '请先选择一个客户端或广播模式')
       return
     }
     // LuaUI 上下文模式：包装代码注入 self + 重定向 print 到 web 日志
@@ -1003,7 +1012,7 @@ end`
     try {
       const url = broadcastMode
         ? '/api/gm_console/broadcast'
-        : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
+        : `/api/gm_console/clients/${encodeURIComponent(directClient.id)}/exec`
       if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
       const logType = luaUiContext ? 'cmd' : (broadcastMode ? 'broadcast' : 'cmd')
       const contextLabel = typeof luaUiContext === 'object'
@@ -1106,8 +1115,9 @@ end`
   }
 
   const handleExecGm = (gmId, value = null) => {
-    if (!selectedClient && !broadcastMode) {
-      toast.warning('请先选择一个客户端或广播模式')
+    const directClient = getDirectClient()
+    if (!directClient && !broadcastMode) {
+      toast.warning(selectedClient?.online === false ? '当前客户端已离线，请选择在线客户端或广播模式' : '请先选择一个客户端或广播模式')
       return
     }
     // 立即写入日志
@@ -1116,7 +1126,7 @@ end`
 
     const url = broadcastMode
       ? '/api/gm_console/broadcast-gm'
-      : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec-gm`
+      : `/api/gm_console/clients/${encodeURIComponent(directClient.id)}/exec-gm`
     if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
 
     fetch(url, {
@@ -1150,8 +1160,9 @@ end`
 
   // 执行自定义 GM 命令（直接发送 Lua）
   const handleExecCustomGm = (cmd) => {
-    if (!selectedClient && !broadcastMode) {
-      toast.warning('请先选择一个客户端或广播模式')
+    const directClient = getDirectClient()
+    if (!directClient && !broadcastMode) {
+      toast.warning(selectedClient?.online === false ? '当前客户端已离线，请选择在线客户端或广播模式' : '请先选择一个客户端或广播模式')
       return
     }
     const label = broadcastMode ? '广播自定义GM' : '自定义GM'
@@ -1159,7 +1170,7 @@ end`
 
     const url = broadcastMode
       ? '/api/gm_console/broadcast'
-      : `/api/gm_console/clients/${encodeURIComponent(selectedClient.id)}/exec`
+      : `/api/gm_console/clients/${encodeURIComponent(directClient.id)}/exec`
     if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
 
     fetch(url, {

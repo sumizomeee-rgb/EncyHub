@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Play, Square, RotateCcw, ExternalLink, Sparkles, Smartphone, GitBranch, Terminal, Hammer, RefreshCw, Power } from 'lucide-react'
+import { Play, Square, RotateCcw, ExternalLink, Sparkles, Smartphone, GitBranch, Terminal, Hammer, RefreshCw, Power, X, AlertTriangle } from 'lucide-react'
 import { useToast } from '../components/Toast'
 
 const API_BASE = '/api/hub'
@@ -17,6 +17,7 @@ function Dashboard() {
   const [actionLoading, setActionLoading] = useState({})
   const [buildLoading, setBuildLoading] = useState(false)
   const [restartLoading, setRestartLoading] = useState(false)
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false)
   const [shutdownLoading, setShutdownLoading] = useState(false)
   const navigate = useNavigate()
   const toast = useToast()
@@ -54,7 +55,7 @@ function Dashboard() {
   }
 
   const handleRestartHub = async () => {
-    if (!confirm('确定要重启整个平台吗？这会中断当前的连接。')) return
+    setShowRestartConfirm(false)
     setRestartLoading(true)
     try {
       const res = await fetch(`${API_BASE}/restart-hub`, { method: 'POST' })
@@ -114,6 +115,15 @@ function Dashboard() {
   }
 
   useEffect(() => { document.title = 'EncyHub' }, [])
+
+  useEffect(() => {
+    if (!showRestartConfirm) return
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setShowRestartConfirm(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [showRestartConfirm])
 
   useEffect(() => {
     fetchTools()
@@ -191,7 +201,7 @@ function Dashboard() {
                          bg-[var(--cream-soft)] border border-[var(--glass-border)] text-[var(--coffee-medium)]
                          hover:border-[var(--terracotta)] hover:text-[var(--terracotta)] hover:bg-[var(--error-soft)]/30 hover:shadow-md hover:shadow-[var(--terracotta)]/10
                          active:scale-[0.97] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={handleRestartHub}
+              onClick={() => setShowRestartConfirm(true)}
               disabled={buildLoading || restartLoading || shutdownLoading}
             >
               <RefreshCw size={14} className={restartLoading ? 'animate-spin' : ''} />
@@ -313,6 +323,67 @@ function Dashboard() {
           </a>
         </p>
       </footer>
+
+      {showRestartConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--coffee-deep)]/35 backdrop-blur-sm px-4 animate-fade-in"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowRestartConfirm(false)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="restart-dialog-title"
+            className="glass-card w-full max-w-md overflow-hidden border border-white/70 shadow-2xl shadow-[var(--coffee-deep)]/20"
+          >
+            <div className="h-1 bg-gradient-to-r from-[var(--caramel)] via-[var(--terracotta)] to-[var(--caramel-dark)]" />
+            <div className="p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-[var(--error-soft)] flex items-center justify-center shrink-0">
+                    <AlertTriangle size={21} className="text-[var(--terracotta)]" />
+                  </div>
+                  <div>
+                    <h2 id="restart-dialog-title" className="font-display text-xl font-semibold text-[var(--coffee-deep)]">
+                      重启 EncyHub 平台？
+                    </h2>
+                    <p className="mt-1 text-sm leading-relaxed text-[var(--coffee-muted)]">
+                      所有工具的当前连接会短暂中断，平台恢复后页面将自动刷新。
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="p-2 -mt-1 -mr-1 rounded-lg text-[var(--coffee-muted)] hover:text-[var(--coffee-deep)] hover:bg-[var(--cream-warm)] transition-colors"
+                  onClick={() => setShowRestartConfirm(false)}
+                  aria-label="关闭重启确认"
+                >
+                  <X size={17} />
+                </button>
+              </div>
+
+              <div className="mt-5 rounded-xl border border-[var(--caramel-light)]/40 bg-[var(--amber-soft)]/35 px-4 py-3 text-sm text-[var(--coffee-medium)]">
+                正在进行的日志监听、设备连接和页面操作可能需要重新建立。
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3">
+                <button className="btn-secondary px-5" onClick={() => setShowRestartConfirm(false)}>
+                  取消
+                </button>
+                <button
+                  className="inline-flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium text-white
+                             bg-gradient-to-r from-[var(--terracotta)] to-[var(--caramel-dark)]
+                             hover:shadow-lg hover:shadow-[var(--terracotta)]/20 active:scale-[0.98] transition-all"
+                  onClick={handleRestartHub}
+                >
+                  <RefreshCw size={15} />
+                  确认重启
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

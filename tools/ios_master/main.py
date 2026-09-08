@@ -152,6 +152,19 @@ async def list_apps(udid: str, app_type: str = "User"):
     return {"apps": apps}
 
 
+@app.get("/devices/{udid}/running-apps")
+async def get_running_apps(udid: str):
+    return await ios_mgr.get_running_apps(udid)
+
+
+@app.post("/devices/{udid}/apps/restart")
+async def restart_app(udid: str, req: UninstallRequest):
+    success, msg, pid = await ios_mgr.restart_app(udid, req.bundle_id)
+    if not success:
+        raise HTTPException(400, msg)
+    return {"message": msg, "pid": pid}
+
+
 @app.post("/devices/{udid}/apps/uninstall")
 async def uninstall_app(udid: str, req: UninstallRequest):
     success, msg = await ios_mgr.uninstall_app(udid, req.bundle_id)
