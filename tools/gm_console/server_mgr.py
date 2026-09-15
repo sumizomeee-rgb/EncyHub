@@ -3,6 +3,7 @@ GM Console - 服务器管理模块
 从原 gm_console.py 提取的核心逻辑
 """
 import asyncio
+import ipaddress
 import json
 import socket
 import os
@@ -13,6 +14,92 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Callable, Tuple
 
 import psutil
+
+
+def _normalize_ip(value: str) -> str:
+    """统一 IPv4、IPv6 和 IPv4-mapped IPv6 的比较形式。"""
+    try:
+        address = ipaddress.ip_address((value or "").split("%", 1)[0])
+    except ValueError:
+        return ""
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return str(address.ipv4_mapped)
+    return str(address)
+
+
+def get_local_ip_addresses() -> set[str]:
+    """返回 Hub 所在机器当前拥有的全部 IP，避免多网卡时只认首选网卡。"""
+    addresses = {"127.0.0.1", "::1"}
+    try:
+        for adapter_addresses in psutil.net_if_addrs().values():
+            for address in adapter_addresses:
+                if address.family not in (socket.AF_INET, socket.AF_INET6):
+                    continue
+                normalized = _normalize_ip(address.address)
+                if normalized:
+                    addresses.add(normalized)
+    except (OSError, psutil.Error):
+        pass
+    return addresses
+
+
+def _is_haru_root(path: str) -> bool:
+    return bool(path) and all(os.path.isdir(os.path.join(path, *parts)) for parts in (
+        ("Dev", "Client"),
+        ("Product", "Lua"),
+        ("Dev", "Protocol", "Frontend"),
+    ))
+
+
+def find_haru_root(path: str, max_parents: int = 16) -> str:
+    """从进程相关路径向上寻找经过目录结构校验的 HaruRoot。"""
+    if not path:
+        return ""
+    current = os.path.abspath(path)
+    if os.path.isfile(current):
+        current = os.path.dirname(current)
+    for _ in range(max_parents + 1):
+        if _is_haru_root(current):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return ""
+
+
+def _project_paths_from_cmdline(cmdline: list[str]) -> list[str]:
+    paths = []
+    for index, arg in enumerate(cmdline or []):
+        lowered = str(arg).lower()
+        if lowered == "-projectpath" and index + 1 < len(cmdline):
+            paths.append(str(cmdline[index + 1]))
+        elif lowered.startswith("-projectpath="):
+            paths.append(str(arg).split("=", 1)[1])
+    return paths
+
+
+def detect_process_haru_root(pid: int) -> tuple[str, str]:
+    """通过本机客户端进程定位 HaruRoot，并返回路径及探测来源。"""
+    if not pid or pid <= 0:
+        return "", ""
+    try:
+        process = psutil.Process(pid)
+        candidates = [(path, "process_project_path") for path in _project_paths_from_cmdline(process.cmdline())]
+        candidates.extend(((process.cwd(), "process_cwd"), (process.exe(), "process_exe")))
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+        return "", ""
+
+    seen = set()
+    for candidate, detection in candidates:
+        normalized = os.path.normcase(os.path.abspath(candidate)) if candidate else ""
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        haru_root = find_haru_root(candidate)
+        if haru_root:
+            return haru_root, detection
+    return "", ""
 
 
 @dataclass
@@ -33,6 +120,9 @@ class Client:
     svn_branch: str = ""
     svn_revision: str = ""
     svn_detection: str = ""
+    is_local: bool = False
+    local_haru_root: str = ""
+    local_haru_root_detection: str = ""
     gm_tree: List[Any] = field(default_factory=list)
     ui_states: Dict[str, Any] = field(default_factory=dict)
 
@@ -53,6 +143,9 @@ class Client:
             "svnBranch": self.svn_branch,
             "svnRevision": self.svn_revision,
             "svnDetection": self.svn_detection,
+            "isLocal": self.is_local,
+            "localHaruRoot": self.local_haru_root,
+            "localHaruRootDetection": self.local_haru_root_detection,
             "online": True,
         }
 
@@ -111,6 +204,17 @@ class ServerMgr:
         self._pending_execs: Dict[int, dict] = {}
         self._temp_seq = 0                  # 临时 ID 序号（保证 accept 阶段唯一）
         self.client_state_rev = 0
+        self.local_ip_addresses = get_local_ip_addresses()
+
+    def _enrich_local_client(self, client: Client):
+        """标记本机连接；有 SVN 信息时再从本机进程安全探测工程根目录。"""
+        normalized_ip = _normalize_ip(client.ip)
+        client.is_local = bool(normalized_ip and normalized_ip in self.local_ip_addresses)
+        client.local_haru_root = ""
+        client.local_haru_root_detection = ""
+        if not client.is_local or not client.svn_url:
+            return
+        client.local_haru_root, client.local_haru_root_detection = detect_process_haru_root(client.pid)
 
     def _kill_port_holder(self, port: int):
         """清理占用指定端口的旧进程"""
@@ -437,6 +541,7 @@ class ServerMgr:
             c.svn_branch = pkt.get("svn_branch", "") or ""
             c.svn_revision = str(pkt.get("svn_revision", "") or "")
             c.svn_detection = pkt.get("svn_detection", "") or ""
+            self._enrich_local_client(c)
             # 计算确定 ID 并 rekey（pid 缺失时按 device 兜底，见 spec §3.4）
             # 用 "-" 分隔避免 "#" 在 HTTP 路径/代理中被误认为 fragment
             if c.pid > 0:

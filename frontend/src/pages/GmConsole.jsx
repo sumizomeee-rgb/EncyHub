@@ -1015,7 +1015,7 @@ end`
         : `/api/gm_console/clients/${encodeURIComponent(directClient.id)}/exec`
       if (!broadcastMode) setAutoSelectedClientId(null) // 对当前客户端发命令，消光
       const logType = luaUiContext ? 'cmd' : (broadcastMode ? 'broadcast' : 'cmd')
-      const contextLabel = typeof luaUiContext === 'object'
+      const contextLabel = luaUiContext && typeof luaUiContext === 'object'
         ? `${luaUiContext.name}${luaUiContext.id ? ` #${luaUiContext.id}` : ''}`
         : luaUiContext
       const logText = luaUiContext ? `[self=${contextLabel}] ${luaInput}` : (broadcastMode ? `[广播] ${luaInput}` : `> ${luaInput}`)
@@ -1357,7 +1357,7 @@ end`
                             : ''
                         }`}
                         onClick={() => handleSelectClient(client)}
-                        title={`${client.device || 'Unknown'}\n#${client.pid || '?'} · ${client.ip || ''} · ${client.platform || ''}${client.appVersion ? ` · v${client.appVersion}` : ''}${client.online === false ? `\n离线，保留 ${offlineRemaining(client, clientClock)}` : ''}`}
+                        title={`${client.device || 'Unknown'}\n#${client.pid || '?'} · ${client.ip || ''} · ${client.platform || ''}${client.appVersion ? ` · v${client.appVersion}` : ''}${client.isLocal ? `\n本机客户端${client.localHaruRoot ? `\nHaruRoot：${client.localHaruRoot}` : '\nHaruRoot：未识别'}` : ''}${client.online === false ? `\n离线，保留 ${offlineRemaining(client, clientClock)}` : ''}`}
                       >
                         <PlatformIcon platform={client.platform} size={14}
                           className={
@@ -1418,27 +1418,42 @@ end`
                   <div className="text-[var(--coffee-muted)] text-xs py-3 text-center">无连接</div>
                 ) : (
                   <div className="space-y-2">
-                    {clients.map(client => (
+                    {clients.map(client => {
+                      const isSelected = selectedClient?.id === client.id && !broadcastMode
+                      const localTooltip = client.isLocal
+                        ? `\n本机客户端${client.localHaruRoot ? `\nHaruRoot：${client.localHaruRoot}` : '\nHaruRoot：未识别'}`
+                        : ''
+                      return (
                       <div
                         key={client.id}
                         className={`group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${client.online === false ? 'opacity-55 grayscale-[0.65]' : ''} ${
-                          selectedClient?.id === client.id && !broadcastMode
-                            ? 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-l-[3px] border-[var(--caramel)]'
-                            : 'bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)]'
+                          isSelected
+                            ? client.isLocal
+                              ? 'local-client-card is-selected'
+                              : 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-[var(--caramel)]'
+                            : client.isLocal
+                              ? 'local-client-card'
+                              : 'bg-[var(--cream-warm)]/50 border-transparent hover:bg-[var(--cream-warm)]'
                         } ${
                           autoSelectedClientId === client.id
-                            ? 'auto-select-glow'
+                            ? (client.isLocal ? 'local-client-glow' : 'auto-select-glow')
                             : ''
                         }`}
                         onClick={() => handleSelectClient(client)}
+                        title={`${client.device || 'Unknown'}\n${client.ip || ''} · #${client.pid || '?'} · ${client.platform || ''}${client.appVersion ? `\n版本：${client.appVersion}` : ''}${client.svnAuthor ? `\nSVN 用户：${client.svnAuthor}` : ''}${client.svnBranch ? `\nSVN 分支：${client.svnBranch}${client.svnRevision ? ` @ r${client.svnRevision}` : ''}` : ''}${client.svnUrl ? `\n${client.svnUrl}` : ''}${localTooltip}`}
                       >
-                        <span title={`${client.device || 'Unknown'}\n${client.ip || ''} · #${client.pid || '?'} · ${client.platform || ''}${client.appVersion ? `\n版本：${client.appVersion}` : ''}${client.svnAuthor ? `\nSVN 用户：${client.svnAuthor}` : ''}${client.svnBranch ? `\nSVN 分支：${client.svnBranch}${client.svnRevision ? ` @ r${client.svnRevision}` : ''}` : ''}${client.svnUrl ? `\n${client.svnUrl}` : ''}`}>
+                        <span>
                           <PlatformIcon platform={client.platform} size={14}
-                            className="text-[var(--caramel)] shrink-0" />
+                            className={`${client.isLocal ? 'text-[var(--sage)]' : 'text-[var(--caramel)]'} shrink-0`} />
                         </span>
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium text-xs text-[var(--coffee-deep)] truncate">
-                            {client.device || 'Unknown'}
+                          <div className="flex items-center gap-1.5 font-medium text-xs text-[var(--coffee-deep)] min-w-0">
+                            <span className="truncate">{client.device || 'Unknown'}</span>
+                            {client.isLocal && (
+                              <span className="shrink-0 rounded-full border border-[var(--sage-soft)]/70 bg-white/55 px-1.5 py-px text-[8px] font-bold tracking-wide text-[var(--sage)]">
+                                本机
+                              </span>
+                            )}
                             {client.online === false && <span className="ml-1.5 font-mono text-[9px] font-normal text-[var(--coffee-muted)]">离线 {offlineRemaining(client, clientClock)}</span>}
                           </div>
                           <div className="text-[10px] text-[var(--coffee-muted)] overflow-hidden whitespace-nowrap">
@@ -1486,7 +1501,8 @@ end`
                           )}
                         </button>
                       </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </div>

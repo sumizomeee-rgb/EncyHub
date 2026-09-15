@@ -328,9 +328,32 @@ h1, h2, h3, h4, h5, h6 {
   animation: auto-select-glow 3s ease-in-out infinite;
 }
 
+.local-client-card {
+  border-left: 3px solid rgba(125, 155, 118, 0.72);
+  background: linear-gradient(105deg, rgba(125, 155, 118, 0.18) 0%, rgba(163, 184, 157, 0.09) 68%, rgba(255, 253, 249, 0.45) 100%);
+}
+
+.local-client-card:hover {
+  background: linear-gradient(105deg, rgba(125, 155, 118, 0.24) 0%, rgba(163, 184, 157, 0.13) 68%, rgba(255, 253, 249, 0.52) 100%);
+}
+
+.local-client-card.is-selected {
+  border-left-color: var(--sage);
+  background: linear-gradient(105deg, rgba(125, 155, 118, 0.25) 0%, rgba(163, 184, 157, 0.13) 72%, rgba(255, 253, 249, 0.48) 100%);
+}
+
+.local-client-glow {
+  animation: local-client-glow 3s ease-in-out infinite;
+}
+
 @keyframes auto-select-glow {
   0%, 100% { box-shadow: 0 0 4px rgba(199, 132, 71, 0.35); }
   50%      { box-shadow: 0 0 14px rgba(199, 132, 71, 0.75); }
+}
+
+@keyframes local-client-glow {
+  0%, 100% { box-shadow: 0 2px 8px rgba(74, 64, 58, 0.05), 0 0 5px rgba(125, 155, 118, 0.32); }
+  50%      { box-shadow: 0 3px 12px rgba(74, 64, 58, 0.07), 0 0 16px rgba(125, 155, 118, 0.68); }
 }
 
 @keyframes pulse-success {

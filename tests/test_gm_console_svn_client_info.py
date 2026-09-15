@@ -1,6 +1,8 @@
-"""GM Console 客户端 SVN 元数据协议回归测试。"""
+"""GM Console 客户端 SVN 元数据与本机工程识别回归测试。"""
 
-from tools.gm_console.server_mgr import Client, ServerMgr
+import os
+
+from tools.gm_console.server_mgr import Client, ServerMgr, find_haru_root
 
 
 class DummyWriter:
@@ -36,6 +38,9 @@ def test_client_serializes_structured_svn_info():
         "svnBranch": "trunk",
         "svnRevision": "1541437",
         "svnDetection": "cli_realm",
+        "isLocal": False,
+        "localHaruRoot": "",
+        "localHaruRootDetection": "",
         "online": True,
     }
 
@@ -87,3 +92,60 @@ def test_hello_packet_accepts_new_svn_fields_and_keeps_old_clients_compatible():
     assert legacy.svn_url == ""
     assert legacy.svn_branch == ""
     assert legacy.svn_revision == ""
+
+
+def test_find_haru_root_walks_up_from_player_directory(tmp_path):
+    root = tmp_path / "HaruTrunk"
+    (root / "Dev" / "Client").mkdir(parents=True)
+    (root / "Product" / "Lua").mkdir(parents=True)
+    (root / "Dev" / "Protocol" / "Frontend").mkdir(parents=True)
+    player_dir = root / "Product" / "Bin" / "Client" / "Win" / "Debug"
+    player_dir.mkdir(parents=True)
+
+    assert find_haru_root(str(player_dir)) == os.path.abspath(root)
+
+
+def test_local_client_with_svn_info_gets_detected_haru_root(monkeypatch):
+    mgr = ServerMgr()
+    mgr.local_ip_addresses = {"10.101.0.8"}
+    monkeypatch.setattr(
+        "tools.gm_console.server_mgr.detect_process_haru_root",
+        lambda pid: (r"F:\HaruTrunk", "process_exe"),
+    )
+    client = Client(id="temp:10.101.0.8:50000:1", port=12581, writer=DummyWriter(), ip="10.101.0.8")
+    mgr.clients[client.id] = client
+
+    mgr._process_packet(client, {
+        "type": "HELLO",
+        "pid": 202552,
+        "svn_url": "https://svn.example.com/svn/haru/trunk/Product/Bin/Client/Win/Debug/Application_Data",
+    })
+
+    assert client.is_local is True
+    assert client.local_haru_root == r"F:\HaruTrunk"
+    assert client.local_haru_root_detection == "process_exe"
+
+
+def test_remote_client_never_reads_local_process_path(monkeypatch):
+    mgr = ServerMgr()
+    mgr.local_ip_addresses = {"10.101.0.8"}
+    called = False
+
+    def fail_if_called(pid):
+        nonlocal called
+        called = True
+        return r"F:\HaruTrunk", "process_exe"
+
+    monkeypatch.setattr("tools.gm_console.server_mgr.detect_process_haru_root", fail_if_called)
+    client = Client(id="temp:10.101.0.9:50000:1", port=12581, writer=DummyWriter(), ip="10.101.0.9")
+    mgr.clients[client.id] = client
+
+    mgr._process_packet(client, {
+        "type": "HELLO",
+        "pid": 202552,
+        "svn_url": "https://svn.example.com/svn/haru/trunk/Product/Bin/Client/Win/Debug/Application_Data",
+    })
+
+    assert client.is_local is False
+    assert client.local_haru_root == ""
+    assert called is False
