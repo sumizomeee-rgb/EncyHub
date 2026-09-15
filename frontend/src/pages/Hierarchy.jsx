@@ -1124,6 +1124,7 @@ function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChild
                     event.preventDefault()
                     event.stopPropagation()
                     onHighlightUi(node.instanceId)
+                    if (hasChildren && !isExpanded) onToggle(node)
                 }}
                 onPointerDown={event => {
                     if (event.button === 1) {
@@ -1177,7 +1178,7 @@ function TreeNode({ node, depth, selectedId, expanded, childrenMap, loadingChild
                 ) : (
                     <span className="w-2.5 flex-shrink-0" />
                 )}
-                <span className={`truncate ${node.activeInHierarchy === false ? 'opacity-40' : ''}`} title={`#${node.instanceId} ${node.name} · 长按拖拽 · 中键在游戏中高亮`}>
+                <span className={`truncate ${node.activeInHierarchy === false ? 'opacity-40' : ''}`} title={`#${node.instanceId} ${node.name} · 长按拖拽 · 中键在游戏中高亮并展开一层`}>
                     {node.name}
                 </span>
                 {highlightFeedback && (
