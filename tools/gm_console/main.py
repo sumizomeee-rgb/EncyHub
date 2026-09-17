@@ -40,6 +40,7 @@ SCREENSHOT_REQUEST_TTL = 30.0
 game_log_ws_connections: dict[str, list[WebSocket]] = {}
 game_log_cache: dict[str, dict[str, Any]] = {}
 game_log_stop_tasks: dict[str, asyncio.Task] = {}
+pending_game_log_probes: dict[str, list[asyncio.Future]] = {}
 GAME_LOG_BOOTSTRAP_BYTES = 0
 GAME_LOG_BOOTSTRAP_MAX_ENTRIES = 2000
 GAME_LOG_CACHE_MAX_ENTRIES = 5000
@@ -63,6 +64,9 @@ def _clear_expired_client_cache(client_id: str):
     task = game_log_stop_tasks.pop(client_id, None)
     if task and not task.done():
         task.cancel()
+    for future in pending_game_log_probes.pop(client_id, []):
+        if future and not future.done():
+            future.cancel()
 
 
 def _get_av_audio_history_state(client_id: str) -> dict[str, Any]:
@@ -219,6 +223,21 @@ def _get_game_log_state(client_id: str) -> dict[str, Any]:
             "lastSeq": 0,
         }
     return game_log_cache[client_id]
+
+
+def _complete_game_log_probe(client_id: str, packet: dict[str, Any]) -> bool:
+    futures = pending_game_log_probes.pop(client_id, [])
+    if not futures:
+        return False
+    result = {
+        key: value
+        for key, value in packet.items()
+        if key not in {"type", "requestId", "entries"}
+    }
+    for future in futures:
+        if not future.done():
+            future.set_result(result)
+    return True
 
 
 def _trim_game_log_state(state: dict[str, Any]):
@@ -510,10 +529,11 @@ async def lifespan(app: FastAPI):
 
     # --- Game Log Tail ---
     def on_game_log_meta(client_id, pkt):
+        _complete_game_log_probe(client_id, pkt)
         meta = {
             key: value
             for key, value in pkt.items()
-            if key not in {"type", "entries"}
+            if key not in {"type", "requestId", "entries"}
         }
         state = _get_game_log_state(client_id)
         state["meta"] = meta
@@ -646,6 +666,55 @@ async def get_clients():
         "clients": server_mgr.get_clients_info(),
         "clientStateRev": server_mgr.client_state_rev,
     }
+
+
+@app.get("/clients/{client_id}/game-log/meta")
+async def get_client_game_log_meta(client_id: str, timeout: float = 5.0):
+    """让客户端立即探测并返回当前物理日志路径。"""
+    if not server_mgr or client_id not in server_mgr.clients:
+        raise HTTPException(404, f"客户端 {client_id} 不存在或已断开")
+
+    state = _get_game_log_state(client_id)
+    cached_meta = state.get("meta", {})
+    if game_log_ws_connections.get(client_id) and cached_meta.get("path"):
+        return {
+            "clientId": client_id,
+            **cached_meta,
+            "found": True,
+        }
+
+    future = asyncio.get_running_loop().create_future()
+    pending_game_log_probes.setdefault(client_id, []).append(future)
+    started = False
+    try:
+        ok, msg = await server_mgr.send_game_log_request(client_id, "start", {
+            "bootstrapBytes": 0,
+            "maxEntries": 1,
+            "pollIntervalMs": GAME_LOG_POLL_INTERVAL_MS,
+            "readChunkBytes": GAME_LOG_READ_CHUNK_BYTES,
+            "sendChunkBytes": GAME_LOG_SEND_CHUNK_BYTES,
+            "sendChunkEntries": 1,
+        })
+        if not ok:
+            raise HTTPException(400, msg)
+        started = True
+        try:
+            meta = await asyncio.wait_for(future, timeout=min(max(timeout, 1.0), 15.0))
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "客户端未响应日志路径探测")
+        if not meta.get("detection"):
+            meta["detection"] = "runtime_resolved"
+        if "found" not in meta:
+            meta["found"] = bool(meta.get("path"))
+        return {"clientId": client_id, **meta}
+    finally:
+        futures = pending_game_log_probes.get(client_id, [])
+        if future in futures:
+            futures.remove(future)
+        if not futures:
+            pending_game_log_probes.pop(client_id, None)
+        if started and not game_log_ws_connections.get(client_id):
+            await server_mgr.send_game_log_request(client_id, "stop", {})
 
 
 @app.post("/clients/{client_id}/exec")

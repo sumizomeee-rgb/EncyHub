@@ -6768,6 +6768,7 @@ local function StartRuntimeGM()
     LuaGameLogTail._lastMetaPath = nil
     LuaGameLogTail._lastSendEntries = 0
     LuaGameLogTail._lastSendChunks = 0
+    LuaGameLogTail._detection = ""
 
     local function _glt_toNumber(v, fallback)
         local n = tonumber(tostring(v))
@@ -6819,7 +6820,7 @@ local function StartRuntimeGM()
         return tostring(platform)
     end
 
-    local function _glt_resolveLogDir()
+    local function _glt_collectLogDirs()
         local platform = _glt_getPlatform()
         local dataPath = ""
         local persistentDataPath = ""
@@ -6827,39 +6828,33 @@ local function StartRuntimeGM()
         pcall(function() persistentDataPath = _glt_normPath(CS.UnityEngine.Application.persistentDataPath) end)
 
         local candidates = {}
-        local function add(path)
+        local function add(path, detection)
             path = _glt_normPath(path)
             if path == "" then return end
             for _, existing in ipairs(candidates) do
-                if existing == path then return end
+                if existing.path == path then return end
             end
-            candidates[#candidates + 1] = path
+            candidates[#candidates + 1] = { path = path, detection = detection or "unknown" }
         end
 
         if platform == "Android" or platform == "IPhonePlayer" then
-            add(persistentDataPath .. "/log")
-            add(persistentDataPath .. "/Log")
+            add(persistentDataPath .. "/log", "persistent_data_path")
+            add(persistentDataPath .. "/Log", "persistent_data_path")
         elseif platform == "WindowsEditor" or platform == "OSXEditor" then
             local root = dataPath:match("^(.*)/Dev/Client/Assets$")
-            if root then add(root .. "/Dev/Client/Log") end
+            if root then add(root .. "/Dev/Client/Log", "editor_data_path") end
             local svnRoot = _glt_findSvnRoot(dataPath)
-            if svnRoot then add(svnRoot .. "/Dev/Client/Log") end
-            add(_glt_parent(dataPath) .. "/Log")
+            if svnRoot then add(svnRoot .. "/Dev/Client/Log", "svn_root") end
+            add(_glt_parent(dataPath) .. "/Log", "application_data_sibling")
         else
             local exeDir = _glt_parent(dataPath)
-            add(exeDir .. "/Log")
+            add(exeDir .. "/Log", "application_data_sibling")
             local svnRoot = _glt_findSvnRoot(dataPath)
-            if svnRoot then add(svnRoot .. "/Product/Bin/Client/Win/Debug/Log") end
-            add(persistentDataPath .. "/log")
-            add(persistentDataPath .. "/Log")
+            if svnRoot then add(svnRoot .. "/Product/Bin/Client/Win/Debug/Log", "svn_root") end
+            add(persistentDataPath .. "/log", "persistent_data_path")
+            add(persistentDataPath .. "/Log", "persistent_data_path")
         end
-
-        for _, dir in ipairs(candidates) do
-            if _glt_dirExists(dir) then
-                return dir, platform
-            end
-        end
-        return nil, platform
+        return candidates, platform
     end
 
     local function _glt_getFileSize(path)
@@ -6896,6 +6891,37 @@ local function StartRuntimeGM()
             end
         end
         return latest
+    end
+
+    local function _glt_resolveLatestLog()
+        local candidates, platform = _glt_collectLogDirs()
+        local firstExisting = nil
+        local latestPath = nil
+        local latestDir = nil
+        local latestDetection = nil
+        local latestTicks = -1
+        for _, candidate in ipairs(candidates) do
+            if _glt_dirExists(candidate.path) then
+                if not firstExisting then firstExisting = candidate end
+                local path = _glt_findLatestLogFile(candidate.path)
+                if path then
+                    local ticks = _glt_getWriteTicks(path)
+                    if ticks > latestTicks then
+                        latestPath = path
+                        latestDir = candidate.path
+                        latestDetection = candidate.detection
+                        latestTicks = ticks
+                    end
+                end
+            end
+        end
+        if latestPath then
+            return latestPath, latestDir, platform, latestDetection
+        end
+        if firstExisting then
+            return nil, firstExisting.path, platform, firstExisting.detection
+        end
+        return nil, nil, platform, "not_found"
     end
 
     local function _glt_readRange(path, offset, maxBytes)
@@ -6936,13 +6962,25 @@ local function StartRuntimeGM()
         })
     end
 
-    local function _glt_sendMeta()
+    local function _glt_sendMeta(requestId, snapshot)
         local path = LuaGameLogTail._path
+        local dir = LuaGameLogTail._dir
+        local platform = _glt_getPlatform()
+        local detection = LuaGameLogTail._detection
+        if snapshot then
+            path = snapshot.path
+            dir = snapshot.dir
+            platform = snapshot.platform
+            detection = snapshot.detection
+        end
         RuntimeGMClient.Send({
             type = "GAME_LOG_META",
+            requestId = requestId or "",
+            found = path ~= nil and path ~= "",
             path = path or "",
-            dir = LuaGameLogTail._dir or "",
-            platform = _glt_getPlatform(),
+            dir = dir or "",
+            platform = platform,
+            detection = detection or "",
             fileSize = path and _glt_getFileSize(path) or 0,
             offset = LuaGameLogTail._offset or 0,
             seq = LuaGameLogTail._seq or 0
@@ -7081,22 +7119,25 @@ local function StartRuntimeGM()
     end
 
     function LuaGameLogTail._bootstrap()
-        local dir, platform = _glt_resolveLogDir()
+        local path, dir, platform, detection = _glt_resolveLatestLog()
+        LuaGameLogTail._path = path
+        LuaGameLogTail._dir = dir
+        LuaGameLogTail._detection = detection or ""
+        if not path then
+            LuaGameLogTail._offset = 0
+        end
         if not dir then
+            _glt_sendMeta()
             _glt_sendStatus("error", "未找到日志目录: " .. tostring(platform))
             return false
         end
 
-        local path = _glt_findLatestLogFile(dir)
         if not path then
-            LuaGameLogTail._dir = dir
             _glt_sendMeta()
             _glt_sendStatus("waiting", "日志目录存在，但没有 .log 文件")
             return false
         end
 
-        LuaGameLogTail._dir = dir
-        LuaGameLogTail._path = path
         LuaGameLogTail._offset = math.max(0, _glt_getFileSize(path) - LuaGameLogTail._bootstrapBytes)
         LuaGameLogTail._lastFileSize = _glt_getFileSize(path)
         LuaGameLogTail._partialLine = ""
@@ -7117,6 +7158,16 @@ local function StartRuntimeGM()
         _glt_sendEntries(entries)
         _glt_sendStatus("running", "")
         return true
+    end
+
+    function LuaGameLogTail.Probe(packet)
+        local path, dir, platform, detection = _glt_resolveLatestLog()
+        _glt_sendMeta(packet.requestId, {
+            path = path,
+            dir = dir,
+            platform = platform,
+            detection = detection,
+        })
     end
 
     function LuaGameLogTail.Start(packet)
@@ -7187,6 +7238,8 @@ local function StartRuntimeGM()
             LuaGameLogTail.Start(packet)
         elseif action == "stop" then
             LuaGameLogTail.Stop()
+        elseif action == "probe" then
+            LuaGameLogTail.Probe(packet)
         else
             _glt_sendStatus("error", "unknown action: " .. tostring(action))
         end

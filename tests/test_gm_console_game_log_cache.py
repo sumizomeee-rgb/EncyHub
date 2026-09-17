@@ -1,6 +1,7 @@
 """GM Console 游戏端日志缓存回归测试。"""
 import os
 import sys
+import asyncio
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +18,7 @@ def teardown_function():
     from tools.gm_console import main
 
     main.game_log_cache.clear()
+    main.pending_game_log_probes.clear()
 
 
 def test_game_log_cache_keeps_same_text_with_different_seq():
@@ -89,6 +91,124 @@ def test_game_log_starts_without_history_bootstrap():
     from tools.gm_console import main
 
     assert main.GAME_LOG_BOOTSTRAP_BYTES == 0
+
+
+def test_game_log_probe_routes_correlated_meta_to_waiter():
+    from tools.gm_console import main
+
+    async def run_case():
+        future = asyncio.get_running_loop().create_future()
+        main.pending_game_log_probes["127.0.0.1-100"] = [future]
+        handled = main._complete_game_log_probe("127.0.0.1-100", {
+            "type": "GAME_LOG_META",
+            "found": True,
+            "path": "F:/HaruTrunk/Product/Bin/Client/Win/Debug/Log/latest.log",
+            "dir": "F:/HaruTrunk/Product/Bin/Client/Win/Debug/Log",
+            "detection": "application_data_sibling",
+        })
+        assert handled is True
+        result = await future
+        assert result["found"] is True
+        assert result["detection"] == "application_data_sibling"
+        assert "requestId" not in result
+
+    asyncio.run(run_case())
+
+
+def test_runtime_lua_supports_one_shot_game_log_probe():
+    runtime_lua = os.path.join(BASE_DIR, "tools", "gm_console", "runtime_gm_client.lua")
+    with open(runtime_lua, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert 'elseif action == "probe" then' in content
+    assert "LuaGameLogTail.Probe(packet)" in content
+    assert '"application_data_sibling"' in content
+    assert 'requestId = requestId or ""' in content
+    assert "if ticks > latestTicks then" in content
+
+
+def test_runtime_lua_reports_not_found_meta_before_error_status():
+    runtime_lua = os.path.join(BASE_DIR, "tools", "gm_console", "runtime_gm_client.lua")
+    with open(runtime_lua, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    branch_start = content.index("        if not dir then")
+    branch_end = content.index("        end", branch_start)
+    branch = content[branch_start:branch_end]
+    assert branch.index("_glt_sendMeta()") < branch.index("_glt_sendStatus(")
+
+
+def test_game_log_meta_endpoint_uses_existing_start_command_for_compatibility():
+    from tools.gm_console import main
+
+    class FakeManager:
+        def __init__(self):
+            self.clients = {"127.0.0.1-100": object()}
+            self.actions = []
+
+        async def send_game_log_request(self, client_id, action, params):
+            self.actions.append(action)
+            if action == "start":
+                asyncio.get_running_loop().call_soon(
+                    main._complete_game_log_probe,
+                    client_id,
+                    {
+                        "type": "GAME_LOG_META",
+                        "path": "F:/HaruTrunk/Product/Bin/Client/Win/Debug/Log/latest.log",
+                        "dir": "F:/HaruTrunk/Product/Bin/Client/Win/Debug/Log",
+                        "platform": "WindowsPlayer",
+                    },
+                )
+            return True, "sent"
+
+    async def run_case():
+        old_manager = main.server_mgr
+        fake = FakeManager()
+        main.server_mgr = fake
+        try:
+            result = await main.get_client_game_log_meta("127.0.0.1-100", timeout=1)
+            assert result["found"] is True
+            assert result["detection"] == "runtime_resolved"
+            assert fake.actions == ["start", "stop"]
+        finally:
+            main.server_mgr = old_manager
+
+    asyncio.run(run_case())
+
+
+def test_game_log_meta_endpoint_reuses_active_stream_meta_without_restart():
+    from tools.gm_console import main
+
+    class FakeManager:
+        def __init__(self):
+            self.clients = {"127.0.0.1-100": object()}
+            self.actions = []
+
+        async def send_game_log_request(self, client_id, action, params):
+            self.actions.append(action)
+            return True, "sent"
+
+    async def run_case():
+        old_manager = main.server_mgr
+        fake = FakeManager()
+        main.server_mgr = fake
+        main.game_log_ws_connections["127.0.0.1-100"] = [object()]
+        main._get_game_log_state("127.0.0.1-100")["meta"] = {
+            "path": "F:/HaruTrunk/Product/Bin/Client/Win/Debug/Log/latest.log",
+            "dir": "F:/HaruTrunk/Product/Bin/Client/Win/Debug/Log",
+            "platform": "WindowsPlayer",
+            "detection": "application_data_sibling",
+        }
+        try:
+            result = await main.get_client_game_log_meta("127.0.0.1-100", timeout=1)
+            assert result["found"] is True
+            assert result["detection"] == "application_data_sibling"
+            assert fake.actions == []
+        finally:
+            main.game_log_ws_connections.clear()
+            main.server_mgr = old_manager
+
+    asyncio.run(run_case())
 
 
 def test_runtime_lua_resends_gm_list_after_tcp_reconnect():
