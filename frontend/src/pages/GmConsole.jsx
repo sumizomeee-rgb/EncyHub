@@ -886,7 +886,7 @@ function GmConsole() {
 
   // 选择客户端时更新 GM 树
   // auto=true 表示由系统自动选中（首次/掉线重连），会点亮发光边框
-  // auto=false 表示用户主动点击；若点的就是当前发光那个，视为"确认"，消光
+  // auto=false 表示用户主动选择，清除之前的自动选中光效
   const handleSelectClient = useCallback((client, { auto = false } = {}) => {
     try {
       setBroadcastMode(false)
@@ -896,7 +896,7 @@ function GmConsole() {
       if (auto) {
         setAutoSelectedClientId(client.id)
       } else {
-        setAutoSelectedClientId(prev => (prev === client.id ? null : prev))
+        setAutoSelectedClientId(null)
       }
     } catch (err) {
       console.error('选择客户端失败:', err)
@@ -1430,7 +1430,7 @@ end`
                           isSelected
                             ? client.isLocal
                               ? 'local-client-card is-selected'
-                              : 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-[var(--caramel)]'
+                              : 'bg-gradient-to-r from-[var(--caramel-light)]/20 to-transparent border-l-[3px] border-[var(--caramel)]'
                             : client.isLocal
                               ? 'local-client-card'
                               : 'bg-[var(--cream-warm)]/50 border-transparent hover:bg-[var(--cream-warm)]'
@@ -1444,16 +1444,11 @@ end`
                       >
                         <span>
                           <PlatformIcon platform={client.platform} size={14}
-                            className={`${client.isLocal ? 'text-[var(--sage)]' : 'text-[var(--caramel)]'} shrink-0`} />
+                            className={`${client.isLocal ? 'text-[var(--sky)]' : 'text-[var(--caramel)]'} shrink-0`} />
                         </span>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 font-medium text-xs text-[var(--coffee-deep)] min-w-0">
                             <span className="truncate">{client.device || 'Unknown'}</span>
-                            {client.isLocal && (
-                              <span className="shrink-0 rounded-full border border-[var(--sage-soft)]/70 bg-white/55 px-1.5 py-px text-[8px] font-bold tracking-wide text-[var(--sage)]">
-                                本机
-                              </span>
-                            )}
                             {client.online === false && <span className="ml-1.5 font-mono text-[9px] font-normal text-[var(--coffee-muted)]">离线 {offlineRemaining(client, clientClock)}</span>}
                           </div>
                           <div className="text-[10px] text-[var(--coffee-muted)] overflow-hidden whitespace-nowrap">
