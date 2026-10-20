@@ -363,7 +363,12 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     sendCmd('get_res_files', { resId }, (data) => {
       if (data?.resId) {
         setResFilesLoading(prev => ({ ...prev, [data.resId]: false }))
-        setResFiles(prev => ({ ...prev, [data.resId]: { files: data.files || [], sharedFiles: data.sharedFiles || {} } }))
+        // 索引表也可能是数组，数字键只是序号，不能当作资源路径。
+        const files = (Array.isArray(data.files) ? data.files : []).map(file => ({
+          ...file,
+          asset: typeof file.asset === 'string' ? file.asset : '',
+        }))
+        setResFiles(prev => ({ ...prev, [data.resId]: { files, sharedFiles: data.sharedFiles || {} } }))
       }
     })
   }, [sendCmd, resFiles, structure])
@@ -641,7 +646,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       {sub.configured && !sub.instantiated && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap" title="SubPackage.tab 中存在，但没有 XSubpackage 实例">缺实例</span>}
       {sub.name && <span className={`text-[11px] truncate min-w-0 flex-1 ${sub.missingResCount > 0 ? 'font-medium text-[var(--terracotta)]' : 'text-[var(--coffee-light)]'}`}>{sub.name}</span>}
       <div className="w-12 flex-shrink-0"><ProgressBar progress={sub.progress} state={sub.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap" title={sizeTooltip(sub.dlSize, sub.totalSize)}>{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-28 min-w-0 truncate text-right" title={sizeTooltip(sub.dlSize, sub.totalSize)}>{sizeText(sub.dlSize, sub.totalSize, sub.state)}</span>
     </div>
   )
 
@@ -654,7 +659,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       {!res.configured && !res.instantiated && res.indexed && <span className="text-[10px] font-semibold text-[var(--coffee-muted)] whitespace-nowrap" title="仅存在于资源索引中，没有配置引用和 XResource 实例">仅索引</span>}
       {!res.indexed && <span className="text-[10px] font-semibold text-[var(--terracotta)] whitespace-nowrap">无索引</span>}
       <div className="w-12 flex-shrink-0"><ProgressBar progress={res.progress} state={res.state} mini /></div>
-      <span className="text-[10px] text-[var(--coffee-muted)] w-20 text-right flex-shrink-0 whitespace-nowrap" title={sizeTooltip(res.dlSize, res.totalSize)}>{sizeText(res.dlSize, res.totalSize, res.state)}</span>
+      <span className="text-[10px] text-[var(--coffee-muted)] w-28 min-w-0 truncate text-right" title={sizeTooltip(res.dlSize, res.totalSize)}>{sizeText(res.dlSize, res.totalSize, res.state)}</span>
       <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
     </div>
   )
