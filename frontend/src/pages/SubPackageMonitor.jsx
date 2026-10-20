@@ -85,9 +85,8 @@ function getCrossSubFiles(files, sharedFiles, currentSubResIds) {
   )
 }
 
-// 智能尺寸显示：已完成只显示总大小，已卸载显示 "—"
+// 已卸载仍可能保留受保护文件，继续显示客户端上报的已下载大小。
 function sizeText(dlSize, totalSize, state) {
-  if (state === 6) return '—'                                         // 已卸载
   if (state === 5) return formatSize(totalSize)                       // 已完成
   if (state === 1 && dlSize === 0) return formatSize(totalSize)       // 未下载
   return `${formatSize(dlSize)} / ${formatSize(totalSize)}`           // 其他
@@ -151,7 +150,7 @@ function ProgressBar({ progress, state, mini }) {
           }} />
       </div>
       <span className="text-[10px] font-mono text-[var(--coffee-muted)] w-8 text-right flex-shrink-0">
-        {state === 5 ? '✓' : state === 6 ? '—' : `${Math.round(pct)}%`}
+        {state === 5 ? '✓' : `${Math.round(pct)}%`}
       </span>
     </div>
   )
@@ -244,6 +243,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   const [resListFilter, setResListFilter] = useState('all')
   const [copiedCollection, setCopiedCollection] = useState(null)
   const [crossSubFileFilterRes, setCrossSubFileFilterRes] = useState(() => new Set())
+  const [notOnDiskFileFilterRes, setNotOnDiskFileFilterRes] = useState(() => new Set())
   const [autoRefresh, setAutoRefresh] = useState(() => lsGet(LS_KEYS.autoRefresh, true))
   const [refreshInterval, setRefreshInterval] = useState(() => lsGet(LS_KEYS.interval, 2))
   const [leftWidth, setLeftWidth] = useState(() => clampDetailListWidth(lsGet(LS_KEYS.leftWidth, DETAIL_LIST_DEFAULT_WIDTH)))
@@ -262,7 +262,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   const isDragging = useRef(false)
   const searchTimer = useRef(null)
   const highlightTimer = useRef(null)
-  const pendingCrossSubCopyRef = useRef(null)
+  const pendingFileCopyRef = useRef(null)
   const [debouncedQuery, setDebouncedQuery] = useState('')
 
   // --- Persist UI state ---
@@ -278,6 +278,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
     setResListFilter('all')
     setCopiedCollection(null)
     setCrossSubFileFilterRes(new Set())
+    setNotOnDiskFileFilterRes(new Set())
   }, [selectedId])
 
   // --- Debounced search ---
@@ -374,15 +375,17 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   }, [sendCmd, resFiles, structure])
 
   useEffect(() => {
-    const pending = pendingCrossSubCopyRef.current
+    const pending = pendingFileCopyRef.current
     if (!pending || !resFiles[pending.resId]) return
 
     const data = resFiles[pending.resId]
-    const files = getCrossSubFiles(data.files, data.sharedFiles, pending.currentSubResIds)
+    const files = pending.currentSubResIds
+      ? getCrossSubFiles(data.files, data.sharedFiles, pending.currentSubResIds)
+      : data.files
     copyText(formatFilesText(files))
-    setCopiedCollection(`cross_sub_files_${pending.resId}`)
+    setCopiedCollection(pending.key)
     setTimeout(() => setCopiedCollection(null), 800)
-    pendingCrossSubCopyRef.current = null
+    pendingFileCopyRef.current = null
   }, [resFiles])
 
   // Initial fetch on tab activation (must wait for WS to be ready)
@@ -402,6 +405,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
   // Reset on client change
   useEffect(() => {
     listenersRef.current = {}
+    pendingFileCopyRef.current = null
     setStructure(null); setStatus(null); setSelectedId(null); setExpandedRes(new Set())
     setColSelectedSub(null); setColSelectedRes(null); setResFiles({}); setResFilesLoading({})
   }, [selectedClient?.id])
@@ -744,17 +748,18 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
       setTimeout(() => setCopiedCollection(null), 800)
     }
 
-    const copyCrossSubFiles = (resId) => {
+    const copyResFiles = (resId, crossSubOnly = false) => {
+      const key = `${crossSubOnly ? 'cross_sub_files' : 'res_files'}_${resId}`
       const data = resFiles[resId]
       if (!data) {
-        pendingCrossSubCopyRef.current = { resId, currentSubResIds: selectedItem.resIds }
-        fetchResFiles(resId)
+        pendingFileCopyRef.current = { resId, currentSubResIds: crossSubOnly ? selectedItem.resIds : null, key }
+        if (!resFilesLoading[resId]) fetchResFiles(resId)
         return
       }
 
-      const files = getCrossSubFiles(data.files, data.sharedFiles, selectedItem.resIds)
+      const files = crossSubOnly ? getCrossSubFiles(data.files, data.sharedFiles, selectedItem.resIds) : data.files
       copyText(formatFilesText(files))
-      setCopiedCollection(`cross_sub_files_${resId}`)
+      setCopiedCollection(key)
       setTimeout(() => setCopiedCollection(null), 800)
     }
 
@@ -878,9 +883,14 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                     const isExpanded = expandedRes.has(res.id)
                     const onlyCrossSubFiles = crossSubFileFilterRes.has(res.id)
                     const resFileData = resFiles[res.id]
-                    const visibleResFiles = onlyCrossSubFiles && resFileData
+                    const onlyNotOnDiskFiles = notOnDiskFileFilterRes.has(res.id)
+                    const notOnDiskFileCount = resFileData?.files.filter(file => file.exists === false).length
+                    const scopedResFiles = onlyCrossSubFiles && resFileData
                       ? getCrossSubFiles(resFileData.files, resFileData.sharedFiles, selectedItem.resIds)
                       : resFileData?.files
+                    const visibleResFiles = onlyNotOnDiskFiles
+                      ? scopedResFiles?.filter(file => file.exists === false)
+                      : scopedResFiles
                     return (
                       <div key={res.id}>
                         <div className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${
@@ -907,7 +917,7 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                               onContextMenu={(e) => {
                                 e.preventDefault()
                                 e.stopPropagation()
-                                copyCrossSubFiles(res.id)
+                                copyResFiles(res.id, true)
                               }}
                               className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap transition-colors ${
                                 copiedCollection === `cross_sub_files_${res.id}`
@@ -921,8 +931,45 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                               跨Sub文件 {crossSubFileCount}
                             </button>
                           )}
+                          {res.indexed && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setExpandedRes(prev => new Set(prev).add(res.id))
+                                setNotOnDiskFileFilterRes(prev => {
+                                  const next = new Set(prev)
+                                  if (next.has(res.id)) next.delete(res.id)
+                                  else next.add(res.id)
+                                  return next
+                                })
+                                if (!resFilesLoading[res.id]) fetchResFiles(res.id)
+                              }}
+                              className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap transition-colors ${
+                                onlyNotOnDiskFiles
+                                  ? 'border-[var(--sky)]/50 bg-[var(--info-soft)] text-[var(--sky)]'
+                                  : 'border-[var(--sky)]/25 bg-white/35 text-[var(--sky)]/85 hover:bg-[var(--info-soft)] hover:border-[var(--sky)]/40'
+                              }`}
+                              title={resFileData ? `${notOnDiskFileCount} 个文件本地不存在` : '筛选本地不存在的文件'}
+                              aria-label={`筛选 Res ${res.id} 未落盘文件`}
+                              aria-pressed={onlyNotOnDiskFiles}
+                            >
+                              未落盘{resFileData ? ` ${notOnDiskFileCount}` : ''}
+                            </button>
+                          )}
                           <div className="flex-1" />
                           {!isMissing && <span className="text-[10px] text-[var(--coffee-muted)]" title={sizeTooltip(res.dlSize, res.totalSize)}>{formatSize(res.dlSize)} / {formatSize(res.totalSize)}</span>}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); copyResFiles(res.id) }}
+                            disabled={!res.indexed || resFilesLoading[res.id]}
+                            className="p-0.5 rounded hover:bg-black/5 text-[var(--coffee-muted)] hover:text-[var(--sky)] transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={res.indexed ? '复制文件列表' : '无资源索引，无法复制文件列表'}
+                            aria-label={`复制 Res ${res.id} 文件列表`}
+                          >
+                            {resFilesLoading[res.id] ? <RotateCw size={11} className="animate-spin" />
+                              : copiedCollection === `res_files_${res.id}` ? <span className="text-[10px] text-[var(--sage)]">已复制 ✓</span> : <Copy size={11} />}
+                          </button>
                           <SharedBadge count={res.subIds.length} type="Sub" ids={res.subIds} onJump={jumpToSub} />
                         </div>
                         {isExpanded && (
@@ -931,6 +978,8 @@ function SubPackageMonitor({ clients, selectedClient, broadcastMode, active }) {
                             {resFilesLoading[res.id]
                               ? <div className="text-center text-xs text-[var(--coffee-muted)] py-2"><RotateCw size={12} className="inline animate-spin mr-1" />加载文件列表...</div>
                               : !res.indexed ? <div className="text-center text-xs text-[var(--coffee-muted)] py-2">无资源索引，无法获取文件列表</div>
+                              : resFileData && visibleResFiles.length === 0 && (onlyCrossSubFiles || onlyNotOnDiskFiles)
+                                ? <div className="text-center text-xs text-[var(--coffee-muted)] py-2">没有符合筛选条件的文件</div>
                               : resFileData ? renderFileTable(visibleResFiles, true, resFileData.sharedFiles, selectedItem.resIds)
                               : <div className="text-center text-xs text-[var(--coffee-muted)] py-2">点击展开加载文件</div>
                             }
