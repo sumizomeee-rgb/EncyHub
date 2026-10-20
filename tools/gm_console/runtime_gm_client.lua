@@ -5055,7 +5055,7 @@ local function StartRuntimeGM()
     end
 
     -- SubPackage.tab 的运行态完整模板是展示权威。_SubpackageDict 只包含已实例化对象，
-    -- _SubIndexInfo 只包含实际进入资源索引的 Res，都不能用于决定配置项是否展示。
+    -- Res 索引只包含实际进入资源索引的 Res，都不能用于决定配置项是否展示。
     local function _spm_getSubpackageTemplates(agency)
         local templates = nil
         pcall(function()
@@ -5154,7 +5154,8 @@ local function StartRuntimeGM()
         if not isOpen then _spm_sendError("get_structure", "SubPackage system not open"); return end
 
         local subIndexInfo, resDict, subDict
-        pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
+        -- 新主干使用 GetResIndexInfo；旧包和其他分支仍需兼容旧接口。
+        pcall(function() subIndexInfo = (agency.GetResIndexInfo or agency.GetSubIndexInfo)(agency) end)
         pcall(function() resDict, subDict = agency:GetAllResAndSubpackageItemDic() end)
         local fileToResIds = agency:GetFileToResIds() or {}
         local templates = _spm_getSubpackageTemplates(agency)
@@ -5280,7 +5281,7 @@ local function StartRuntimeGM()
         local agency = _spm_getAgency()
         if not agency then _spm_sendError("get_res_files", "agency not available"); return end
         local subIndexInfo
-        pcall(function() subIndexInfo = agency:GetSubIndexInfo() end)
+        pcall(function() subIndexInfo = (agency.GetResIndexInfo or agency.GetSubIndexInfo)(agency) end)
         if not subIndexInfo then _spm_sendError("get_res_files", "SubIndexInfo is nil"); return end
         local fileToResIds = agency:GetFileToResIds() or {}
 
