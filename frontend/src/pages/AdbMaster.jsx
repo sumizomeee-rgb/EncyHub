@@ -4,9 +4,10 @@ import {
   ArrowLeft, RefreshCw, Smartphone, Wifi, Usb, FileText, Upload, Download,
   X, Package, RotateCcw, WifiOff, ChevronDown, ChevronRight, FolderOpen,
   Play, Square, Zap, Edit, Check, Monitor, Archive, Search, Plus,
-  Link2, CheckCircle2, AlertCircle, Radio, Info
+  Link2, CheckCircle2, AlertCircle, Radio, Info, Camera
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
+import ScreenshotModal from '../components/ScreenshotModal'
 
 function AdbMaster() {
   const navigate = useNavigate()
@@ -14,6 +15,12 @@ function AdbMaster() {
   const [devices, setDevices] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedDevice, setSelectedDevice] = useState(null)
+  const selectedDeviceIdRef = useRef(null)
+  selectedDeviceIdRef.current = selectedDevice?.hardware_id
+  const [screenshot, setScreenshot] = useState(null)
+  const [screenshotLoading, setScreenshotLoading] = useState(false)
+  const screenshotRequestRef = useRef(null)
+  const [openingLogcatFolder, setOpeningLogcatFolder] = useState(false)
   const [logcat, setLogcat] = useState([])
   const [logcatRunning, setLogcatRunning] = useState(false)
   const [foregroundApp, setForegroundApp] = useState(null)
@@ -85,6 +92,59 @@ function AdbMaster() {
 
   // 是否为本机访问（localhost / 127.0.0.1）
   const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+
+  useEffect(() => {
+    setScreenshot(null)
+    return () => screenshotRequestRef.current?.abort()
+  }, [selectedDevice?.hardware_id])
+
+  useEffect(() => () => {
+    if (screenshot?.url) URL.revokeObjectURL(screenshot.url)
+  }, [screenshot])
+
+  const handleOpenLogcatFolder = async (event) => {
+    event.stopPropagation()
+    if (!selectedDevice || openingLogcatFolder) return
+    setOpeningLogcatFolder(true)
+    try {
+      const response = await fetch(`/api/adb_master/devices/${encodeURIComponent(selectedDevice.hardware_id)}/logcat/open-folder`, { method: 'POST' })
+      if (!response.ok) throw new Error((await response.json()).detail || '打开目录失败')
+    } catch (error) {
+      toast.error(error.message || '打开目录失败')
+    } finally {
+      setOpeningLogcatFolder(false)
+    }
+  }
+
+  const handleScreenshot = async () => {
+    if (!selectedDevice || screenshotRequestRef.current) return
+    if (!selectedDevice.active_serial) {
+      toast.error('设备离线或未授权，请检查连接和 USB 调试授权')
+      return
+    }
+    const device = selectedDevice
+    const controller = new AbortController()
+    screenshotRequestRef.current = controller
+    setScreenshot(null)
+    setScreenshotLoading(true)
+    try {
+      const response = await fetch(`/api/adb_master/devices/${encodeURIComponent(device.hardware_id)}/screenshot`, {
+        method: 'POST', signal: controller.signal, cache: 'no-store',
+      })
+      if (!response.ok) throw new Error((await response.json()).detail || '截图失败')
+      const image = await response.blob()
+      if (controller.signal.aborted || selectedDeviceIdRef.current !== device.hardware_id) return
+      if (image.type !== 'image/png') throw new Error('截图失败：设备未返回 PNG')
+      setScreenshot({ url: URL.createObjectURL(image), label: device.nickname || device.model || device.hardware_id, id: device.hardware_id })
+    } catch (error) {
+      if (error.name !== 'AbortError' && selectedDeviceIdRef.current === device.hardware_id) toast.error(error.message || '截图失败')
+    } finally {
+      if (screenshotRequestRef.current === controller) {
+        screenshotRequestRef.current = null
+        setScreenshotLoading(false)
+      }
+    }
+  }
 
   // Push 上传相关状态
   const [pushUploadFile, setPushUploadFile] = useState(null)
@@ -1574,7 +1634,7 @@ function AdbMaster() {
                   {/* Logcat Panel */}
                   <div className="mb-4">
                     <div
-                      className="w-full flex items-center justify-between p-3 rounded-lg bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)] transition-colors cursor-pointer"
+                      className="w-full flex flex-wrap gap-2 items-center justify-between p-3 rounded-lg bg-[var(--cream-warm)]/50 hover:bg-[var(--cream-warm)] transition-colors cursor-pointer"
                       role="button"
                       onClick={() => setExpandLogcat(!expandLogcat)}
                     >
@@ -1583,6 +1643,13 @@ function AdbMaster() {
                         <FileText size={18} className="text-[var(--caramel)]" />
                         <span className="font-medium">Logcat 日志</span>
                       </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                      {isLocalhost && <button type="button" className="btn-secondary flex items-center gap-1 px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-wait"
+                        onClick={handleOpenLogcatFolder} disabled={openingLogcatFolder} title="打开 Logcat 输出目录"
+                        style={{ height: 32, padding: '0 12px', ...(openingLogcatFolder ? { transform: 'none', cursor: 'wait' } : {}) }}>
+                        {openingLogcatFolder ? <RefreshCw size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+                        打开目录
+                      </button>}
                       <button
                         className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
                           logcatRunning
@@ -1600,6 +1667,7 @@ function AdbMaster() {
                           <span className="flex items-center gap-1"><Play size={14} /> 开始</span>
                         )}
                       </button>
+                      </div>
                     </div>
                     {expandLogcat && (
                       <div ref={logcatContainerRef} className="mt-2 bg-[var(--coffee-deep)] rounded-xl p-4 h-72 max-h-[50vh] overflow-auto font-mono text-xs text-[var(--sage)] leading-relaxed">
@@ -1939,7 +2007,7 @@ function AdbMaster() {
                         )}
 
                         {/* 操作按钮 */}
-                        <div className="flex items-center gap-3 pt-2 border-t border-[var(--glass-border)]">
+                        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-[var(--glass-border)]">
                           {!scrcpyStreaming ? (
                             <button
                               className="btn-primary flex items-center gap-2"
@@ -1958,6 +2026,12 @@ function AdbMaster() {
                               停止投屏
                             </button>
                           )}
+                          <button type="button" className="btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-wait"
+                            onClick={handleScreenshot} disabled={screenshotLoading}
+                            style={{ height: 42, ...(screenshotLoading ? { transform: 'none', cursor: 'wait' } : {}) }}>
+                            {screenshotLoading ? <RefreshCw size={14} className="animate-spin" /> : <Camera size={14} />}
+                            {screenshotLoading ? '截图中...' : '截图'}
+                          </button>
                         </div>
 
                         {/* Web 嵌入 Canvas 播放器 + 虚拟按键 */}
@@ -2607,6 +2681,11 @@ function AdbMaster() {
             )}
           </div>
         </div>
+      )}
+      {screenshot && (
+        <ScreenshotModal dataUrl={screenshot.url} label={screenshot.label}
+          filename={`adb_screenshot_${screenshot.id.replace(/[\\/:*?"<>|]/g, '_')}.png`}
+          onClose={() => setScreenshot(null)} />
       )}
     </div>
   )

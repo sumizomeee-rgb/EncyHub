@@ -9,6 +9,7 @@ import {
   FileText, Download, Cable
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
+import ScreenshotModal from '../components/ScreenshotModal'
 import { copyText } from '../utils/clipboard'
 
 // ============================================================================
@@ -392,39 +393,6 @@ function sanitizeScreenshotFilenamePart(value) {
     .slice(0, 80) || 'client'
 }
 
-async function imageDataUrlToPngBlob(dataUrl) {
-  const img = new Image()
-  const loaded = new Promise((resolve, reject) => {
-    img.onload = resolve
-    img.onerror = () => reject(new Error('截图图片加载失败'))
-  })
-  img.src = dataUrl
-  await loaded
-
-  const canvas = document.createElement('canvas')
-  canvas.width = img.naturalWidth || img.width
-  canvas.height = img.naturalHeight || img.height
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('当前浏览器无法处理图片复制')
-  ctx.drawImage(img, 0, 0)
-
-  return await new Promise((resolve, reject) => {
-    canvas.toBlob(blob => {
-      if (blob) resolve(blob)
-      else reject(new Error('截图图片转换失败'))
-    }, 'image/png')
-  })
-}
-
-async function copyImageDataUrl(dataUrl) {
-  if (!navigator.clipboard?.write || !window.ClipboardItem) {
-    throw new Error('当前浏览器不支持直接复制图片，请使用下载或右键保存')
-  }
-  await navigator.clipboard.write([
-    new window.ClipboardItem({ 'image/png': imageDataUrlToPngBlob(dataUrl) }),
-  ])
-}
-
 function GmConsole() {
   const navigate = useNavigate()
   const toast = useToast()
@@ -438,7 +406,6 @@ function GmConsole() {
     return () => clearInterval(timer)
   }, [])
   const [screenshot, setScreenshot] = useState(null) // { client_id, image, width, height }
-  const [screenshotCopying, setScreenshotCopying] = useState(false)
   // 截图请求中的客户端 id 集合（per-client 锁，防止重复点击）
   const [screenshotLoadingIds, setScreenshotLoadingIds] = useState(new Set())
   const screenshotLoadingRef = useRef(new Set()) // ref 同步，避免闭包过期
@@ -1097,21 +1064,6 @@ end`
         toast.warning('截图响应超时，客户端可能未支持截图功能')
       }
     }, SCREENSHOT_TIMEOUT_MS)
-  }
-
-  const handleCopyScreenshot = async () => {
-    const dataUrl = getScreenshotDataUrl(screenshot)
-    if (!dataUrl || screenshotCopying) return
-
-    setScreenshotCopying(true)
-    try {
-      await copyImageDataUrl(dataUrl)
-      toast.success('截图已复制到剪贴板')
-    } catch (err) {
-      toast.error(err?.message || '复制截图失败')
-    } finally {
-      setScreenshotCopying(false)
-    }
   }
 
   const handleExecGm = (gmId, value = null) => {
@@ -2106,63 +2058,8 @@ end`
 
       {/* Screenshot Modal */}
       {screenshot && (
-        <div
-          className="modal-overlay"
-          onMouseDown={e => {
-            if (e.target === e.currentTarget) setScreenshot(null)
-          }}
-        >
-          <div
-            className="glass-card p-4 max-w-[90vw] max-h-[90vh]"
-            onMouseDown={e => e.stopPropagation()}
-            onContextMenu={e => e.stopPropagation()}
-            style={{ animation: 'slideUp 0.3s ease' }}>
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--caramel)] to-[var(--caramel-light)] flex items-center justify-center">
-                  <Camera size={14} className="text-white" />
-                </div>
-                <h3 className="font-display text-sm font-semibold text-[var(--coffee-deep)] truncate">
-                  截图 · {screenshotClientLabel}
-                </h3>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={handleCopyScreenshot}
-                  disabled={screenshotCopying}
-                  title={screenshotCopying ? '正在复制图片' : '复制图片'}
-                  aria-label={screenshotCopying ? '正在复制图片' : '复制图片'}
-                  className="p-2 rounded-lg hover:bg-[var(--cream-warm)] disabled:opacity-50 disabled:cursor-wait transition-colors text-[var(--coffee-muted)]"
-                >
-                  {screenshotCopying ? <RefreshCw size={16} className="animate-spin" /> : <Clipboard size={16} />}
-                </button>
-                <a
-                  href={screenshotDataUrl}
-                  download={screenshotFilename}
-                  title="下载截图"
-                  aria-label="下载截图"
-                  className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
-                >
-                  <Download size={16} />
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setScreenshot(null)}
-                  className="p-2 rounded-lg hover:bg-[var(--cream-warm)] transition-colors text-[var(--coffee-muted)]"
-                  aria-label="关闭截图"
-                  title="关闭"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
-            <img src={screenshotDataUrl}
-              alt="客户端截图"
-              className="rounded-lg max-h-[70vh] object-contain select-auto"
-              style={{ width: screenshot.width, maxWidth: '100%', height: 'auto' }} />
-          </div>
-        </div>
+        <ScreenshotModal dataUrl={screenshotDataUrl} label={screenshotClientLabel}
+          filename={screenshotFilename} width={screenshot.width} onClose={() => setScreenshot(null)} />
       )}
 
       {/* Game Log Detail Modal */}

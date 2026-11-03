@@ -13,13 +13,14 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 import uvicorn
 
 from .adb_manager import AdbManager
 from .config_manager import ConfigManager
 from .scrcpy_web_manager import ScrcpyWebManager
+from .path_utils import ensure_device_dirs
 
 # 环境变量
 PORT = int(os.environ.get("PORT", 8000))
@@ -33,6 +34,7 @@ scrcpy_mgr: Optional[ScrcpyWebManager] = None
 
 # WebSocket 连接池（用于 Logcat）
 logcat_connections: dict[str, list[WebSocket]] = {}
+logcat_serials: dict[str, str] = {}
 
 
 @asynccontextmanager
@@ -442,6 +444,7 @@ async def websocket_logcat(websocket: WebSocket, hw_id: str):
     # 启动 Logcat
     try:
         await adb_mgr.start_logcat(dev.active_serial, on_line)
+        logcat_serials[hw_id] = dev.active_serial
     except Exception as e:
         print(f"[AdbMaster] Logcat 启动失败 ({dev.active_serial}): {e}")
         await websocket.send_json({"error": f"Logcat 启动失败: {str(e)}"})
@@ -463,6 +466,7 @@ async def websocket_logcat(websocket: WebSocket, hw_id: str):
         # 如果没有其他连接，停止 Logcat
         if not logcat_connections.get(hw_id):
             adb_mgr.stop_logcat(dev.active_serial)
+            logcat_serials.pop(hw_id, None)
 
 
 # ============================================================================
@@ -822,6 +826,50 @@ async def open_folder(req: OpenFolderRequest):
         return {"message": f"已打开: {target}"}
     except Exception as e:
         raise HTTPException(500, f"打开失败: {e}")
+
+
+@app.post("/devices/{hw_id}/logcat/open-folder")
+async def open_logcat_folder(hw_id: str):
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((device for device in devices if device.hardware_id == hw_id), None)
+    serial = logcat_serials.get(hw_id) or (dev.active_serial if dev else None)
+    if not serial:
+        raise HTTPException(400, "设备离线或未授权，无法确定当前日志目录")
+    return await open_folder(OpenFolderRequest(path=ensure_device_dirs(serial)['logs_dir']))
+
+
+@app.post("/devices/{hw_id}/screenshot")
+async def take_device_screenshot(hw_id: str):
+    devices = await adb_mgr.get_unified_devices()
+    dev = next((device for device in devices if device.hardware_id == hw_id), None)
+    if not dev or not dev.active_serial:
+        raise HTTPException(400, "设备离线或未授权，请检查连接和 USB 调试授权")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            adb_mgr.adb_path, '-s', dev.active_serial, 'exec-out', 'screencap', '-p',
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            **adb_mgr._SUBPROCESS_KWARGS,
+        )
+        try:
+            image, error = await asyncio.wait_for(process.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.communicate()
+            raise HTTPException(504, "截图超时，请检查设备连接")
+        if process.returncode != 0:
+            detail = error.decode('utf-8', errors='replace').strip()
+            if 'unauthorized' in detail.lower():
+                raise HTTPException(400, "设备未授权，请在设备上允许 USB 调试")
+            if 'offline' in detail.lower() or 'not found' in detail.lower():
+                raise HTTPException(400, "设备离线，请检查连接")
+            raise HTTPException(500, f"截图失败: {detail or 'ADB 命令失败'}")
+        if not image.startswith(b'\x89PNG\r\n\x1a\n'):
+            raise HTTPException(500, "截图失败：设备未返回有效 PNG")
+        return Response(image, media_type='image/png', headers={'Cache-Control': 'no-store'})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"截图失败: {exc}")
 
 
 @app.get("/path-history/{category}")
