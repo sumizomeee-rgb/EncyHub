@@ -16,6 +16,8 @@ import uvicorn
 
 from .server_mgr import ServerMgr
 from .custom_gm import CustomGmManager
+from .behavior_tree import create_router as create_behavior_tree_router, validate_tree
+from .behavior_tree_presets import create_router as create_behavior_tree_presets_router
 from .inject_runtime_gm import build_inject_file_content, get_primary_target_relative_path
 from .proto_parser import ProtoParser, validate_haruroot, generate_lua_code, parse_log_file
 from .runtime_gm_code import build_runtime_gm_code, detect_local_lan_ip
@@ -360,6 +362,7 @@ async def lifespan(app: FastAPI):
     # 初始化
     os.makedirs(DATA_DIR, exist_ok=True)
     server_mgr = ServerMgr()
+    server_mgr.on_behavior_tree = lambda cid, packet: asyncio.create_task(broadcast_event({"type": "behavior_tree", "client_id": cid, "packet": packet}))
     server_mgr.on_client_expired = _clear_expired_client_cache
     custom_gm_mgr = CustomGmManager(DATA_DIR)
     proto_parser = ProtoParser(DATA_DIR)
@@ -600,6 +603,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GM Console", lifespan=lifespan)
+app.include_router(create_behavior_tree_router(lambda: server_mgr))
+app.include_router(create_behavior_tree_presets_router(DATA_DIR, validate_tree))
 
 app.add_middleware(
     CORSMiddleware,

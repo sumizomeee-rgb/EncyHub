@@ -207,6 +207,7 @@ function LogTypeFilterMenu({ value, onChange }) {
     </div>
   )
 }
+import BehaviorTree from './BehaviorTree'
 import AnimatorViewer from './AnimatorViewer'
 import LuaUiInspector from './LuaUiInspector'
 import TimelineMonitor from './TimelineMonitor'
@@ -220,6 +221,7 @@ import TableViewer from './TableViewer'
 
 // Tab 配置
 const TAB_META = {
+  behavior_tree: { label: '注入行为树', icon: Layers },
   lua_gm:        { label: 'LuaGM',    icon: Code,     gridSlider: true },
   custom_gm:     { label: '自定义',    icon: Layers,   gridSlider: true },
   lua_inspector: { label: 'Lua UI',    icon: ZoomIn },
@@ -232,7 +234,7 @@ const TAB_META = {
   proto:         { label: 'Proto',    icon: Zap },
   table_monitor: { label: 'Table',    icon: Table2 },
 }
-const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'lua_inspector', 'timeline', 'hierarchy', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor', 'proto', 'table_monitor']
+const DEFAULT_TAB_ORDER = ['lua_gm', 'custom_gm', 'behavior_tree', 'lua_inspector', 'timeline', 'hierarchy', 'animator', 'subpkg_monitor', 'player_prefs', 'av_monitor', 'proto', 'table_monitor']
 const TAB_ORDER_KEY = 'gm_console_tab_order'
 
 function loadTabOrder() {
@@ -1811,6 +1813,10 @@ end`
                     )}
                   </div>
                 )}
+
+                <div style={{ display: activeTab === 'behavior_tree' ? 'contents' : 'none' }}>
+                  <BehaviorTree selectedClient={selectedClient} broadcastMode={broadcastMode} active={activeTab === 'behavior_tree'} />
+                </div>
 
                 <div style={{ display: activeTab === 'animator' ? 'contents' : 'none' }}>
                   <AnimatorViewer

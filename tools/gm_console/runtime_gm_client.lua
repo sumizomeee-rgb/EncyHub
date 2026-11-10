@@ -144,7 +144,9 @@ local function StartRuntimeGM()
 
     function RuntimeGMClient.Send(data, timeout)
         if not RuntimeGMClient.Socket then return end
-        local success, packet = pcall(jsonEncode, data)
+        local encoder=jsonEncode
+        if data.type=='BT_RESPONSE' or data.type=='BT_EVENT' then encoder=BehaviorTreeJson.encode end
+        local success, packet = pcall(encoder, data)
         if not success then
             origin_print("[RuntimeGM] JSON Encode Error: " .. tostring(packet))
             return
@@ -461,6 +463,9 @@ local function StartRuntimeGM()
     end
 
     function RuntimeGMClient.Close()
+        if RuntimeGMClient.BehaviorTree then RuntimeGMClient.BehaviorTree.stopAll("disconnected") end
+        RuntimeGMClient._receivePartial = ""
+        RuntimeGMClient._receiveStarted = nil
         if RuntimeGMClient.Socket then
             pcall(function() RuntimeGMClient.Socket:close() end)
             RuntimeGMClient.Socket = nil
@@ -4789,6 +4794,7 @@ local function StartRuntimeGM()
 
     function RuntimeGMClient.Update()
         if not RuntimeGMClient.IsRunning then return end
+        if RuntimeGMClient.BehaviorTree then RuntimeGMClient.BehaviorTree.update() end
         pcall(LuaHierarchy.UpdateHighlights)
         if not RuntimeGMClient.Socket then
             local now = 0
@@ -4854,7 +4860,20 @@ local function StartRuntimeGM()
             local line = result.line
             local err = result.err
             local partial = result.partial
-            if not line and partial and #partial > 0 then line = partial end
+            local prefix = RuntimeGMClient._receivePartial or ""
+            if line then
+                line = prefix .. line
+                RuntimeGMClient._receivePartial = ""
+                RuntimeGMClient._receiveStarted = nil
+            elseif partial and #partial > 0 then
+                RuntimeGMClient._receivePartial = prefix .. partial
+                RuntimeGMClient._receiveStarted = RuntimeGMClient._receiveStarted or now
+            end
+            if #(RuntimeGMClient._receivePartial or "") > 4 * 1024 * 1024 or (line and #line > 4 * 1024 * 1024)
+                or (RuntimeGMClient._receiveStarted and now - RuntimeGMClient._receiveStarted > 15) then
+                RuntimeGMClient.Close()
+                return
+            end
             if not line then
                 if err == "closed" then RuntimeGMClient.Close(); return
                 elseif err == "timeout" then break
@@ -7268,7 +7287,11 @@ local function StartRuntimeGM()
             packet.path = "GameObject"
         end
         local type = packet.type
-        if type == "EXEC" then
+        if type == "BT_REQUEST" then
+            local ok, decoded=pcall(BehaviorTreeJson.decode,line)
+            if not ok then origin_print('[BT] Invalid JSON: '..tostring(decoded)); return end
+            RuntimeGMClient.BehaviorTree.handle(decoded)
+        elseif type == "EXEC" then
             local cmd = packet.cmd
             local id = packet.id
             -- origin_print("[RuntimeGM] Executing: " .. tostring(cmd))
@@ -7425,6 +7448,58 @@ local function StartRuntimeGM()
         end
         origin_print("[RuntimeGM] Client Started (Embed in XMain).")
     end
+
+    local host = {}
+    host.now=function() return CS.UnityEngine.Time.realtimeSinceStartup end
+    host.scene=function() return tostring(CS.UnityEngine.SceneManagement.SceneManager.GetActiveScene().handle) end
+    host.send=RuntimeGMClient.Send
+    host.discover=function(bt,p)
+        local result={}
+        local function add(id,kind,name,obj,valid,capabilities,controllable)
+            for capability, check in pairs(BehaviorTreeCapabilityChecks) do
+                if check.kind==kind then
+                    local ok, available=pcall(check.available,obj)
+                    if ok and available then
+                        capabilities[#capabilities+1]=capability
+                        controllable=controllable or check.controllable==true
+                    end
+                end
+            end
+            local token=bt.registerObject(id,kind,name,obj,valid,capabilities)
+            result[#result+1]={token=token,name=name,kind=kind,capabilities=capabilities,controllable=controllable,valid=valid()}
+        end
+        if not p.kind or p.kind=='gameobject' then
+            local objects=CS.UnityEngine.Resources.FindObjectsOfTypeAll(typeof(CS.UnityEngine.GameObject))
+            for i=0,objects.Length-1 do
+                local go=objects[i]
+                local id=go:GetInstanceID()
+                local name=tostring(go.name)
+                if go.scene:IsValid() and (not p.instanceId or p.instanceId==id) and (not p.search or name:lower():find(p.search:lower(),1,true)) then
+                    local value=go
+                    add('go:'..id,'gameobject',name,value,function()
+                        local ok, alive = pcall(function() return not value:Equals(nil) end)
+                        return ok and alive
+                    end,{'gameobject.read','gameobject.transform.debug'},true)
+                    if #result>=200 then break end
+                end
+            end
+        end
+        if not p.kind or p.kind=='fight' then
+            local fight=CS.XFight.Instance
+            if fight then
+                local role=fight:GetClientRole()
+                local npc=role and role.Npc
+                if npc and not npc.IsDeleted then
+                    local current=fight
+                    add('fight:'..tostring(npc.Id),'fight','当前玩家 '..tostring(npc.Id),fight,function()
+                        return CS.XFight.Instance==current and current:GetClientRole()==role and role.Npc==npc and not npc.IsDeleted
+                    end,{'fight.read'},false)
+                end
+            end
+        end
+        return result
+    end
+    RuntimeGMClient.BehaviorTree=CreateBehaviorTree(host,BehaviorTreeDefinitions,BehaviorTreeHandlers)
 
     -- 暴露给全局，使用 rawset 绕过 XMain 的 LockG
     rawset(_G, "RuntimeGMClient", RuntimeGMClient)

@@ -1,0 +1,897 @@
+[
+  {
+    "id": "sequence",
+    "version": 1,
+    "name": "顺序",
+    "kind": "composite",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "reactive": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "minChildren": 1,
+    "maxChildren": 64,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "selector",
+    "version": 1,
+    "name": "选择",
+    "kind": "composite",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "reactive": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "minChildren": 1,
+    "maxChildren": 64,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "parallel",
+    "version": 1,
+    "name": "并行",
+    "kind": "composite",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "successThreshold": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "minChildren": 1,
+    "maxChildren": 64,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "repeat",
+    "version": 1,
+    "name": "有限重复",
+    "kind": "decorator",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 1,
+    "maxChildren": 1,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "timeout",
+    "version": 1,
+    "name": "超时",
+    "kind": "decorator",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "seconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 300
+        }
+      },
+      "required": [
+        "seconds"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 1,
+    "maxChildren": 1,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "invert",
+    "version": 1,
+    "name": "反转",
+    "kind": "decorator",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "minChildren": 1,
+    "maxChildren": 1,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "wait",
+    "version": 1,
+    "name": "等待",
+    "kind": "action",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "seconds": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 300
+        }
+      },
+      "required": [
+        "seconds"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "blackboard_set",
+    "version": 1,
+    "name": "写黑板",
+    "kind": "action",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": {}
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": [
+      {
+        "kind": "bb",
+        "parameter": "key"
+      }
+    ]
+  },
+  {
+    "id": "blackboard_equals",
+    "version": 1,
+    "name": "黑板等值",
+    "kind": "condition",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": {}
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "unknown",
+    "version": 1,
+    "name": "未知状态回交",
+    "kind": "action",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "gameobject_read",
+    "version": 1,
+    "name": "读取对象",
+    "kind": "action",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "gameobject",
+        "capability": "gameobject.read"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": [
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ]
+  },
+  {
+    "id": "fight_read",
+    "version": 1,
+    "name": "读取当前战斗角色",
+    "kind": "action",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.read"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": [
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ]
+  },
+  {
+    "id": "gameobject_offset",
+    "version": 1,
+    "name": "临时位移测试对象",
+    "kind": "action",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "x": {
+          "type": "number",
+          "default": 0,
+          "minimum": -100,
+          "maximum": 100
+        },
+        "y": {
+          "type": "number",
+          "default": 0,
+          "minimum": -100,
+          "maximum": 100
+        },
+        "z": {
+          "type": "number",
+          "default": 0,
+          "minimum": -100,
+          "maximum": 100
+        },
+        "seconds": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 300
+        }
+      },
+      "required": [
+        "role",
+        "x",
+        "y",
+        "z",
+        "seconds"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "gameobject",
+        "capability": "gameobject.transform.debug"
+      }
+    ],
+    "sideEffect": "debug_state",
+    "cancelMode": "restore_owned_transform",
+    "resources": [
+      {
+        "kind": "object",
+        "parameter": "role"
+      }
+    ]
+  },
+  {
+    "id": "fight_normal_attack",
+    "version": 1,
+    "name": "普攻短按并等待指定技能开始",
+    "kind": "action",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10,
+          "default": 2
+        },
+        "expectedSkillId": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "role",
+        "output",
+        "timeout",
+        "expectedSkillId"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.normal_attack"
+      }
+    ],
+    "resources": [
+      {
+        "kind": "object",
+        "parameter": "role"
+      },
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ],
+    "sideEffect": "gameplay_input",
+    "cancelMode": "unsubmittedOnly"
+  },
+  {
+    "id": "fight_approach",
+    "version": 1,
+    "name": "靠近、远离或绕行最近敌人",
+    "kind": "action",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "distance": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 20,
+          "default": 3
+        },
+        "timeout": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 30,
+          "default": 6
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "approach",
+            "retreat",
+            "orbit"
+          ],
+          "default": "approach"
+        },
+        "angleDegrees": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90,
+          "default": 0
+        },
+        "stuckFrames": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 120,
+          "default": 10
+        },
+        "minProgress": {
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 5,
+          "default": 0.2
+        },
+        "blockedRetryFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 10
+        }
+      },
+      "required": [
+        "role",
+        "output",
+        "distance",
+        "timeout"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.approach"
+      }
+    ],
+    "resources": [
+      {
+        "kind": "object",
+        "parameter": "role"
+      },
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ],
+    "sideEffect": "gameplay_input",
+    "cancelMode": "release_owned_input"
+  },
+  {
+    "id": "fight_input",
+    "version": 1,
+    "name": "战斗按键（普攻／消球／闪避／必杀）",
+    "kind": "action",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "attack",
+            "ball",
+            "dodge",
+            "ex"
+          ],
+          "default": "attack"
+        },
+        "holdSeconds": {
+          "type": "number",
+          "minimum": 0.03,
+          "maximum": 2,
+          "default": 0.08
+        },
+        "color": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 0
+        },
+        "minGroup": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 1
+        },
+        "reserveColor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 0
+        },
+        "cooldownSeconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 0
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "none",
+            "toward",
+            "away",
+            "left",
+            "right"
+          ],
+          "default": "none"
+        },
+        "preferSmallGroup": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "role",
+        "output",
+        "action",
+        "holdSeconds"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.input"
+      }
+    ],
+    "resources": [
+      {
+        "kind": "object",
+        "parameter": "role"
+      },
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ],
+    "sideEffect": "gameplay_input",
+    "cancelMode": "release_owned_input"
+  },
+  {
+    "id": "fight_observe",
+    "version": 1,
+    "name": "观测角色与敌人",
+    "kind": "action",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "stageId": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "enemyTemplateId": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "playerTemplateIds": {
+          "default": []
+        },
+        "playerBuffKinds": {
+          "default": []
+        },
+        "enemyBuffKinds": {
+          "default": []
+        }
+      },
+      "required": [
+        "role",
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.read"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": [
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ]
+  },
+  {
+    "id": "fight_enemy_window",
+    "version": 1,
+    "name": "敌人技能窗口",
+    "kind": "condition",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "windows": {
+          "default": []
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.read"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "fight_recent_skill",
+    "version": 1,
+    "name": "最近实际释放过技能",
+    "kind": "condition",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "skillIds": {
+          "default": []
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 4
+        },
+        "frames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300,
+          "default": 0
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.read"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "fight_ball_ready",
+    "version": 1,
+    "name": "有符合条件的信号球",
+    "kind": "condition",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "color": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 0
+        },
+        "minGroup": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 1
+        },
+        "reserveColor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 0
+        },
+        "preferSmallGroup": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.read"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  },
+  {
+    "id": "blackboard_compare",
+    "version": 1,
+    "name": "黑板数值或布尔判断",
+    "kind": "condition",
+    "tags": [],
+    "params": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string",
+          "enum": [
+            "eq",
+            "ne",
+            "lt",
+            "le",
+            "gt",
+            "ge"
+          ]
+        },
+        "value": {}
+      },
+      "required": [
+        "path",
+        "operator",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [],
+    "sideEffect": "none",
+    "cancelMode": "none",
+    "resources": []
+  }
+]

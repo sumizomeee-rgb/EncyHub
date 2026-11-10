@@ -46,3 +46,5 @@ powershell -File deploy/encyhub.ps1 -Action sync-data
 - `gm_console/custom_gm.json`
 
 不会同步 ADB/iOS 设备信息与路径历史、进程注册表、FlowSVN 本机路径、HaruRoot 路径或可再生成缓存。
+
+sync-data 白名单增加 gm_console/behavior_tree_presets.json。此用户预设文件与 custom_gm.json 一样整文件覆盖；同步前备份目标并检查冲突，不提供实时合并。单树分享见 [行为树说明](gm-console/behavior-tree.md)。

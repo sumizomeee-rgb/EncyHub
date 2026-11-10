@@ -34,3 +34,5 @@ GM Console 通过单一 TCP 监听端口连接多个游戏实例，并向 Web �
 - [分包监控](subpackage-monitor.md)
 - [配表查看器](table-viewer.md)
 - [游戏日志](game-log.md)
+
+行为树编辑、对象绑定与预设说明见 [行为树](behavior-tree.md)。用户预设独立保存于 DATA_DIR/behavior_tree_presets.json。

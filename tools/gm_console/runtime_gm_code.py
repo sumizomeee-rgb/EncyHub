@@ -2,6 +2,8 @@
 RuntimeGM Lua 代码读取与连接地址生成。
 """
 import ipaddress
+import json
+from pathlib import Path
 import os
 import re
 import socket
@@ -14,9 +16,24 @@ RUNTIME_GM_LUA_PATH = os.path.join(SCRIPT_DIR, "runtime_gm_client.lua")
 
 
 def read_runtime_gm_source(path: str = RUNTIME_GM_LUA_PATH) -> str:
-    """读取唯一权威 RuntimeGM Lua 源文件。"""
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+    """显式拼装内核、节点与 RuntimeGM，游戏无需 require 仓库文件。"""
+    root = Path(path).parent
+    def lua(value):
+        if value is None: return "nil"
+        if value is True: return "true"
+        if value is False: return "false"
+        if isinstance(value, (int, float)): return str(value)
+        if isinstance(value, str): return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, list): return "{" + ",".join(lua(x) for x in value) + "}"
+        return "{" + ",".join("[" + lua(k) + "]=" + lua(v) for k,v in value.items()) + "}"
+    definitions = json.loads((root / "behavior_tree_nodes.json").read_text(encoding="utf-8"))
+    modules = [(root / "behavior_tree_json.lua").read_text(encoding="utf-8"),
+               (root / "behavior_tree_runtime.lua").read_text(encoding="utf-8"),
+               "local BehaviorTreeDefinitions = " + lua(definitions),
+               (root / "behavior_tree_nodes.lua").read_text(encoding="utf-8")]
+    modules.extend(file.read_text(encoding="utf-8") for file in sorted((root / "behavior_tree_nodes").glob("*.lua")))
+    modules.append(Path(path).read_text(encoding="utf-8"))
+    return "\n".join(modules)
 
 
 def _is_usable_ipv4(value: str) -> bool:

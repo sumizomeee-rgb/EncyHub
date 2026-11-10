@@ -3,6 +3,7 @@ GM Console - 服务器管理模块
 从原 gm_console.py 提取的核心逻辑
 """
 import asyncio
+import uuid
 import ipaddress
 import json
 import socket
@@ -202,6 +203,8 @@ class ServerMgr:
         self.on_game_log_status = None      # Callback for GAME_LOG_STATUS
         self._screenshot_parts: Dict[str, dict] = {}  # 分片截图重组缓冲
         self._pending_execs: Dict[int, dict] = {}
+        self._pending_bt = {}
+        self.on_behavior_tree = None
         self._temp_seq = 0                  # 临时 ID 序号（保证 accept 阶段唯一）
         self.client_state_rev = 0
         self.local_ip_addresses = get_local_ip_addresses()
@@ -460,6 +463,10 @@ class ServerMgr:
         finally:
             # 仅当 dict 中仍是本次连接的对象时才删除（用当前生效 id，rekey 后已是确定 ID），
             # 避免误删被同 IP+pid 新连接 rekey 占位的新客户端
+            for (connection, request_id), future in list(self._pending_bt.items()):
+                if connection == id(client_obj) and not future.done():
+                    future.set_result({"ok": False, "state": "disconnected", "requestId": request_id,
+                                       "error": {"code": "connection_closed", "message": "游戏停止状态未知"}})
             cur_id = client_obj.id
             removed = False
             if self.clients.get(cur_id) is client_obj:
@@ -521,6 +528,16 @@ class ServerMgr:
         c = client_obj
         cid = client_obj.id
 
+        if t in {"BT_RESPONSE", "BT_EVENT"}:
+            if self.clients.get(cid) is not client_obj:
+                return
+            if t == "BT_RESPONSE":
+                pending = self._pending_bt.get((id(client_obj), pkt.get("requestId")))
+                if pending and not pending.done():
+                    pending.set_result(pkt)
+            if t == "BT_EVENT" and self.on_behavior_tree:
+                self.on_behavior_tree(cid, pkt)
+            return
         print(f"[ServerMgr] 收到数据包: cid={cid}, type={t}")
 
         if t == "PING":
@@ -688,6 +705,32 @@ class ServerMgr:
             self.logs = self.logs[-500:]
         if self.on_log:
             self.on_log(log)
+
+    async def behavior_tree_request(self, client_id, action, payload, request_id=None, session_id=None, timeout=10):
+        client = self.clients.get(client_id)
+        if not client:
+            return {"ok": False, "state": "disconnected", "error": {"code": "client_offline"}}
+        request_id = request_id or str(uuid.uuid4())
+        key = (id(client), request_id)
+        if key in self._pending_bt:
+            return {"ok": False, "error": {"code": "request_in_flight"}, "requestId": request_id}
+        future = asyncio.get_running_loop().create_future()
+        self._pending_bt[key] = future
+        packet = {"type": "BT_REQUEST", "protocolVersion": 1, "requestId": request_id, "action": action, "payload": payload}
+        if session_id: packet["sessionId"] = session_id
+        try:
+            wire = (json.dumps(packet, ensure_ascii=False) + "\n").encode()
+            if len(wire) > 1024 * 1024:
+                return {"ok": False, "error": {"code": "packet_limit"}}
+            client.writer.write(wire)
+            await client.writer.drain()
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            return {"ok": False, "state": "unknown", "requestId": request_id, "error": {"code": "timeout", "message": "查询状态后再决定，不代表游戏已停止"}}
+        except Exception as error:
+            return {"ok": False, "state": "unknown", "requestId": request_id, "error": {"code": "transport_error", "message": str(error)}}
+        finally:
+            self._pending_bt.pop(key, None)
 
     async def send_to_client(self, client_id: str, cmd: str) -> tuple[bool, str]:
         """发送命令到指定客户端"""

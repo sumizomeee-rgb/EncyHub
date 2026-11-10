@@ -1,0 +1,129 @@
+-- 只提供可观测事实与条件；角色机制和 Boss 技能窗口由预设参数表达。
+local function attribute(npc,kind)
+    return npc.Attrib[CS.System.Convert.ToInt32(kind)].Value
+end
+BehaviorTreeHandlers.fight_observe=function(ctx)
+    local fight=ctx.object(ctx.params.role)
+    local role=fight:GetClientRole()
+    local player=role and role.Npc
+    if not player or player.IsDeleted then return 'failed' end
+    if (ctx.params.stageId or 0)~=0 and fight.FightData.StageId~=ctx.params.stageId then
+        ctx.write(ctx.params.output,{error='stage_mismatch'});return 'failed'
+    end
+    local allowed=not ctx.params.playerTemplateIds or #ctx.params.playerTemplateIds==0
+    for _,id in ipairs(ctx.params.playerTemplateIds or {}) do if player.TemplateId==id then allowed=true end end
+    if not allowed then
+        ctx.write(ctx.params.output,{error='player_mismatch'});return 'failed'
+    end
+    ctx.run.combat=ctx.run.combat or {}
+    local combat=ctx.run.combat
+    combat.recentFrames=combat.recentFrames or {}
+    combat.recent=combat.recent or {}
+    local skill=player.SkillGroupComponent and player.SkillGroupComponent.CurrentSkill
+    if skill then
+        if skill~=combat.playerSkill or skill.Id~=combat.playerSkillId or (combat.playerFrame and skill.RunFrame<combat.playerFrame) then
+            combat.recent[skill.Id]=ctx.now
+            combat.recentFrames[skill.Id]=fight.Frame
+        end
+        combat.playerSkillId,combat.playerFrame=skill.Id,skill.RunFrame
+    else combat.playerSkillId,combat.playerFrame=nil,nil end
+    combat.playerSkill=skill
+    for id,time in pairs(combat.recent) do if ctx.now-time>10 then combat.recent[id]=nil end end
+    local enemy,distance=BehaviorTreeFight.enemy(fight,ctx.params.enemyTemplateId)
+    if enemy then combat.target=enemy end
+    local target=enemy or combat.target
+    local dead=target and not target.IsDeleted and target.IsDead==true or false
+    local enemySkill=enemy and enemy.SkillGroupComponent and enemy.SkillGroupComponent.CurrentSkill
+    local function buffs(npc,kinds)
+        local values=setmetatable({},BehaviorTreeJson.object)
+        for _,kind in ipairs(kinds or {}) do values[tostring(kind)]=npc~=nil and fight.BuffManager:ExistByKind(npc,kind) or false end
+        return values
+    end
+    local life=attribute(player,CS.XNpcAttribType.Life)
+    local lifeLost=combat.lastLife and math.max(0,combat.lastLife-life) or 0
+    if lifeLost>0 then combat.lastLifeLossFrame=fight.Frame end
+    combat.lastLife=life
+    -- 只报告真实状态，不在观测节点里决定受击后要做什么。
+    local controlKnown,control=pcall(function()
+        local hit=player.CurrentAction==CS.XNpcAction.BeHit
+        return {beHit=hit,beHitState=tostring(player.BeHitFSM.CurrentState),
+            locked=player.IsCaught or (hit and not player.BeHitFSM:CanControl()),canMove=player:CanMove()}
+    end)
+    local invincibleKnown,invincible=pcall(function() return player:IsState(CS.XNpcState.Invincible) end)
+    local immuneKnown,immune=pcall(function() return player:IsState(CS.XNpcState.ImmuneDamage) end)
+    local px,py=BehaviorTreeFight.position(player)
+    local dodge=player.Attrib[CS.System.Convert.ToInt32(CS.XNpcAttribType.DodgeEnergy)]
+    local state={dodgeEnergy=dodge.Value,dodgeEnergyMax=dodge.MaxValue,
+        dodgeEnergyRatio=dodge.MaxValue>0 and dodge.Value/dodge.MaxValue or 0,matrixTimes=fight.Result.Data.MatrixTimes,
+        matrixReady=player.DodgeState==CS.XNpcDodgeState.Activate,
+        playerBuffs=buffs(player,ctx.params.playerBuffKinds),enemyBuffs=buffs(enemy,ctx.params.enemyBuffKinds),
+        frame=fight.Frame,stageId=fight.FightData.StageId,playerTemplateId=player.TemplateId,
+        life=life,lifeLost=lifeLost,framesSinceLifeLoss=combat.lastLifeLossFrame and fight.Frame-combat.lastLifeLossFrame or 1000000000,
+        playerAction=tostring(player.CurrentAction),playerSkillFrame=skill and skill.RunFrame or 0,playerPosition={x=px,y=py},
+        controlKnown=controlKnown,controlLocked=controlKnown and control.locked or false,
+        beHit=controlKnown and control.beHit or false,beHitState=controlKnown and control.beHitState or 'unknown',canMove=controlKnown and control.canMove or false,
+        invincibleKnown=invincibleKnown,invincible=invincibleKnown and invincible or false,
+        immuneDamageKnown=immuneKnown,immuneDamage=immuneKnown and immune or false,
+        energy=attribute(player,CS.XNpcAttribType.Energy),
+        dodging=player.IsDodging==true,playerDead=player.IsDead,playerSkillId=skill and skill.Id or 0,exReady=player.IsExSkillActivate==true,
+        finished=dead,enemyExists=enemy~=nil,enemy=setmetatable({},BehaviorTreeJson.object)}
+    if enemy then
+        local px,py=BehaviorTreeFight.position(player)
+        local ex,ey=BehaviorTreeFight.position(enemy)
+        local fx,fy=BehaviorTreeFight.number(enemy.Facing.x),BehaviorTreeFight.number(enemy.Facing.y)
+        local length=math.sqrt(fx*fx+fy*fy)
+        local dot=distance>0.001 and length>0 and ((px-ex)*fx+(py-ey)*fy)/(distance*length) or 1
+        state.enemy={position={x=ex,y=ey},facing={x=fx,y=fy},facingDot=dot,id=enemy.Id,templateId=enemy.TemplateId,name=tostring(enemy.Name),distance=distance,
+            life=attribute(enemy,CS.XNpcAttribType.Life),skillId=enemySkill and enemySkill.Id or 0,
+            skillFrame=enemySkill and enemySkill.RunFrame or 0}
+    end
+    combat.observation=state
+    ctx.write(ctx.params.output,state)
+    return player.IsDead and 'failed' or 'succeeded'
+end
+BehaviorTreeHandlers.fight_enemy_window=function(ctx)
+    local state=ctx.run.combat and ctx.run.combat.observation
+    if not state or not state.enemyExists then return 'failed' end
+    local enemy=state.enemy
+    for _,window in ipairs(ctx.params.windows) do
+        if enemy.skillId==window.skillId and enemy.skillFrame>=(window.fromFrame or 0)
+            and enemy.skillFrame<=(window.toFrame or 100000) and enemy.distance<=(window.distance or 100000)
+            and (enemy.facingDot or 1)>=(window.frontDotMin or -1) then
+            return 'succeeded'
+        end
+    end
+    return 'failed'
+end
+BehaviorTreeHandlers.fight_recent_skill=function(ctx)
+    local recent=ctx.run.combat and ctx.run.combat.recent or {}
+    for _,id in ipairs(ctx.params.skillIds) do
+        local combat=ctx.run.combat
+        local frame=combat and combat.observation and combat.observation.frame
+        local recentFrame=combat and combat.recentFrames and combat.recentFrames[id]
+        local matches=ctx.params.frames and ctx.params.frames>0 and frame and recentFrame and frame-recentFrame<=ctx.params.frames
+        if matches or ((not ctx.params.frames or ctx.params.frames==0) and recent[id] and ctx.now-recent[id]<=(ctx.params.seconds or 4)) then return 'succeeded' end
+    end
+    return 'failed'
+end
+BehaviorTreeHandlers.fight_ball_ready=function(ctx)
+    local fight=ctx.object(ctx.params.role)
+    return BehaviorTreeFight.ball(fight,ctx.params)~=nil and 'succeeded' or 'failed'
+end
+BehaviorTreeHandlers.blackboard_compare=function(ctx)
+    local value=ctx.run.blackboard
+    for part in ctx.params.path:gmatch('[^.]+') do
+        if type(value)~='table' then return 'failed' end
+        value=value[part]
+    end
+    local expected=ctx.params.value
+    if value==nil then return 'failed' end
+    local op=ctx.params.operator
+    local result
+    if op=='eq' then result=value==expected
+    elseif op=='ne' then result=value~=expected
+    elseif type(value)=='number' and type(expected)=='number' then
+        if op=='lt' then result=value<expected elseif op=='le' then result=value<=expected
+        elseif op=='gt' then result=value>expected elseif op=='ge' then result=value>=expected end
+    end
+    return result and 'succeeded' or 'failed'
+end

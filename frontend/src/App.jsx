@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import AdbMaster from './pages/AdbMaster'
 import FlowSvn from './pages/FlowSvn'
 import GmConsole from './pages/GmConsole'
+import BehaviorTreePage from './pages/BehaviorTreePage'
 import IosMaster from './pages/IosMaster'
 
 class ErrorBoundary extends Component {
@@ -57,6 +58,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/adb_master/*" element={<AdbMaster />} />
             <Route path="/flow_svn/*" element={<FlowSvn />} />
+            <Route path="/gm_console/behavior-tree" element={<BehaviorTreePage />} />
             <Route path="/gm_console/*" element={<GmConsole />} />
             <Route path="/ios_master/*" element={<IosMaster />} />
           </Routes>

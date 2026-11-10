@@ -68,6 +68,7 @@ $quotedRoot = "'$remoteRoot'"
 if ($Action -eq "sync-data") {
     $files = @(
         "gm_console/custom_gm.json"
+        "gm_console/behavior_tree_presets.json"
     )
     Invoke-Ssh "set -eu; mkdir -p $quotedRoot/.local/data/gm_console"
     foreach ($relativePath in $files) {
