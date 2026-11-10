@@ -541,3 +541,81 @@ def test_no_imminent_dodge_skips_extra_candidates_and_terrain_queries(planner):
         assert(not result.needDodge and result.dodge.reason=='not_needed')
         assert(not result.dodge.directionKnown and queryCount==160)
     ''')
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_skill_exit_across_actual_facing_is_opt_in(planner, enabled):
+    planner.execute("ctx.run.blackboard.combat.enemy.skillId=7;ctx.params.profile.skills={{id=7,casts={}}}")
+    planner.execute(f"ctx.params.profile.skills[1].exitAcrossFacing={str(enabled).lower()}")
+    planner.execute("plan(ctx);assert(result.known and result.directionKnown)")
+    if enabled:
+        planner.execute("assert(math.abs(result.direction.x)<=math.sqrt(.5)+.000001);assert(not result.exitAcrossFacing.walkFallback)")
+    else:
+        planner.execute("assert(result.direction.x>.99 and result.exitAcrossFacing==nil)")
+
+
+@pytest.mark.parametrize('blocked', ['negative_side', 'all_sides'])
+def test_exit_across_uses_open_side_or_falls_back_when_both_sides_blocked(planner, blocked):
+    planner.execute("ctx.run.blackboard.combat.enemy.skillId=7;ctx.params.profile.skills={{id=7,casts={},exitAcrossFacing=true}}")
+    planner.execute({
+        'negative_side': "fight.Scene.NavMesh.CheckCellObstacle=function(_,p) return p.y<-.6 end",
+        'all_sides': "fight.Scene.NavMesh.CheckCellObstacle=function(_,p) return math.abs(p.y)>1.4 end",
+    }[blocked])
+    planner.execute('plan(ctx);assert(result.directionKnown)')
+    if blocked == 'negative_side':
+        planner.execute('assert(result.direction.y>0 and not result.exitAcrossFacing.walkFallback)')
+    else:
+        planner.execute('assert(result.direction.x>.99 and result.exitAcrossFacing.walkFallback)')
+
+
+@pytest.mark.parametrize('blocked', ['none', 'negative_side', 'all_sides'])
+def test_dodge_exit_across_has_its_own_bounded_candidate_pool(planner, blocked):
+    planner.execute("enableDodge();ctx.run.blackboard.combat.enemy.skillId=7;ctx.params.profile.skills={{id=7,casts={},exitAcrossFacing=true}}")
+    if blocked == 'negative_side':
+        planner.execute('fight.Scene.NavMesh.CheckCellObstacle=function(_,p) return p.y< -1.5 end')
+    elif blocked == 'all_sides':
+        planner.execute('fight.Scene.NavMesh.CheckCellObstacle=function(_,p) return math.abs(p.y)>1.4 end')
+    planner.execute("addMissile({id=10,shape='circle',sizeX=1,lifeFrames=1},0,0,1,0);plan(ctx)")
+    planner.execute('assert(result.needDodge and result.dodge.directionKnown and not result.dodge.landingSafe)')
+    if blocked == 'all_sides':
+        planner.execute('assert(math.abs(result.dodge.direction.x)>.99 and result.exitAcrossFacing.dodgeFallback)')
+    else:
+        planner.execute('assert(math.abs(result.dodge.direction.x)<=math.sqrt(.5)+.000001 and not result.exitAcrossFacing.dodgeFallback)')
+        if blocked == 'negative_side':
+            planner.execute('assert(result.dodge.direction.y>0)')
+
+
+def test_walk_excludes_current_target_body_from_candidate_and_held_goal(planner):
+    planner.execute('''
+        enableDodge();ctx.params.profile.dodge.avoidTargetRadius=1.4
+        local e=ctx.run.blackboard.combat.enemy;e.position={x=1.5,y=0};e.distance=1.5
+        ctx.params.desiredDistance=0
+        plan(ctx);assert(result.directionKnown and result.direction.x<.99)
+        local goal=result.goal;local dx,dy=goal.x,goal.y
+        local t=math.max(0,math.min(1,1.5*dx/(dx*dx+dy*dy)))
+        assert((1.5-dx*t)^2+(dy*t)^2>=1.4^2)
+    ''')
+
+
+def test_held_goal_cannot_reintroduce_forward_exit_after_opt_in(planner):
+    planner.execute('''
+        ctx.run.blackboard.combat.enemy.skillId=7;ctx.params.profile.skills={{id=7,casts={}}}
+        plan(ctx);assert(result.direction.x>.99)
+        nextFrame();ctx.params.profile.skills[1].exitAcrossFacing=true
+        plan(ctx);assert(math.abs(result.direction.x)<=math.sqrt(.5)+.000001)
+        assert(result.goalSelection=='new' and not result.exitAcrossFacing.walkFallback)
+    ''')
+
+
+def test_failed_side_candidates_do_not_prevent_bounded_fallback(planner):
+    planner.execute('''
+        ctx.run.blackboard.combat.enemy.skillId=7;ctx.params.profile.skills={{id=7,casts={},exitAcrossFacing=true}}
+        ctx.run.navigationFailures={}
+        for i=1,3 do
+            local angle=i*math.pi/4
+            ctx.run.navigationFailures[#ctx.run.navigationFailures+1]={frame=fight.Frame,direction={x=math.cos(angle),y=math.sin(angle)}}
+            ctx.run.navigationFailures[#ctx.run.navigationFailures+1]={frame=fight.Frame,direction={x=math.cos(angle),y=-math.sin(angle)}}
+        end
+        plan(ctx);assert(result.directionKnown and result.exitAcrossFacing.walkFallback)
+        assert(math.abs(result.direction.x)>.99)
+    ''')

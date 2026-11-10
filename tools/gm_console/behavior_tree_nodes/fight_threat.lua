@@ -355,6 +355,27 @@ BehaviorTreeHandlers.fight_plan=function(ctx)
     result.desiredDistance=desired
     local distance=math.min(ctx.params.moveDistance or 3,walkSpeed*math.max(1,horizon-reaction)/fps)
     local best,bestRisk,bestScore
+    local exitAcross=enemy and skills[enemy.skillId] and skills[enemy.skillId].exitAcrossFacing==true
+    local facing=enemy and enemy.facing
+    local facingKnown=facing and type(facing.x)=='number' and type(facing.y)=='number'
+        and facing.x==facing.x and facing.y==facing.y and math.abs(facing.x)<math.huge
+        and math.abs(facing.y)<math.huge and facing.x*facing.x+facing.y*facing.y>.00001
+    local facingX,facingY=0,0
+    if facingKnown then facingX,facingY=unit(facing.x,facing.y) end
+    local function acrossFacing(candidate)
+        return facingKnown and math.abs(candidate.dx*facingX+candidate.dy*facingY)<=math.sqrt(.5)+.000001
+    end
+    if exitAcross then result.exitAcrossFacing={enabled=true,facingKnown=facingKnown==true} end
+    local function choosePool(candidates,diagnostic)
+        if not exitAcross then return candidates,false end
+        local across={}
+        for _,candidate in ipairs(candidates) do
+            if acrossFacing(candidate) then across[#across+1]=candidate end
+        end
+        local fallback=#across==0
+        result.exitAcrossFacing[diagnostic]=fallback
+        return fallback and candidates or across,not fallback
+    end
     local selectedAt=frame
     local heldGoal=false
     local knownPaths=0
@@ -369,6 +390,7 @@ BehaviorTreeHandlers.fight_plan=function(ctx)
     local function distanceScore(goal)
         return enemy and math.abs(math.sqrt((goal.x-enemy.position.x)^2+(goal.y-enemy.position.y)^2)-desired) or 0
     end
+    local walkCandidates={}
     for i=0,7 do
         local angle=i*math.pi/4
         local dx=towardX*math.cos(angle)-towardY*math.sin(angle)
@@ -376,13 +398,18 @@ BehaviorTreeHandlers.fight_plan=function(ctx)
         local goal={x=px+dx*distance,y=py+dy*distance}
         local known,clear=terrain(fight,{x=px,y=py},goal,radius)
         if known then knownPaths=knownPaths+1 end
-        if known and clear and not recentFailure(ctx.run,goal,dx,dy,frame,ctx.params.failureTTLFrames or 40) then
-            local candidate={dx=dx,dy=dy,distance=distance,goal=goal}
-            local risk=candidateRisk(candidate)
-            if risk==0 then safeCandidates=safeCandidates+1 end
-            local score=distanceScore(goal)
-            if not best or risk<bestRisk or (risk==bestRisk and score<bestScore) then best,bestRisk,bestScore=candidate,risk,score end
+        if known and clear and not crossesTarget({x=px,y=py},goal,enemy and enemy.position,dodge and dodge.avoidTargetRadius)
+            and not recentFailure(ctx.run,goal,dx,dy,frame,ctx.params.failureTTLFrames or 40) then
+            walkCandidates[#walkCandidates+1]={dx=dx,dy=dy,distance=distance,goal=goal}
         end
+    end
+    -- 业务招式可优先脱离实际朝向的直线；侧向受阻才回退，仍不代表安全。
+    local walkPool,walkAcrossOnly=choosePool(walkCandidates,'walkFallback')
+    for _,candidate in ipairs(walkPool) do
+        local risk=candidateRisk(candidate)
+        if risk==0 then safeCandidates=safeCandidates+1 end
+        local score=distanceScore(candidate.goal)
+        if not best or risk<bestRisk or (risk==bestRisk and score<bestScore) then best,bestRisk,bestScore=candidate,risk,score end
     end
     -- 相同风险下不要因距离评分微差每帧左右摆；旧目标也必须重新验危险和地形。
     if cache and cache.selectedGoal and cache.desiredDistance==desired then
@@ -392,7 +419,9 @@ BehaviorTreeHandlers.fight_plan=function(ctx)
         if length>0.4 then
             dx,dy=dx/length,dy/length
             local known,clear=terrain(fight,{x=px,y=py},oldGoal,radius)
-            if known and clear and not recentFailure(ctx.run,oldGoal,dx,dy,frame,ctx.params.failureTTLFrames or 40) then
+            if known and clear and (not walkAcrossOnly or acrossFacing({dx=dx,dy=dy}))
+                and not crossesTarget({x=px,y=py},oldGoal,enemy and enemy.position,dodge and dodge.avoidTargetRadius)
+                and not recentFailure(ctx.run,oldGoal,dx,dy,frame,ctx.params.failureTTLFrames or 40) then
                 local old={dx=dx,dy=dy,distance=length,goal=oldGoal}
                 local risk,score=candidateRisk(old),distanceScore(oldGoal)
                 if not best or risk<bestRisk or (risk==bestRisk and
@@ -442,6 +471,7 @@ BehaviorTreeHandlers.fight_plan=function(ctx)
             local delay=math.max(0,math.min(4,dodge.inputDelayFrames or 1))
             local postFrom=delay+math.max(0,recovery-1)/rate
             local chosen,chosenFollowups,chosenPost,chosenTravel,chosenScore
+            local dodgeCandidates={}
             for i=0,7 do
                 local angle=i*math.pi/4
                 local dx=towardX*math.cos(angle)-towardY*math.sin(angle)
@@ -456,6 +486,11 @@ BehaviorTreeHandlers.fight_plan=function(ctx)
                     and not recentFailure(ctx.run,outer,dx,dy,frame,ctx.params.failureTTLFrames or 40) then
                     local candidate={dodge=true,dx=dx,dy=dy,distance=(lo+hi)/2,spread=(hi-lo)/2,lateral=lateral,
                         rate=rate,delay=delay,settleFrames=settle,goal=goal}
+                    dodgeCandidates[#dodgeCandidates+1]=candidate
+                end
+            end
+            local dodgePool=choosePool(dodgeCandidates,'dodgeFallback')
+            for _,candidate in ipairs(dodgePool) do
                     local followups,postRisk,travelRisk=0,0,0
                     for _,h in ipairs(hazards) do
                         local later=false
@@ -467,13 +502,12 @@ BehaviorTreeHandlers.fight_plan=function(ctx)
                         end
                         if later then followups=followups+1 end
                     end
-                    local score=distanceScore(goal)
+                    local score=distanceScore(candidate.goal)
                     if not chosen or followups<chosenFollowups or (followups==chosenFollowups and
                         (postRisk<chosenPost or (postRisk==chosenPost and
                             (travelRisk<chosenTravel or (travelRisk==chosenTravel and score<chosenScore))))) then
                         chosen,chosenFollowups,chosenPost,chosenTravel,chosenScore=candidate,followups,postRisk,travelRisk,score
                     end
-                end
             end
             local cost=dodge.costRatio or 0.25
             choice.costRatio=cost

@@ -44,7 +44,69 @@ def test_enemy_window_checks_id_frame_and_distance(tactics):
 
 
 def test_boss_death_is_observed_without_selecting_other_npc(tactics):
-    tactics.execute("observe(ctx);enemy.IsDead=true;observe(ctx);assert(result.finished and not result.enemyExists)")
+    tactics.execute("""
+        observe(ctx);enemy.IsDead=true;enemy.Attrib[0].Value=0
+        assert(observe(ctx)=='succeeded' and result.finished and not result.enemyExists)
+        assert(result.targetLifeKnown and result.targetLife==0 and result.finishReason=='target_killed')
+    """)
+
+
+def test_initial_target_not_observed_can_be_discovered_later(tactics):
+    tactics.execute("""
+        enemy.IsActivate=false
+        assert(observe(ctx)=='succeeded' and not result.finished and not result.enemyExists)
+        assert(result.finishReason=='target_not_observed' and not result.targetLifeKnown)
+        assert(ctx.run.combat.target==nil)
+        fight.Frame=fight.Frame+1;enemy.IsActivate=true
+        assert(observe(ctx)=='succeeded' and not result.finished and result.enemyExists)
+        assert(result.finishReason=='target_active' and result.targetLifeKnown and result.targetLife==100)
+        assert(ctx.run.combat.target==enemy)
+    """)
+
+
+def test_cleanup_dead_with_positive_life_is_not_a_kill(tactics):
+    tactics.execute("""
+        observe(ctx);enemy.IsDead=true
+        assert(observe(ctx)=='failed' and not result.finished and not result.enemyExists)
+        assert(result.targetLifeKnown and result.targetLife==100 and result.finishReason=='target_dead_with_life')
+    """)
+
+
+@pytest.mark.parametrize('invalid', ['deleted', 'life_unreadable', 'life_nan', 'life_infinite'])
+def test_invalid_cached_target_never_reports_a_kill(tactics, invalid):
+    tactics.execute('observe(ctx);enemy.IsDead=true')
+    tactics.execute({
+        'deleted': 'enemy.IsDeleted=true;enemy.Attrib=nil',
+        'life_unreadable': 'enemy.Attrib=nil',
+        'life_nan': 'enemy.Attrib[0].Value=0/0',
+        'life_infinite': 'enemy.Attrib[0].Value=math.huge',
+    }[invalid])
+    tactics.execute("assert(observe(ctx)=='failed' and not result.finished and not result.targetLifeKnown)")
+    expected = 'target_deleted' if invalid == 'deleted' else 'target_life_unknown'
+    assert tactics.globals().result.finishReason == expected
+
+
+def test_alive_target_reports_real_life_and_remains_observable(tactics):
+    tactics.execute("""
+        assert(observe(ctx)=='succeeded' and not result.finished and result.enemyExists)
+        assert(result.targetLifeKnown and result.targetLife==100 and result.enemy.life==100)
+        assert(result.finishReason=='target_active')
+    """)
+
+
+def test_target_disappearing_without_death_is_not_a_kill(tactics):
+    tactics.execute("""
+        observe(ctx);enemy.IsActivate=false
+        assert(observe(ctx)=='failed' and not result.finished and result.finishReason=='target_unavailable')
+    """)
+
+
+def test_active_target_life_read_failure_is_diagnostic(tactics):
+    tactics.execute("""
+        observe(ctx);enemy.Attrib=nil
+        assert(observe(ctx)=='failed' and not result.finished and not result.targetLifeKnown)
+        assert(result.finishReason=='target_life_unknown')
+    """)
 
 
 def test_reserve_red_after_three_ping(tactics):

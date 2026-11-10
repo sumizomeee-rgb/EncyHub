@@ -29,10 +29,35 @@ BehaviorTreeHandlers.fight_observe=function(ctx)
     else combat.playerSkillId,combat.playerFrame=nil,nil end
     combat.playerSkill=skill
     for id,time in pairs(combat.recent) do if ctx.now-time>10 then combat.recent[id]=nil end end
-    local enemy,distance=BehaviorTreeFight.enemy(fight,ctx.params.enemyTemplateId)
+    local searchKnown,enemy,distance=pcall(BehaviorTreeFight.enemy,fight,ctx.params.enemyTemplateId)
+    if not searchKnown then enemy,distance=nil,nil end
     if enemy then combat.target=enemy end
     local target=enemy or combat.target
-    local dead=target and not target.IsDeleted and target.IsDead==true or false
+    local targetKnown,targetDeleted,targetDead=pcall(function()
+        return target.IsDeleted,target.IsDead==true
+    end)
+    local targetLifeKnown,targetLife=false,nil
+    if targetKnown and not targetDeleted then
+        targetLifeKnown,targetLife=pcall(function()
+            local value=BehaviorTreeFight.number(attribute(target,CS.XNpcAttribType.Life))
+            if not value or value~=value or math.abs(value)==math.huge then error('target_life_unknown') end
+            return value
+        end)
+        if not targetLifeKnown then targetLife=nil end
+    end
+    -- 限时清场也可能标记IsDead；只有真实生命归零才报告击杀。
+    local dead=targetKnown and not targetDeleted and targetDead and targetLifeKnown and targetLife<=0
+    local finishReason
+    if searchKnown and not target then finishReason='target_not_observed'
+    elseif not targetKnown then finishReason='target_unavailable'
+    elseif targetDeleted then finishReason='target_deleted'
+    elseif not targetLifeKnown then finishReason='target_life_unknown'
+    elseif targetDead and targetLife>0 then finishReason='target_dead_with_life'
+    elseif dead then finishReason='target_killed'
+    elseif not searchKnown then finishReason='target_search_unknown'
+    elseif not enemy then finishReason='target_unavailable'
+    else finishReason='target_active' end
+    local targetUnavailable=finishReason~='target_active' and finishReason~='target_killed' and finishReason~='target_not_observed'
     local enemySkill=enemy and enemy.SkillGroupComponent and enemy.SkillGroupComponent.CurrentSkill
     local function buffs(npc,kinds)
         local values=setmetatable({},BehaviorTreeJson.object)
@@ -66,7 +91,8 @@ BehaviorTreeHandlers.fight_observe=function(ctx)
         immuneDamageKnown=immuneKnown,immuneDamage=immuneKnown and immune or false,
         energy=attribute(player,CS.XNpcAttribType.Energy),
         dodging=player.IsDodging==true,playerDead=player.IsDead,playerSkillId=skill and skill.Id or 0,exReady=player.IsExSkillActivate==true,
-        finished=dead,enemyExists=enemy~=nil,enemy=setmetatable({},BehaviorTreeJson.object)}
+        finished=dead,finishReason=finishReason,targetLifeKnown=targetLifeKnown,targetLife=targetLife,
+        enemyExists=enemy~=nil,enemy=setmetatable({},BehaviorTreeJson.object)}
     if enemy then
         local px,py=BehaviorTreeFight.position(player)
         local ex,ey=BehaviorTreeFight.position(enemy)
@@ -74,12 +100,12 @@ BehaviorTreeHandlers.fight_observe=function(ctx)
         local length=math.sqrt(fx*fx+fy*fy)
         local dot=distance>0.001 and length>0 and ((px-ex)*fx+(py-ey)*fy)/(distance*length) or 1
         state.enemy={position={x=ex,y=ey},facing={x=fx,y=fy},facingDot=dot,id=enemy.Id,templateId=enemy.TemplateId,name=tostring(enemy.Name),distance=distance,
-            life=attribute(enemy,CS.XNpcAttribType.Life),skillId=enemySkill and enemySkill.Id or 0,
+            life=targetLife,skillId=enemySkill and enemySkill.Id or 0,
             skillFrame=enemySkill and enemySkill.RunFrame or 0}
     end
     combat.observation=state
     ctx.write(ctx.params.output,state)
-    return player.IsDead and 'failed' or 'succeeded'
+    return (player.IsDead or targetUnavailable) and 'failed' or 'succeeded'
 end
 BehaviorTreeHandlers.fight_enemy_window=function(ctx)
     local state=ctx.run.combat and ctx.run.combat.observation
