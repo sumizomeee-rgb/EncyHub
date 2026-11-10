@@ -6,13 +6,9 @@ export function selectRuntimeRun(runs = [], preferredId) {
     || [...candidates].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0) || b.runId.localeCompare(a.runId))[0]
 }
 
-// 开始前核对客户端能力，旧运行器不能静默把自主运行当成30秒租约。
-export function executionOptions(runMode, duration, supportedModes = []) {
-  const seconds = Number(duration)
-  if (!['autonomous', 'debug'].includes(runMode)) throw new Error('请选择有效的运行方式')
-  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 86400) throw new Error('最长运行时间须在1～86400秒之间')
-  if (!supportedModes.includes(runMode)) throw new Error('客户端运行器尚不支持此运行方式，请更新游戏内行为树运行器后开始')
-  return { runMode, maxRunSeconds: seconds, ...(runMode === 'debug' ? { leaseSeconds: 30 } : {}) }
+// 旧运行器仍有租约或默认总时限，不能把它当作独立执行。
+export function requireIndependentRuntime(capability) {
+  if (capability.executionLifetime !== 'tree') throw new Error('请更新游戏内行为树运行器后开始：此版本仍有旧的运行时限')
 }
 
 export function restoreEditorDraft(raw) {

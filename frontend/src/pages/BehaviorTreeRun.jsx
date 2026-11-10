@@ -98,7 +98,7 @@ function Observation({ tree, definition, snapshot }) {
 
 export default function RunPanel(props) {
   const [viewingRun, setViewingRun] = useState(null)
-  const { selectedClient, online, broadcastMode, tree, slots, definition, objects, bound, health, discovered, searchText, onSearchText, selectors, busy, running, locked, snapshot, observe, onObserve, blockers, effects, confirming, onConfirm, onStart, onStop, onQuery, onDiscover, onChoose, onClear, onBindSelectors, sessionId, lastError, notice, onDismissNotice, blockerNotes, runMode, onRunMode, maxRunSeconds, onMaxRunSeconds, onDiagnosticsOpen } = props
+  const { selectedClient, online, broadcastMode, tree, slots, definition, objects, bound, health, discovered, searchText, onSearchText, selectors, busy, running, locked, snapshot, blockers, effects, confirming, onConfirm, onStart, onStop, onQuery, onDiscover, onChoose, onClear, onBindSelectors, sessionId, lastError, notice, onDismissNotice, blockerNotes, onDiagnosticsOpen } = props
   const clientText = broadcastMode ? '行为树不支持广播，请先选择单个客户端。'
     : !selectedClient ? '请先选择一个客户端。'
       : selectedClient.online === false ? '当前客户端已离线，运行需等它重新上线；仍可编辑。' : ''
@@ -117,7 +117,6 @@ export default function RunPanel(props) {
         {(snapshot?.tree || tree.nodes.length > 0) && <Chip tone={displayedEffects.controls ? 'warn' : 'good'}>{displayedEffects.controls ? `会控制游戏：${displayedEffects.labels.join('、')}` : '只读观察'}</Chip>}
       </div>
       <div className="bt-actions">
-        {running && snapshot?.runMode !== 'autonomous' && <label className="bt-observe" title="勾选后本页持续续租。没有任何页面或工具续租时，最后一次续租约30秒后，客户端停止本树并释放输入；其他端仍续租时，关闭本页不会停止。状态查询本身不续租。"><input type="checkbox" checked={observe} onChange={event => onObserve(event.target.checked)} />调试续租（断开约30秒停止）</label>}
         {confirming && <span className="bt-confirm">确认对「{slots.map(slot => bound[slot.name]?.name).filter(Boolean).join('、') || '游戏'}」开始？</span>}
         <button disabled={!online || busy} onClick={onQuery}>查询状态</button>
         <button className="bt-stop" disabled={!online || busy || !(running || snapshot?.state === 'unknown')} onClick={onStop}><Square size={12} fill="currentColor" />停止</button>
@@ -126,12 +125,7 @@ export default function RunPanel(props) {
           : <button className="bt-primary" disabled={!canStart} onClick={() => effects.controls ? onConfirm(true) : onStart()}><Play size={14} />开始</button>}
       </div>
     </div>
-    {!running && <div className="bt-run-options">
-      <label>运行方式<select aria-label="运行方式" value={runMode} disabled={busy} onChange={e => onRunMode(e.target.value)}><option value="autonomous">自主运行（关闭网页仍继续）</option><option value="debug">联机调试（断联约30秒停止）</option></select></label>
-      <label>最长运行（秒）<input aria-label="最长运行秒数" type="number" min="1" max="86400" value={maxRunSeconds} disabled={busy} onChange={e => onMaxRunSeconds(e.target.value)}/></label>
-      <small>{runMode === 'autonomous' ? '树在客户端执行；关闭或刷新网页不会停止，重新打开可继续查看。' : '需要页面或工具续租；无人续租约30秒后停止。'}树结束、达到总时限或目标失效时停止。</small>
-    </div>}
-    {running && <small>{snapshot?.runMode === 'autonomous' ? '自主运行：关闭网页后继续。' : '联机调试：无人续租约30秒后停止。'}{snapshot?.maxRunSeconds && ` 本次最长${snapshot.maxRunSeconds}秒。`}</small>}
+    <small>树在客户端独立执行，关闭或刷新网页后继续；重新打开可接着查看。仅在树结束、手动停止或场景／绑定失效时结束。</small>
     {((effects.input && !running) || (!canStart && !running && blockerNotes.length > 0)) && <div className="bt-notes">
       {effects.input && !running && <small>普攻需要战斗进行中：停在暂停菜单时，先关闭暂停再开始。</small>}
       {!canStart && !running && blockerNotes.length > 0 && <small className="bt-block">还不能开始：{blockerNotes.join('；')}</small>}
@@ -149,7 +143,7 @@ export default function RunPanel(props) {
     </div>
     {snapshot && <section aria-label="客户端实际运行树">
       <div className="bt-runtime-heading"><h4>游戏里的运行情况：{snapshot.tree?.name || snapshot.treeId}</h4>{snapshot.tree && <button className="bt-view-runtime" onClick={() => setViewingRun(snapshot.runId)}><Maximize size={14}/>放大查看运行树</button>}</div>
-      <p className="bt-muted">{running ? (snapshot.runMode === 'autonomous' ? '客户端独立执行；本页仅查看，关闭后可重新打开查看同一次运行。' : observe ? '本页正在续租；树仍会按自身的结束条件停止。' : '本页只查看、不续租；没有其他页面或工具续租时，约30秒后自动停止。') : ''}这是游戏里实际运行的那一份树，和下方编辑器里的草稿互不影响。</p>
+      <p className="bt-muted">{running ? '本页只读查看；关闭后可重新打开查看同一次运行。' : ''}这是游戏里实际运行的那一份树，和下方编辑器里的草稿互不影响。</p>
       {snapshot.tree ? <>{viewingRun === snapshot.runId ? <RuntimeViewer snapshot={snapshot} definition={definition} labels={STATE} onClose={() => setViewingRun(null)}/> : <RuntimeTree key={snapshot.runId} tree={snapshot.tree} definition={definition} snapshot={snapshot} labels={STATE} />}<Observation tree={snapshot.tree} definition={definition} snapshot={snapshot} /></>
         : <p className="bt-hint warn">客户端未返回实际树，请更新游戏内行为树运行器后查看；不会用同名预设代替。</p>}
     </section>}

@@ -1,6 +1,6 @@
 -- 单一游戏内运行器，节点实现由注入器显式装载。
 local function CreateBehaviorTree(host, definitions, handlers)
-    local bt = {runtimeBuild='ency-bt-20261110-r20', sessionId = tostring(host.now()) .. ':' .. tostring({}), trees = {}, runs = {}, objects = {}, replies = {}, replyOrder = {}}
+    local bt = {runtimeBuild='ency-bt-20261110-r21', sessionId = tostring(host.now()) .. ':' .. tostring({}), trees = {}, runs = {}, objects = {}, replies = {}, replyOrder = {}}
     local registry = {}
     for _, def in ipairs(definitions) do registry[def.id] = def end
     local function copyValue(value, seen, depth)
@@ -30,7 +30,7 @@ local function CreateBehaviorTree(host, definitions, handlers)
     end
     local function scene() return host.scene() end
     local function snapshot(run, includeTree, options)
-        local value={runId=run.id, treeId=run.tree.id, startedAt=run.startedAt, runMode=run.runMode, maxRunSeconds=run.maxRunSeconds, state=run.state, reason=run.reason, revision=run.revision, eventSeq=run.seq, clock='unity-update', sessionId=run.sessionId}
+        local value={runId=run.id, treeId=run.tree.id, startedAt=run.startedAt, runMode=run.runMode, state=run.state, reason=run.reason, revision=run.revision, eventSeq=run.seq, clock='unity-update', sessionId=run.sessionId}
         -- 发现活跃运行只需目录；完整诊断由查看端按需读取，旧调用仍返回完整状态。
         if not (options and options.summary) then
             value.tree=includeTree and copyValue(run.tree) or nil
@@ -241,9 +241,7 @@ local function CreateBehaviorTree(host, definitions, handlers)
     function bt.update()
         for _,run in pairs(bt.runs) do
             if run.state=='running' or run.state=='awaiting_decision' then
-                if host.now()>=run.deadline then finish(run,'stopped','run_timeout')
-                elseif run.runMode=='debug' and host.now()>run.leaseUntil then finish(run,'stopped','lease_expired')
-                elseif run.scene~=scene() then finish(run,'stopped','scene_changed')
+                if run.scene~=scene() then finish(run,'stopped','scene_changed')
                 else
                     local valid=true
                     for _,token in pairs(run.bindings) do
@@ -280,7 +278,7 @@ local function CreateBehaviorTree(host, definitions, handlers)
         local ok,data=pcall(function()
             if req.protocolVersion~=1 or type(req.requestId)~='string' then error('invalid_request') end
             local p=req.payload or {}; local action=req.action
-            if action=='capabilities' then return {nodes=definitions,sessionId=bt.sessionId,clock='unity-update',runtimeBuild=bt.runtimeBuild,runModes={'autonomous','debug'}}
+            if action=='capabilities' then return {nodes=definitions,sessionId=bt.sessionId,clock='unity-update',runtimeBuild=bt.runtimeBuild,runModes={'autonomous'},executionLifetime='tree'}
             elseif action=='discover' then return {objects=host.discover(bt,p),sessionId=bt.sessionId}
             elseif action=='validate' then return bt.validate(p.tree)
             elseif action=='install' then
@@ -291,10 +289,6 @@ local function CreateBehaviorTree(host, definitions, handlers)
                 local runId=p.runId or req.requestId
                 if bt.runs[runId] then return snapshot(bt.runs[runId]) end
                 for _,run in pairs(bt.runs) do if run.state=='running' or run.state=='awaiting_decision' then error('run_already_active') end end
-                local runMode=p.runMode or 'autonomous'
-                if runMode~='autonomous' and runMode~='debug' then error('invalid_run_mode') end
-                local maxRunSeconds=p.maxRunSeconds or 3600
-                if type(maxRunSeconds)~='number' or maxRunSeconds~=maxRunSeconds or maxRunSeconds<1 or maxRunSeconds>86400 then error('invalid_run_duration') end
                 local bindings=p.bindings or {}
                 for role,requirement in pairs(tree.roles or {}) do
                     local token=bindings[role]; local obj=token and bt.objects[token.id]
@@ -308,8 +302,8 @@ local function CreateBehaviorTree(host, definitions, handlers)
                 local boundValidation=bt.validate(tree,bindings)
                 if not boundValidation.ok then error('parallel_resource_conflict:'..boundValidation.errors[1].path) end
                 local startedAt=host.now()
-                -- 总时限独立于网页；只有联机调试模式需要续租。
-                local run={id=runId,startedAt=startedAt,runMode=runMode,maxRunSeconds=maxRunSeconds,deadline=startedAt+maxRunSeconds,sessionId=bt.sessionId,tree=tree,index={},bindings=bindings,blackboard={},revision=0,states={},memory={},events={},seq=0,state='running',cleanupErrors={},scene=scene(),leaseUntil=host.now()+math.min(300,math.max(5,p.leaseSeconds or 30))}
+                -- 生命周期由树和游戏对象决定，网页只是查看与启停入口。
+                local run={id=runId,startedAt=startedAt,runMode='autonomous',sessionId=bt.sessionId,tree=tree,index={},bindings=bindings,blackboard={},revision=0,states={},memory={},events={},seq=0,state='running',cleanupErrors={},scene=scene()}
                 run.blackboard=copyValue(tree.blackboard or {})
                 for _,n in ipairs(tree.nodes) do run.index[n.id]=n end
                 -- 历史运行有界，当前运行不被淘汰。
@@ -319,8 +313,7 @@ local function CreateBehaviorTree(host, definitions, handlers)
             elseif action=='stop' or action=='status' then
                 local results={}
                 for id,run in pairs(bt.runs) do if not p.runId or id==p.runId then
-                    if action=='stop' then finish(run,'stopped','user_stop')
-                    elseif p.renewLease and run.runMode=='debug' and run.state=='running' then run.leaseUntil=host.now()+30 end
+                    if action=='stop' then finish(run,'stopped','user_stop') end
                     results[#results+1]=snapshot(run,p.includeTree,p)
                 end end
                 return {runs=results,sessionId=bt.sessionId}

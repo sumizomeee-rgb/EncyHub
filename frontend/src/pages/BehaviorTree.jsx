@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Copy, Download, FolderOpen, GitBranch, LayoutGrid, Minus, Maximize, MoreHorizontal, MousePointerClick, Plus, Save, Search, ShieldCheck, Trash2, Upload, Workflow, X } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import { addNode, bindingHealth, fitText, cancelModeLabel, connectNode, enumLabel, editableTreeErrors, emptyTree, friendlyError, jsonDraftErrors, jsonInputText, kindLabel, mergeObjects, newId, nodeKindLabel, outline, paramLabel, parameterErrors, rangeHint, recordJsonDraft, removeNode, runEffects, sideEffectLabel, startBlockers, targetFit, treeLayout, treeSlots } from '../utils/behaviorTree'
-import { executionOptions, restoreEditorDraft, selectRuntimeRun } from '../utils/behaviorTreeRuntime'
+import { requireIndependentRuntime, restoreEditorDraft, selectRuntimeRun } from '../utils/behaviorTreeRuntime'
 import RunPanel, { STATE } from './BehaviorTreeRun'
 import useTreeViewport from '../utils/useTreeViewport'
 import ViewportTools from './BehaviorTreeViewport'
@@ -47,9 +47,6 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
   const [busy, setBusy] = useState(false)
   const [validation, setValidation] = useState(null)
   const [snapshot, setSnapshot] = useState(null)
-  const [observe, setObserve] = useState(false)
-  const [runMode, setRunMode] = useState('autonomous')
-  const [maxRunSeconds, setMaxRunSeconds] = useState('3600')
   const [importDraft, setImportDraft] = useState(null)
   const [confirming, setConfirming] = useState(false)
   const [lastError, setLastError] = useState('')
@@ -65,8 +62,6 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
   snapshotRef.current = snapshot
   const diagnosticsRef = useRef(false)
   const scanStatusAt = useRef(0)
-  const observeRef = useRef(false)
-  observeRef.current = observe
   const sessionRef = useRef(null)
   const statusSerial = useRef(0)
   const scansRef = useRef({ fight: 0, gameobject: 0 })
@@ -143,7 +138,7 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
   async function loadPresets() { const result = await request('/presets'); setPresets(result.presets) }
   useEffect(() => { perform(async () => { const result = await request('/nodes'); setCatalog(result.nodes); await loadPresets() }) }, [])
   useEffect(() => {
-    sessionRef.current = null; setSessionId(null); setObjects([]); setBound({}); setForced({}); setDiscovered({}); setConfirming(false); setObserve(false)
+    sessionRef.current = null; setSessionId(null); setObjects([]); setBound({}); setForced({}); setDiscovered({}); setConfirming(false)
     statusSerial.current++; setSnapshot(null); snapshotRef.current = null; scanStatusAt.current = 0
     if (active && online) perform(async () => { const data = await runtime('capabilities'); setCatalog(data.nodes) })
   }, [selectedClient?.id, online, broadcastMode])
@@ -151,8 +146,8 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
     if (!active || !online) return
     let stopped = false, timer
     const poll = async () => {
-      try { if (!document.hidden || observeRef.current) await queryStatus(() => stopped) }
-      catch (e) { if (!stopped) { setObserve(false); setNotice(friendlyError(e.message)); setSnapshot(old => old ? { ...old, state: 'unknown', reason: friendlyError(e.message) } : null) } }
+      try { if (!document.hidden) await queryStatus(() => stopped) }
+      catch (e) { if (!stopped) { setNotice(friendlyError(e.message)); setSnapshot(old => old ? { ...old, state: 'unknown', reason: friendlyError(e.message) } : null) } }
       if (!stopped) timer = setTimeout(poll, ['running', 'awaiting_decision'].includes(snapshotRef.current?.state) ? 1000 : 3000)
     }
     poll(); return () => { stopped = true; clearTimeout(timer) }
@@ -188,7 +183,7 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
     const previousSnapshot = snapshot
     if (snapshot?.state === 'unknown' && snapshot.clientId === selectedClient.id) throw new Error('上次启动状态未知，请先点「查询状态」或停止该运行')
     const capability = await runtime('capabilities')
-    const options = executionOptions(runMode, maxRunSeconds, capability.runModes)
+    requireIndependentRuntime(capability)
     const result = await check(); if (!result.ok) throw new Error(`树校验失败：${result.errors?.[0] ? `${result.errors[0].path}：${result.errors[0].message}` : '请修正画布上标出的节点'}`)
     for (const slot of slots) if (!bindings[slot.name]) throw new Error(`还没选择目标「${kindLabel(slot.kind)}」`)
     const validated = await runtime('validate', { tree, bindings })
@@ -198,12 +193,12 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
     const runId = newId()
     setSnapshot({ runId, treeId: tree.id, state: 'unknown', reason: '正在等待游戏启动回执；超时后请点「查询状态」，不要重复启动', clientId: selectedClient.id })
     let run
-    try { run = await runtime('start', { treeId: tree.id, bindings, runId, ...options }) } catch (e) { if (!e.unknown) setSnapshot(previousSnapshot); throw e }
+    try { run = await runtime('start', { treeId: tree.id, bindings, runId }) } catch (e) { if (!e.unknown) setSnapshot(previousSnapshot); throw e }
     statusSerial.current++; snapshotRef.current = { ...run, clientId: selectedClient.id }; scanStatusAt.current = 0
-    setSnapshot(snapshotRef.current); setObserve(run.state === 'running' && run.runMode === 'debug')
+    setSnapshot(snapshotRef.current)
     if (run.state !== 'running') throw new Error(`游戏返回：${STATE[run.state] || run.state}；不会自动重试`)
   }
-  async function stop() { statusSerial.current++; const data = await runtime('stop', { runId: snapshot?.runId }); const run = data.runs?.find(r => r.runId === snapshot?.runId); if (!run) throw new Error('没有收到当前运行的停止回执，请重新查询'); snapshotRef.current = { ...run, clientId: selectedClient.id }; setSnapshot(snapshotRef.current); setObserve(false) }
+  async function stop() { statusSerial.current++; const data = await runtime('stop', { runId: snapshot?.runId }); const run = data.runs?.find(r => r.runId === snapshot?.runId); if (!run) throw new Error('没有收到当前运行的停止回执，请重新查询'); snapshotRef.current = { ...run, clientId: selectedClient.id }; setSnapshot(snapshotRef.current) }
   async function queryStatus(cancelled = () => false) {
     const serial = ++statusSerial.current
     const stale = () => cancelled() || serial !== statusSerial.current
@@ -216,13 +211,12 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
       run = selectRuntimeRun(data.runs, previous?.runId)
       scanStatusAt.current = Date.now() + 5000
     }
-    if (!run) { snapshotRef.current = null; setSnapshot(null); setObserve(false); return }
+    if (!run) { snapshotRef.current = null; setSnapshot(null); return }
     const sameRun = previous?.clientId === selectedClient.id && previous?.sessionId === run.sessionId && previous?.runId === run.runId
-    const detail = await runtime('status', { runId: run.runId, includeTree: !sameRun || !previous?.tree, renewLease: sameRun && run.runMode === 'debug' && observeRef.current, includeEvents: diagnosticsRef.current, includeBlackboard: diagnosticsRef.current })
+    const detail = await runtime('status', { runId: run.runId, includeTree: !sameRun || !previous?.tree, includeEvents: diagnosticsRef.current, includeBlackboard: diagnosticsRef.current })
     if (stale()) return
     run = detail.runs?.find(item => item.runId === run.runId)
-    if (!run) { snapshotRef.current = null; setSnapshot(null); setObserve(false); return }
-    if (!sameRun || !['running', 'awaiting_decision'].includes(run.state)) setObserve(false)
+    if (!run) { snapshotRef.current = null; setSnapshot(null); return }
     const next = { ...run, tree: run.tree || (sameRun ? previous.tree : null), clientId: selectedClient.id }
     snapshotRef.current = next
     setSnapshot(old => sameRun && old?.eventSeq !== undefined && old.eventSeq === next.eventSeq && old.state === next.state && old.revision === next.revision && old.tree === next.tree && !!old.events === !!next.events && !!old.blackboard === !!next.blackboard ? old : next)
@@ -324,7 +318,7 @@ function BehaviorTree({ selectedClient, broadcastMode, active, expanded = false,
 
   const runPanel = <RunPanel selectedClient={selectedClient} online={online} broadcastMode={broadcastMode} tree={tree} slots={slots} definition={definition}
       objects={objects} bound={boundObjects} health={health} discovered={discovered} searchText={searchText} onSearchText={setSearchText} selectors={selectors}
-      busy={busy} running={running} locked={running} snapshot={snapshot} observe={observe} onObserve={setObserve} runMode={runMode} onRunMode={setRunMode} maxRunSeconds={maxRunSeconds} onMaxRunSeconds={setMaxRunSeconds} blockers={blockers} blockerNotes={blockerNotes} effects={effects} confirming={confirming} onConfirm={setConfirming}
+      busy={busy} running={running} locked={running} snapshot={snapshot} blockers={blockers} blockerNotes={blockerNotes} effects={effects} confirming={confirming} onConfirm={setConfirming}
       onStart={() => perform(start)} onStop={() => perform(stop)} onQuery={() => perform(() => { scanStatusAt.current = 0; return queryStatus() })} onDiscover={(kind, search) => perform(() => discover(kind, search))} onChoose={choose} onClear={clear} onBindSelectors={() => perform(bindSelectors)}
       onDiagnosticsOpen={open => { diagnosticsRef.current = open }} sessionId={sessionId} lastError={lastError} notice={notice} onDismissNotice={() => setNotice('')}/>
 

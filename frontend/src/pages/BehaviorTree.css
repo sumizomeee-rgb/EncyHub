@@ -58,11 +58,6 @@
 .bt-menu-pop>*{justify-content:flex-start!important;border-color:transparent!important;background:transparent!important;box-shadow:none!important}.bt-menu-pop>*:hover{background:rgba(212,165,116,.16)!important}
 
 /* 运行条 */
-.bt-run-options{display:flex;align-items:end;gap:10px 16px;flex-wrap:wrap}
-.bt-run-options label{display:flex;flex-direction:column;gap:5px;font-size:12px;max-width:100%}
-.bt-run-options label:first-child{flex:0 1 280px}
-.bt-run-options label:nth-child(2){flex:0 1 140px}
-.bt-run-options small{flex-basis:100%}
 .bt-run{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid var(--bt-line);border-radius:14px;background:var(--bt-surface);box-shadow:var(--bt-shadow)}
 .bt-hint{margin:0;padding:7px 11px;border-radius:9px;background:var(--bt-info-bg);line-height:1.6}.bt-hint.warn{background:var(--bt-warn-bg);color:var(--bt-warn)}.bt-hint.bad{background:var(--bt-bad-bg);color:var(--bt-bad)}
 .bt-dismiss{margin-left:10px;padding:1px 9px!important}
@@ -73,7 +68,6 @@
 .bt-state.info{background:var(--bt-info-bg);color:var(--bt-info)}.bt-state.good{background:var(--bt-good-bg);color:var(--bt-good)}.bt-state.bad{background:var(--bt-bad-bg);color:var(--bt-bad)}.bt-state.warn{background:var(--bt-warn-bg);color:var(--bt-warn)}
 .bt-state.info i{animation:bt-blink 1.2s ease-in-out infinite}
 .bt-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.bt-observe{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--coffee-light);cursor:pointer}
 .bt-confirm{font-weight:600;color:var(--bt-warn)}
 .bt-notes{display:flex;flex-wrap:wrap;gap:2px 16px}.bt-block{color:var(--bt-warn)!important}
 .bt-targets{display:flex;flex-direction:column;gap:9px;padding-top:11px;border-top:1px dashed var(--bt-line)}

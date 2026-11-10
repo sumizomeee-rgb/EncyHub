@@ -463,7 +463,6 @@ local function StartRuntimeGM()
     end
 
     function RuntimeGMClient.Close()
-        if RuntimeGMClient.BehaviorTree then RuntimeGMClient.BehaviorTree.stopAll("disconnected") end
         RuntimeGMClient._receivePartial = ""
         RuntimeGMClient._receiveStarted = nil
         if RuntimeGMClient.Socket then
@@ -7441,6 +7440,7 @@ local function StartRuntimeGM()
             RuntimeGMClient.Update()
         end
         behaviour.LuaOnDestroy = function()
+            if RuntimeGMClient.BehaviorTree then RuntimeGMClient.BehaviorTree.stopAll("runtime_unloaded") end
             origin_print("[RuntimeGM] OnDestroy: closing connection")
             pcall(LuaHierarchy.ClearHighlights)
             RuntimeGMClient.Close()
