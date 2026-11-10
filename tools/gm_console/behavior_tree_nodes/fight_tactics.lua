@@ -2,9 +2,42 @@
 local function attribute(npc,kind)
     return npc.Attrib[CS.System.Convert.ToInt32(kind)].Value
 end
+-- 目录的列表参数不做深层校验；读取前限制数量和索引，避免任意属性遍历。
+local function attributeIdsValid(ids)
+    if type(ids)~='table' or getmetatable(ids)==BehaviorTreeJson.object then return false end
+    local count=0
+    for key,id in pairs(ids) do
+        count=count+1
+        if count>16 or type(key)~='number' or key%1~=0 or key<1 or key>16
+            or type(id)~='number' or id%1~=0 or id<0 or id>2147483647 then return false end
+    end
+    for index=1,count do if ids[index]==nil then return false end end
+    return true
+end
+local function observedAttribute(player,id)
+    local function read(field)
+        local ok,value=pcall(function()
+            local value=BehaviorTreeFight.number(player.Attrib[CS.System.Convert.ToInt32(id)][field])
+            if not value or value~=value or math.abs(value)==math.huge then error('attribute_unknown') end
+            return value
+        end)
+        if ok then return true,value end
+        return false,nil
+    end
+    -- Value/MaxValue 独立读取：缺上限不能把已知当前值变成未知。
+    local known,value=read('Value')
+    local maxKnown,max=read('MaxValue')
+    return {known=known,value=value,maxKnown=maxKnown,max=max}
+end
 BehaviorTreeHandlers.fight_observe=function(ctx)
+    local ids=ctx.params.playerAttributeIds
+    if ids==nil then ids={} end
+    if not attributeIdsValid(ids) then
+        ctx.write(ctx.params.output,{error='invalid_player_attribute_ids'});return 'failed'
+    end
     local fight=ctx.object(ctx.params.role)
     local role=fight:GetClientRole()
+
     local player=role and role.Npc
     if not player or player.IsDeleted then return 'failed' end
     if (ctx.params.stageId or 0)~=0 and fight.FightData.StageId~=ctx.params.stageId then
@@ -64,6 +97,8 @@ BehaviorTreeHandlers.fight_observe=function(ctx)
         for _,kind in ipairs(kinds or {}) do values[tostring(kind)]=npc~=nil and fight.BuffManager:ExistByKind(npc,kind) or false end
         return values
     end
+    local attributes=setmetatable({},BehaviorTreeJson.object)
+    for _,id in ipairs(ids) do attributes[tostring(id)]=observedAttribute(player,id) end
     local life=attribute(player,CS.XNpcAttribType.Life)
     local lifeLost=combat.lastLife and math.max(0,combat.lastLife-life) or 0
     if lifeLost>0 then combat.lastLifeLossFrame=fight.Frame end
@@ -81,7 +116,7 @@ BehaviorTreeHandlers.fight_observe=function(ctx)
     local state={dodgeEnergy=dodge.Value,dodgeEnergyMax=dodge.MaxValue,
         dodgeEnergyRatio=dodge.MaxValue>0 and dodge.Value/dodge.MaxValue or 0,matrixTimes=fight.Result.Data.MatrixTimes,
         matrixReady=player.DodgeState==CS.XNpcDodgeState.Activate,
-        playerBuffs=buffs(player,ctx.params.playerBuffKinds),enemyBuffs=buffs(enemy,ctx.params.enemyBuffKinds),
+        playerAttributes=attributes,playerBuffs=buffs(player,ctx.params.playerBuffKinds),enemyBuffs=buffs(enemy,ctx.params.enemyBuffKinds),
         frame=fight.Frame,stageId=fight.FightData.StageId,playerTemplateId=player.TemplateId,
         life=life,lifeLost=lifeLost,framesSinceLifeLoss=combat.lastLifeLossFrame and fight.Frame-combat.lastLifeLossFrame or 1000000000,
         playerAction=tostring(player.CurrentAction),playerSkillFrame=skill and skill.RunFrame or 0,playerPosition={x=px,y=py},

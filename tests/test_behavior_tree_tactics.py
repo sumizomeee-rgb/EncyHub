@@ -21,6 +21,84 @@ def tactics(combat):
     return combat
 
 
+
+def test_optional_attributes_keep_zero_and_default_empty_object(tactics):
+    tactics.execute("""
+        local reads=0
+        setmetatable(player.Attrib,{__index=function() reads=reads+1;error('unexpected read') end})
+        observe(ctx);assert(reads==0 and next(result.playerAttributes)==nil)
+        player.Attrib[75]={Value=0,MaxValue=0};ctx.params.playerAttributeIds={75}
+        observe(ctx)
+        assert(result.playerAttributes['75'].known and result.playerAttributes['75'].value==0)
+        assert(result.playerAttributes['75'].maxKnown and result.playerAttributes['75'].max==0)
+    """)
+    tactics.execute('ctx.params.playerAttributeIds=nil;observe(ctx)')
+    assert json.loads(tactics.globals().encodeResult())['playerAttributes'] == {}
+
+
+@pytest.mark.parametrize('field', ['Value', 'MaxValue'])
+@pytest.mark.parametrize('failure', ['missing', 'throws', 'nan', 'infinite'])
+def test_optional_attribute_fields_fail_independently(tactics, field, failure):
+    tactics.execute("ctx.params.playerAttributeIds={75};player.Attrib[75]={Value=12,MaxValue=20}")
+    tactics.execute({
+        'missing': f"player.Attrib[75].{field}=nil",
+        'throws': f"player.Attrib[75].{field}=nil;setmetatable(player.Attrib[75],{{__index=function() error('unreadable') end}})",
+        'nan': f"player.Attrib[75].{field}=0/0",
+        'infinite': f"player.Attrib[75].{field}=math.huge",
+    }[failure])
+    tactics.execute("assert(observe(ctx)=='succeeded')")
+    item = json.loads(tactics.globals().encodeResult())['playerAttributes']['75']
+    if field == 'Value':
+        assert item == {'known': False, 'maxKnown': True, 'max': 20}
+    else:
+        assert item == {'known': True, 'value': 12, 'maxKnown': False}
+
+
+def test_optional_attribute_index_failure_and_snapshot_isolation(tactics):
+    tactics.execute("""
+        ctx.params.playerAttributeIds={75,76}
+        player.Attrib[75]={Value=4,MaxValue=10}
+        setmetatable(player.Attrib,{__index=function() error('attribute unavailable') end})
+        observe(ctx);local previous=result
+        assert(not previous.playerAttributes['76'].known and not previous.playerAttributes['76'].maxKnown)
+        player.Attrib[75].Value=7;ctx.params.playerAttributeIds={75};observe(ctx)
+        assert(result.playerAttributes['75'].value==7 and previous.playerAttributes['75'].value==4)
+        assert(result.playerAttributes['76']==nil and previous.playerAttributes['76']~=nil)
+    """)
+
+
+@pytest.mark.parametrize('ids', [
+    'false', '75', "'75'", '{75.5}', '{-1}', '{2147483648}', '{0/0}', '{math.huge}',
+    '{true}', "{'75'}", '{[2]=75}', '{key=75}',
+    '(function() observe(ctx);return setmetatable({},getmetatable(result.playerAttributes)) end)()', '{' + ','.join(['75']*17) + '}',
+])
+def test_optional_attribute_parameter_is_bounded_before_reading(tactics, ids):
+    tactics.execute(f"ctx.params.playerAttributeIds={ids}")
+    tactics.execute("""
+        ctx.object=function() error('must reject before object access') end
+        assert(observe(ctx)=='failed' and result.error=='invalid_player_attribute_ids')
+    """)
+
+
+def test_optional_attribute_boundary_and_catalog_parameter(tactics):
+    from tools.gm_console.behavior_tree import node_catalog, validate_tree
+
+    definition = next(item for item in node_catalog() if item['id'] == 'fight_observe')
+    assert definition['params']['properties']['playerAttributeIds']['default'] == []
+    tree = {'schemaVersion': 1, 'id': 'attribute-observation', 'root': 'observe',
+            'roles': {'fight': {'kind': 'fight'}}, 'nodes': [
+                {'id': 'observe', 'type': 'fight_observe', 'version': 1, 'children': [],
+                 'params': {'role': 'fight', 'output': 'combat', 'playerAttributeIds': [75,76,77,78]}}]}
+    assert validate_tree(tree)['ok']
+    tactics.execute("""
+        ctx.params.playerAttributeIds={0,2147483647};observe(ctx)
+        assert(result.playerAttributes['0'].known and result.playerAttributes['0'].value==100)
+        assert(not result.playerAttributes['2147483647'].known)
+        ctx.params.playerAttributeIds={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}
+        assert(observe(ctx)=='succeeded' and result.playerAttributes['16']~=nil)
+    """)
+
+
 def test_observation_rejects_wrong_stage_and_player(tactics):
     tactics.execute("ctx.params.stageId=1;assert(observe(ctx)=='failed' and result.error=='stage_mismatch')")
     tactics.execute("ctx.params.stageId=30300803;player.TemplateId=1;assert(observe(ctx)=='failed' and result.error=='player_mismatch')")

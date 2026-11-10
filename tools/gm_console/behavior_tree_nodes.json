@@ -688,6 +688,10 @@
         "playerTemplateIds": {
           "default": []
         },
+        "playerAttributeIds": {
+          "default": [],
+          "description": "可选角色属性索引，最多16个0..2147483647整数；执行前校验。输出playerAttributes[stringId]的known/value及maxKnown/max，未知值省略。"
+        },
         "playerBuffKinds": {
           "default": []
         },
