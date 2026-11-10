@@ -623,6 +623,9 @@
         "preferSmallGroup": {
           "type": "boolean",
           "default": false
+        },
+        "directionPath": {
+          "type": "string"
         }
       },
       "required": [
@@ -893,5 +896,188 @@
     "sideEffect": "none",
     "cancelMode": "none",
     "resources": []
+  },
+  {
+    "id": "fight_navigate",
+    "version": 1,
+    "name": "沿地形路径普通移动",
+    "kind": "action",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "goalPath": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 30,
+          "default": 5
+        },
+        "arrivalTolerance": {
+          "type": "number",
+          "minimum": 0.05,
+          "maximum": 2,
+          "default": 0.35
+        },
+        "stuckFrames": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 120,
+          "default": 10
+        },
+        "minProgress": {
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 2,
+          "default": 0.15
+        },
+        "replanIntervalFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 20
+        },
+        "maxReplans": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 2
+        },
+        "trackGoal": {
+          "type": "boolean",
+          "default": false
+        },
+        "goalChangeDistance": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 5,
+          "default": 0.75
+        }
+      },
+      "required": [
+        "role",
+        "output",
+        "goalPath"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.navigate"
+      }
+    ],
+    "resources": [
+      {
+        "kind": "object",
+        "parameter": "role"
+      },
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ],
+    "sideEffect": "gameplay_input",
+    "cancelMode": "release_owned_input"
+  },
+  {
+    "id": "fight_plan",
+    "version": 1,
+    "name": "评估攻击判定与脱离候选",
+    "kind": "action",
+    "tags": [
+      "战斗"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "observePath": {
+          "type": "string",
+          "default": "combat"
+        },
+        "profile": {},
+        "desiredDistance": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 20,
+          "default": 3
+        },
+        "horizonFrames": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 30,
+          "default": 14
+        },
+        "reactionFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2
+        },
+        "desiredDistancePath": {
+          "type": "string"
+        },
+        "dodgeLeadFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        },
+        "moveDistance": {
+          "type": "number",
+          "minimum": 0.2,
+          "maximum": 10,
+          "default": 3
+        },
+        "failureTTLFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 40
+        }
+      },
+      "required": [
+        "role",
+        "output",
+        "profile"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.read"
+      }
+    ],
+    "resources": [
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none"
   }
 ]

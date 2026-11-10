@@ -188,18 +188,32 @@ BehaviorTreeHandlers.fight_input=function(ctx)
             ctx.write(ctx.params.output,{phase='failed',reason='key_unavailable',action=ctx.params.action})
             return 'failed'
         end
-        if ctx.params.direction and ctx.params.direction~='none' and not ctx.memory.prepared then
-            local enemy=BehaviorTreeFight.enemy(fight)
-            if not enemy then return 'failed' end
-            local px,py=position(fight:GetClientRole().Npc)
-            local ex,ey=position(enemy)
-            local dx,dy=ex-px,ey-py
-            local distance=math.sqrt(dx*dx+dy*dy)
-            if distance<0.001 then dx,dy,distance=1,0,1 end
-            dx,dy=dx/distance,dy/distance
-            if ctx.params.direction=='away' then dx,dy=-dx,-dy
-            elseif ctx.params.direction=='left' then dx,dy=-dy,dx
-            elseif ctx.params.direction=='right' then dx,dy=dy,-dx end
+        if (ctx.params.directionPath or (ctx.params.direction and ctx.params.direction~='none')) and not ctx.memory.prepared then
+            local dx,dy
+            if ctx.params.directionPath then
+                local value=ctx.run.blackboard
+                for part in ctx.params.directionPath:gmatch('[^.]+') do value=type(value)=='table' and value[part] or nil end
+                dx,dy=type(value)=='table' and value.x, type(value)=='table' and value.y
+                if type(dx)~='number' or type(dy)~='number' or dx~=dx or dy~=dy
+                    or math.abs(dx)==math.huge or math.abs(dy)==math.huge or dx*dx+dy*dy<0.000001 then
+                    ctx.write(ctx.params.output,{phase='failed',reason='direction_unavailable',action=ctx.params.action})
+                    return 'failed'
+                end
+                local length=math.sqrt(dx*dx+dy*dy);dx,dy=dx/length,dy/length
+            else
+                local enemy=BehaviorTreeFight.enemy(fight)
+                if not enemy then return 'failed' end
+                local px,py=position(fight:GetClientRole().Npc)
+                local ex,ey=position(enemy)
+                dx,dy=ex-px,ey-py
+                local distance=math.sqrt(dx*dx+dy*dy)
+                if distance<0.001 then dx,dy,distance=1,0,1 end
+                dx,dy=dx/distance,dy/distance
+                if ctx.params.direction=='away' then dx,dy=-dx,-dy
+                elseif ctx.params.direction=='left' then dx,dy=-dy,dx
+                elseif ctx.params.direction=='right' then dx,dy=dy,-dx end
+            end
+            ctx.memory.directionX,ctx.memory.directionY=dx,dy
             local touch=touchDevice(fight)
             if not touch then return 'failed' end
             ctx.memory.stopMove=function() touch:SetMoveVec(CS.UnityEngine.Vector2.zero,0) end
@@ -218,7 +232,7 @@ BehaviorTreeHandlers.fight_input=function(ctx)
         end
         -- 正常 OnClick 自己执行按键门禁；不反射私有状态，也不强制输入。
         input:OnClick(key,CS.XOperationClickType.KeyDown,false)
-        ctx.write(ctx.params.output,{phase='input_submitted',action=ctx.params.action,frame=fight.Frame})
+        ctx.write(ctx.params.output,{phase='input_submitted',action=ctx.params.action,frame=fight.Frame,directionX=ctx.memory.directionX,directionY=ctx.memory.directionY})
         return 'running'
     end
     if ctx.now-ctx.memory.started<ctx.params.holdSeconds then return 'running' end

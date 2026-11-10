@@ -1,6 +1,6 @@
 -- 单一游戏内运行器，节点实现由注入器显式装载。
 local function CreateBehaviorTree(host, definitions, handlers)
-    local bt = {runtimeBuild='ency-bt-20261110-r21', sessionId = tostring(host.now()) .. ':' .. tostring({}), trees = {}, runs = {}, objects = {}, replies = {}, replyOrder = {}}
+    local bt = {runtimeBuild='ency-bt-20261110-r22', sessionId = tostring(host.now()) .. ':' .. tostring({}), trees = {}, runs = {}, objects = {}, replies = {}, replyOrder = {}}
     local registry = {}
     for _, def in ipairs(definitions) do registry[def.id] = def end
     local function copyValue(value, seen, depth)
