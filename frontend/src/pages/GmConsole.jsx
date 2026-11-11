@@ -11,6 +11,7 @@ import {
 import { useToast } from '../components/Toast'
 import ScreenshotModal from '../components/ScreenshotModal'
 import { copyText } from '../utils/clipboard'
+import { logPreview } from '../utils/logPreview'
 
 // ============================================================================
 // 平台 SVG 图标（24x24 viewBox，stroke-width=2，匹配 Lucide/Tabler 视觉权重）
@@ -1999,11 +2000,13 @@ end`
                       <div className="text-[var(--coffee-muted)] text-center py-8">没有匹配的日志</div>
                     ) : (
                       filteredWebLogs.map((log, i) => {
-                        const text = String(log.text || '').trimStart()
+                        const text = logPreview(log.text)
                         return (
                           <div
                             key={i}
                             className={`flex items-start gap-2 py-1 px-1 -mx-1 rounded cursor-default hover:bg-white/5 ${getLogColor(log.type)}`}
+                            onDoubleClick={() => setGameLogDetail({ entry: { text: log.text, level: log.type }, source: 'web' })}
+                            title="双击查看日志详情；长日志可在详情中复制全文"
                           >
                             <LogTypeBadge type={log.type} compact />
                             <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
@@ -2025,7 +2028,7 @@ end`
                     ) : (
                       filteredGameLogs.map((entry, i) => {
                         const level = normalizeLogLevel(entry.level)
-                        const text = String(entry.text || '').trimStart()
+                        const text = logPreview(entry.text)
                         return (
                           <div
                             key={`${entry.seq || i}-${entry.fileOffset || i}-${entry.text?.slice(0, 24) || ''}`}
@@ -2082,9 +2085,9 @@ end`
                   <FileText size={15} className="text-white" />
                 </div>
                 <div className="min-w-0">
-                  <h3 className="font-display text-sm font-semibold text-[var(--coffee-deep)]">游戏日志详情</h3>
+                  <h3 className="font-display text-sm font-semibold text-[var(--coffee-deep)]">{gameLogDetail.source === 'web' ? 'Web 日志详情' : '游戏日志详情'}</h3>
                   <p className="text-[10px] text-[var(--coffee-muted)] truncate">
-                    {gameLogDetail.client?.device || gameLogDetail.client?.id || '未知客户端'}
+                    {gameLogDetail.source === 'web' ? 'Web 端原始日志' : gameLogDetail.client?.device || gameLogDetail.client?.id || '未知客户端'}
                     {gameLogDetail.entry?.time ? ` · ${gameLogDetail.entry.time}` : ''}
                   </p>
                 </div>
@@ -2117,7 +2120,7 @@ end`
               )}
             </div>
             <pre className="flex-1 min-h-[320px] max-h-[62vh] overflow-auto bg-[var(--coffee-deep)] text-[var(--cream-soft)] rounded-xl p-4 text-xs leading-relaxed whitespace-pre-wrap break-words font-mono">
-              {gameLogDetail.entry?.text || ''}
+              {logPreview(gameLogDetail.entry?.text, 16000, '已显示前 16000 字，可用上方按钮复制全文')}
             </pre>
           </div>
         </div>

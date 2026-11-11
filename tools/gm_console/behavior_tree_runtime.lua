@@ -1,7 +1,33 @@
 -- 单一游戏内运行器，节点实现由注入器显式装载。
 local function CreateBehaviorTree(host, definitions, handlers)
-    local bt = {runtimeBuild='ency-bt-20261111-r25', sessionId = tostring(host.now()) .. ':' .. tostring({}), trees = {}, runs = {}, objects = {}, replies = {}, replyOrder = {}}
+    local bt = {runtimeBuild='ency-bt-20261111-r26', sessionId = tostring(host.now()) .. ':' .. tostring({}), trees = {}, runs = {}, objects = {}, replies = {}, replyOrder = {}}
     local registry = {}
+    local treeOrder, runOrder, objectOrder = {}, {}, {}
+    local objectGeneration, lastObjectSweep = 0, -math.huge
+    local function removeOrder(order,id)
+        for i,value in ipairs(order) do if value==id then table.remove(order,i); return end end
+    end
+    local function objectBound(id)
+        for _,run in pairs(bt.runs) do
+            if run.state=='running' or run.state=='awaiting_decision' then
+                for _,token in pairs(run.bindings) do if token.id==id then return true end end
+            end
+        end
+        return false
+    end
+    local function sweepObjects()
+        local currentScene, now = host.scene(), host.now()
+        local checkValidity=now-lastObjectSweep>=1
+        for i=#objectOrder,1,-1 do
+            local id=objectOrder[i]; local obj=bt.objects[id]
+            local ok,valid=true,true
+            if checkValidity and obj then ok,valid=pcall(obj.valid) end
+            if not obj or obj.token.scene~=currentScene or not ok or not valid then
+                bt.objects[id]=nil; table.remove(objectOrder,i)
+            end
+        end
+        if checkValidity then lastObjectSweep=now end
+    end
     for _, def in ipairs(definitions) do registry[def.id] = def end
     local function copyValue(value, seen, depth)
         if BehaviorTreeJson and value==BehaviorTreeJson.null then return value end
@@ -68,11 +94,20 @@ local function CreateBehaviorTree(host, definitions, handlers)
         run.reason = reason
         cancel(run,run.tree.root)
         if #run.cleanupErrors > 0 then run.state='error'; run.reason='cleanup_failed' end
+        if run.state~='awaiting_decision' then
+            -- 终态只保留纯值诊断；业务缓存可能含 NPC、Skill 或清理闭包。
+            local retained={id=true,startedAt=true,runMode=true,sessionId=true,tree=true,
+                blackboard=true,revision=true,states=true,events=true,seq=true,state=true,
+                reason=true,cleanupErrors=true,droppedEvents=true,memory=true}
+            for key in pairs(run) do if not retained[key] then run[key]=nil end end
+            run.memory={}
+        end
         event(run,'state',{state=run.state,reason=run.reason,cleanupErrors=run.cleanupErrors})
     end
     function bt.stopAll(reason)
         for _, run in pairs(bt.runs) do finish(run,'stopped',reason) end
         bt.objects = {}
+        objectOrder = {}
         bt.sessionId = tostring(host.now()) .. ':' .. tostring({})
         bt.replies = {}; bt.replyOrder = {}
     end
@@ -257,6 +292,7 @@ local function CreateBehaviorTree(host, definitions, handlers)
                 end
             end
         end
+        sweepObjects()
     end
     function bt.registerObject(id,kind,name,value,valid,capabilities)
         local old=bt.objects[id]
@@ -264,8 +300,16 @@ local function CreateBehaviorTree(host, definitions, handlers)
             old.capabilities=capabilities or {}
             return old.token
         end
-        local token={sessionId=bt.sessionId,scene=scene(),kind=kind,id=id,generation=(old and old.token.generation or 0)+1}
+        -- 淘汰后重新发现也不能复用旧令牌的代次。
+        objectGeneration=objectGeneration+1
+        local token={sessionId=bt.sessionId,scene=scene(),kind=kind,id=id,generation=objectGeneration}
+        removeOrder(objectOrder,id); objectOrder[#objectOrder+1]=id
         bt.objects[id]={token=token,value=value,valid=valid,name=name,capabilities=capabilities or {}}
+        if #objectOrder>256 then
+            for i,key in ipairs(objectOrder) do if not objectBound(key) then
+                bt.objects[key]=nil; table.remove(objectOrder,i); break
+            end end
+        end
         return token
     end
     function bt.handle(req)
@@ -283,7 +327,10 @@ local function CreateBehaviorTree(host, definitions, handlers)
             elseif action=='validate' then return bt.validate(p.tree)
             elseif action=='install' then
                 local result=bt.validate(p.tree); if not result.ok then return result end
-                bt.trees[p.tree.id]=p.tree; return {ok=true,treeId=p.tree.id}
+                bt.trees[p.tree.id]=p.tree
+                removeOrder(treeOrder,p.tree.id); treeOrder[#treeOrder+1]=p.tree.id
+                if #treeOrder>32 then bt.trees[table.remove(treeOrder,1)]=nil end
+                return {ok=true,treeId=p.tree.id}
             elseif action=='start' then
                 local tree=bt.trees[p.treeId]; if not tree then error('tree_not_installed') end
                 local runId=p.runId or req.requestId
@@ -307,8 +354,15 @@ local function CreateBehaviorTree(host, definitions, handlers)
                 run.blackboard=copyValue(tree.blackboard or {})
                 for _,n in ipairs(tree.nodes) do run.index[n.id]=n end
                 -- 历史运行有界，当前运行不被淘汰。
-                local count=0; for _ in pairs(bt.runs) do count=count+1 end
-                if count>=32 then for id,r in pairs(bt.runs) do if r.state~='running' then bt.runs[id]=nil; break end end end
+                if #runOrder>=32 then
+                    for i,id in ipairs(runOrder) do
+                        local r=bt.runs[id]
+                        if r.state~='running' and r.state~='awaiting_decision' then
+                            bt.runs[id]=nil; table.remove(runOrder,i); break
+                        end
+                    end
+                end
+                runOrder[#runOrder+1]=runId
                 bt.runs[runId]=run; event(run,'state',{state=run.state}); return snapshot(run)
             elseif action=='stop' or action=='status' then
                 local results={}
@@ -321,7 +375,10 @@ local function CreateBehaviorTree(host, definitions, handlers)
             error('unknown_action')
         end)
         local reply={type='BT_RESPONSE',protocolVersion=1,requestId=req.requestId,sessionId=bt.sessionId,ok=ok,data=ok and data or nil,error=not ok and {code='runtime_error',message=tostring(data)} or nil}
-        if req.requestId then bt.replies[req.requestId]=reply; bt.replyOrder[#bt.replyOrder+1]=req.requestId end
+        -- 只为变更操作保存幂等回执，轮询不应保留旧黑板快照。
+        if req.requestId and (req.action=='install' or req.action=='start' or req.action=='stop') then
+            bt.replies[req.requestId]=reply; bt.replyOrder[#bt.replyOrder+1]=req.requestId
+        end
         if #bt.replyOrder>128 then bt.replies[table.remove(bt.replyOrder,1)]=nil end
         host.send(reply)
     end
