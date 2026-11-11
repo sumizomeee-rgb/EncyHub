@@ -1083,5 +1083,124 @@
     ],
     "sideEffect": "none",
     "cancelMode": "none"
+  },
+  {
+    "id": "fight_team_observe",
+    "version": 1,
+    "name": "观测队友与QTE",
+    "kind": "action",
+    "tags": [
+      "战斗",
+      "队伍"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.team.read"
+      }
+    ],
+    "resources": [
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ],
+    "sideEffect": "none",
+    "cancelMode": "none"
+  },
+  {
+    "id": "fight_qte",
+    "version": 1,
+    "name": "正常QTE支援",
+    "kind": "action",
+    "tags": [
+      "战斗",
+      "队伍"
+    ],
+    "params": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "targetSlot": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Npc.Index+1，与角色编队槽对应"
+        },
+        "expectedTemplateId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expectedSkillId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimumWindowFrames": {
+          "type": "integer",
+          "minimum": 6,
+          "maximum": 60,
+          "default": 6
+        },
+        "timeout": {
+          "type": "number",
+          "minimum": 0.05,
+          "maximum": 5,
+          "default": 1
+        }
+      },
+      "required": [
+        "role",
+        "output",
+        "targetSlot",
+        "expectedTemplateId",
+        "expectedSkillId"
+      ],
+      "additionalProperties": false
+    },
+    "minChildren": 0,
+    "maxChildren": 0,
+    "roles": [
+      {
+        "parameter": "role",
+        "kind": "fight",
+        "capability": "fight.qte"
+      }
+    ],
+    "resources": [
+      {
+        "kind": "object",
+        "parameter": "role"
+      },
+      {
+        "kind": "bb",
+        "parameter": "output"
+      }
+    ],
+    "sideEffect": "gameplay_input",
+    "cancelMode": "release_owned_input"
   }
 ]
